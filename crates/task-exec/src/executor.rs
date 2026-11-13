@@ -129,8 +129,6 @@ pub struct ExecutorConfig {
     pub cache: Option<TaskCacheConfig>,
     /// VCS workspace used to resolve sandbox inputs when cache storage is unavailable.
     pub sandbox_hasher_root: Option<PathBuf>,
-    /// Project roots retained for sandbox-only cross-project input resolution.
-    pub sandbox_project_roots: BTreeMap<String, PathBuf>,
     /// The projects whose tasks run as dependencies of this run, by what
     /// their tasks are qualified with (`#project:task`). A qualified task
     /// whose project is missing here does not run. This supplies where such
@@ -152,7 +150,6 @@ impl Default for ExecutorConfig {
             cue_module_root: None,
             cache: None,
             sandbox_hasher_root: None,
-            sandbox_project_roots: BTreeMap::new(),
             external_projects: BTreeMap::new(),
         }
     }
@@ -173,6 +170,7 @@ struct SandboxStore {
     _root: super::exec_root::ScratchDir,
     config: TaskCacheConfig,
 }
+
 impl TaskExecutor {
     /// Create a new executor.
     pub fn new(mut config: ExecutorConfig) -> Self {
@@ -180,9 +178,6 @@ impl TaskExecutor {
             config
                 .sandbox_hasher_root
                 .get_or_insert_with(|| cache.vcs_hasher_root.clone());
-            if config.sandbox_project_roots.is_empty() {
-                config.sandbox_project_roots = cache.project_roots.clone();
-            }
         }
         Self {
             config,
@@ -223,7 +218,6 @@ impl TaskExecutor {
             secret_salt: None,
             mode_override: None,
             cache_root,
-            project_roots: self.config.sandbox_project_roots.clone(),
         };
 
         // Two tasks racing here each build a store; the loser's is dropped,
@@ -775,23 +769,6 @@ impl TaskExecutor {
             task,
             environment,
         } = context;
-        // Check if this is an unresolved TaskRef (should have been resolved before execution)
-        if task.is_task_ref() && task.project_root.is_none() {
-            return Err(Error::configuration(format!(
-                "Task '{}' references another project's task ({}) but the reference could not be resolved.\n\
-                 This usually means:\n\
-                 - The referenced project doesn't exist or has no 'name' field in env.cue\n\
-                 - The referenced task '{}' doesn't exist in that project\n\
-                 - There was an error loading the referenced project's env.cue\n\
-                 Run with RUST_LOG=debug for more details.",
-                name,
-                task.task_ref.as_deref().unwrap_or("unknown"),
-                task.task_ref
-                    .as_deref()
-                    .and_then(|r| r.split(':').next_back())
-                    .unwrap_or("unknown")
-            )));
-        }
 
         // A sandboxed task's exec root wins; everything else resolves the
         // working directory the usual way (see `workdir_in`).
@@ -1298,10 +1275,6 @@ fn reject_unmaterialized_mapping(name: &str, task: &Task) -> Result<()> {
         Input::Mapped(mapping) if mapping.relocates() => {
             Some((mapping.source.clone(), mapping.destination.clone()))
         }
-        Input::Project(reference) => reference
-            .map
-            .first()
-            .map(|mapping| (mapping.from.clone(), mapping.to.clone())),
         _ => None,
     });
     let Some((from, to)) = relocated else {

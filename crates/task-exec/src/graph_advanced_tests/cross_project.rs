@@ -1,56 +1,5 @@
 use crate::graph::TaskGraph;
-use crate::{Mapping, ProjectReference, test_utils};
-
-#[test]
-fn test_dag_with_task_ref_placeholder() {
-    // Test that a task with a TaskRef can be added to the graph
-    let mut graph = TaskGraph::new();
-
-    let task1 = test_utils::create_task("task1", vec![], vec![]);
-    let task2 = test_utils::create_task_ref("#other-project:build", vec!["task1"]);
-
-    graph.add_task("task1", task1).unwrap();
-    graph.add_task("task2", task2).unwrap();
-    graph.add_dependency_edges().unwrap();
-
-    assert_eq!(graph.task_count(), 2);
-    assert!(!graph.has_cycles());
-
-    let sorted = graph.topological_sort().unwrap();
-    let names: Vec<&str> = sorted.iter().map(|n| n.name.as_str()).collect();
-    assert_eq!(names, vec!["task1", "task2"]);
-}
-
-#[test]
-fn test_dag_with_project_reference_input() {
-    // Test that a task with project reference input is properly added
-    let mut graph = TaskGraph::new();
-
-    let build_task = test_utils::create_task("build", vec![], vec![]);
-    let deploy_task = test_utils::create_task_with_project_ref(
-        "deploy",
-        vec!["build"],
-        ProjectReference {
-            project: "../other-project".to_string(),
-            task: "compile".to_string(),
-            map: vec![Mapping {
-                from: "dist/app.js".to_string(),
-                to: "vendor/app.js".to_string(),
-            }],
-        },
-    );
-
-    graph.add_task("build", build_task).unwrap();
-    graph.add_task("deploy", deploy_task).unwrap();
-    graph.add_dependency_edges().unwrap();
-
-    assert_eq!(graph.task_count(), 2);
-    assert!(!graph.has_cycles());
-
-    let sorted = graph.topological_sort().unwrap();
-    assert_eq!(sorted[0].name, "build");
-    assert_eq!(sorted[1].name, "deploy");
-}
+use crate::test_utils;
 
 #[test]
 fn test_dag_with_multiple_project_references() {

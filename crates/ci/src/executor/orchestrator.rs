@@ -339,7 +339,11 @@ async fn run_ci_projects(
             ProjectPlan::NoSuchPipeline => {}
         }
     }
-    crate::affected::note_root_namesakes();
+    crate::affected::fail_on_root_relative_inputs().map_err(|failures| {
+        cuenv_core::Error::configuration(format!(
+            "affected detection cannot compare these inputs with the changed files:\n{failures}"
+        ))
+    })?;
 
     if !pipeline_defined {
         return Err(no_project_defines_pipeline(

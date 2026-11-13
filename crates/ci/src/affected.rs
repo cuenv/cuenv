@@ -4,7 +4,7 @@ use cuenv_core::tasks::{FilesAnchor, Input, InputPattern, TaskNode};
 use cuenv_core::{AffectedBy, InputFrame, PatternMatch, PlaceAnchor, UnmatchablePattern};
 use cuenv_task_exec::TaskIndex;
 use cuenv_vcs::WalkHasher;
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::hash::BuildHasher;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock, PoisonError};
@@ -320,13 +320,7 @@ where
                     .find(|dep_name| {
                         if dep_name.starts_with('#') {
                             check_external_dependency(
-                                &named_dependency(
-                                    dep_name,
-                                    DependencyOrigin {
-                                        project_root,
-                                        projects: all_projects,
-                                    },
-                                ),
+                                dep_name,
                                 &mut ExternalDependencyContext {
                                     projects: all_projects,
                                     anchors,
@@ -495,17 +489,27 @@ impl<S: BuildHasher> ReachWalk<'_, S> {
             .iter()
             .map(|dependency| dependency.task_name())
             .filter(|dependency| dependency.starts_with('#'))
-            .map(|dependency| {
-                named_dependency(
-                    dependency,
-                    DependencyOrigin {
-                        project_root: owner.project_root,
-                        projects: self.all_projects,
-                    },
-                )
-            })
+            .map(str::to_string)
             .collect();
         for dependency in external {
+            // A task of another project is reached through an import of
+            // that project, which is what its name binds to: never a
+            // same-named project the owner does not import.
+            if let Some((project, _)) = dependency
+                .strip_prefix('#')
+                .and_then(|reference| reference.split_once(':'))
+                && let Err(problem) = self.binder.bind(
+                    owner.project_root,
+                    &FilesAnchor::Project(project.to_string()),
+                )
+            {
+                let problem = format!("dependsOn '{dependency}': {problem}");
+                self.problems.push(match owner.name {
+                    Some(project) => format!("project '{project}': task '{name}': {problem}"),
+                    None => format!("task '{name}': {problem}"),
+                });
+                continue;
+            }
             self.external_node(&dependency);
         }
     }
@@ -640,7 +644,7 @@ pub fn matched_inputs_for_task(
     let mut matched: Vec<String> = Vec::new();
     for pattern in entry.node.input_patterns() {
         let written = pattern.to_string();
-        if cuenv_core::match_input(changed.files, changed.frame(), pattern) != PatternMatch::None
+        if cuenv_core::match_input(changed.files, changed.frame(), pattern) == PatternMatch::Matched
             && !matched.contains(&written)
         {
             matched.push(written);
@@ -787,81 +791,12 @@ where
 
     dependency_names.into_iter().any(|sub_dep_name| {
         let dependency_ref = if sub_dep_name.starts_with('#') {
-            // A path is relative to the project that writes it: this one.
-            named_dependency(
-                &sub_dep_name,
-                DependencyOrigin {
-                    project_root: project_path,
-                    projects,
-                },
-            )
+            sub_dep_name
         } else {
             format!("#{project_name}:{sub_dep_name}")
         };
         check_external_dependency(&dependency_ref, context)
     })
-}
-
-/// Where a dependency on another project is written, and the projects it
-/// can name.
-struct DependencyOrigin<'origin, S> {
-    /// The directory of the project that declares the dependency, relative
-    /// to the root of the checkout.
-    project_root: &'origin Path,
-    /// The projects of the module by name, each with its directory relative
-    /// to the root of the checkout.
-    projects: &'origin HashMap<String, (PathBuf, Project), S>,
-}
-
-// Derived, these would require `S: Copy`; only references are copied.
-impl<S> Clone for DependencyOrigin<'_, S> {
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-
-impl<S> Copy for DependencyOrigin<'_, S> {}
-
-/// Spell a dependency on another project by that project's name.
-///
-/// `#project:task` may spell its project as a path instead: relative to the
-/// project that writes it (`#../content:articles`), or from the root of the
-/// checkout (`#/content:articles`). The projects of a run are known by name,
-/// each with its directory in the checkout, so a path to one of those
-/// directories is the dependency on that project, and is compared with
-/// changed files like any other.
-///
-/// Anything else is returned as written and counts as affected where it
-/// does not resolve: a name no project has, a path that leaves the checkout,
-/// and a path to a directory that only inherits a project's name.
-fn named_dependency<S>(dep: &str, origin: DependencyOrigin<'_, S>) -> String
-where
-    S: BuildHasher,
-{
-    let DependencyOrigin {
-        project_root,
-        projects,
-    } = origin;
-    let Some((project, task)) = dep
-        .strip_prefix('#')
-        .and_then(|reference| reference.split_once(':'))
-    else {
-        return dep.to_string();
-    };
-    // A name is looked up as a name before anything else, as it is where
-    // the dependency runs.
-    if projects.contains_key(project) {
-        return dep.to_string();
-    }
-    let Some(directory) = placed_reference(project, project_root) else {
-        return dep.to_string();
-    };
-    projects
-        .iter()
-        .filter(|(_, (placed, _))| placed_reference(".", placed).as_ref() == Some(&directory))
-        .map(|(name, _)| name)
-        .min()
-        .map_or_else(|| dep.to_string(), |name| format!("#{name}:{task}"))
 }
 
 /// The directory a path-shaped project reference names, relative to the
@@ -953,26 +888,24 @@ fn warn_about_unmatchable_inputs(changed: ChangedInputs<'_>, task_name: &str, no
     }
 }
 
-/// Warn about inputs of `node` that someone relies on being read from the
-/// root of the checkout.
+/// Record the inputs of `node` that someone relied on being read from the
+/// root of the checkout, which fail the run (see
+/// [`fail_on_root_relative_inputs`]).
 ///
-/// An input is relative to its project, yet a changed file outside the
-/// project has always been compared with the pattern as well. That keeps a
-/// task affected in two different situations:
+/// An input is relative to its project. A changed file outside the project
+/// used to be compared with the pattern as well, which kept a task affected
+/// in two different situations; neither is a match any more:
 ///
 /// - The pattern selects nothing under its project (`shared/**` in `app`,
 ///   with a `shared/` directory only at the root). The root-relative reading
-///   is what the user relies on, and it is going away, so they are told.
+///   is what the user relied on. Reporting the task unaffected would skip it
+///   silently, so the run fails, saying how to name the file.
 /// - The pattern does select files under its project, and the root happens
 ///   to have files of the same name (`package.json`, `src/**`). The
-///   configuration is correct and the extra run is an accident. It is never
-///   a warning: the task is recorded, and [`note_root_namesakes`] says once
-///   per run, for every such task, that the root file also matched, that
-///   this stops when the root-relative reading goes away, and how to read
-///   that file on purpose.
+///   configuration is correct and the root file is simply not an input.
 ///
 /// Changed files alone cannot tell the two apart; the files of the project
-/// can. Without a checkout to look at, nothing is said.
+/// can. Without a checkout to look at, nothing is recorded.
 fn warn_about_root_relative_inputs(
     changed: ChangedInputs<'_>,
     checkout_root: Option<&Path>,
@@ -985,95 +918,52 @@ fn warn_about_root_relative_inputs(
         name: task_name,
         node,
     } = task;
-    let warned = WarnedTask {
-        project_root: changed.project_root,
-        task_name,
-    };
     let project = display_project(changed.project_root);
-    let RootRelative {
-        relied_on,
-        namesakes,
-    } = root_relative_inputs(changed, checkout_root, node);
+    let RootRelative { relied_on } = root_relative_inputs(changed, checkout_root, node);
+    if relied_on.is_empty() {
+        return;
+    }
+    let mut recorded = root_relative_failures()
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
     for pattern in relied_on {
-        warn_once_per_task(warned, "root-relative", || {
-            let rewrite =
-                reference_spelling(changed.anchors, changed.project_root, Path::new(pattern));
-            format!(
-                "task '{task_name}' of project {project} has input '{pattern}', which selects \
-                 nothing under {project} and matched a changed file only when read from the \
-                 root of the repository. Inputs are relative to their project; this \
-                 root-relative reading still selects the task for now and is going away \
-                 (#611). To read that file on purpose, {rewrite}"
-            )
-        });
-    }
-    if !namesakes.is_empty() {
-        let mut recorded = root_namesakes()
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        recorded
-            .entry((project, task_name.to_string()))
-            .or_default()
-            .extend(namesakes.into_iter().map(str::to_string));
+        let rewrite = reference_spelling(changed.anchors, changed.project_root, Path::new(pattern));
+        recorded.insert(format!(
+            "task '{task_name}' of project {project} has input '{pattern}', which selects \
+             nothing under {project} and matched a changed file only when read from the root \
+             of the repository. Inputs are relative to their project and are no longer read \
+             from the root (#611). To read that file, {rewrite}"
+        ));
     }
 }
 
-/// The tasks of this run, by project and task name, that a file at the root
-/// of the checkout selected through a namesake of their inputs, with those
-/// inputs. Gathered while every project is planned and noted once (see
-/// [`note_root_namesakes`]).
-type RootNamesakes = BTreeMap<(String, String), BTreeSet<String>>;
-
-fn root_namesakes() -> &'static Mutex<RootNamesakes> {
-    static NAMESAKES: OnceLock<Mutex<RootNamesakes>> = OnceLock::new();
-    NAMESAKES.get_or_init(Mutex::default)
+/// What the run found relying on inputs read from the root of the
+/// checkout, gathered while every project is planned.
+fn root_relative_failures() -> &'static Mutex<BTreeSet<String>> {
+    static FAILURES: OnceLock<Mutex<BTreeSet<String>>> = OnceLock::new();
+    FAILURES.get_or_init(Mutex::default)
 }
 
-/// Note, once for the run, the tasks a root file selected by name alone.
-///
-/// The note lists each task that affected detection selected only because a
-/// file at the root of the repository has the name of one of its inputs,
-/// with those inputs and how to read such a file on purpose. The
-/// configuration is correct, so it is never a warning, and a run that plans
-/// many projects says it once.
+/// Fail the run when affected detection found a task relying on an input
+/// read from the root of the checkout: it would otherwise be reported
+/// unaffected and skipped silently.
 ///
 /// Call it once every project of the run has been planned. What it has
-/// said is forgotten, so a later call says only what was found since.
-pub fn note_root_namesakes() {
-    let namesakes = std::mem::take(
-        &mut *root_namesakes()
+/// reported is forgotten.
+///
+/// # Errors
+///
+/// Returns each such input, and how to name the file it relied on.
+pub fn fail_on_root_relative_inputs() -> Result<(), String> {
+    let failures = std::mem::take(
+        &mut *root_relative_failures()
             .lock()
             .unwrap_or_else(PoisonError::into_inner),
     );
-    if namesakes.is_empty() {
-        return;
+    if failures.is_empty() {
+        return Ok(());
     }
-    let tasks: Vec<String> = namesakes
-        .into_iter()
-        .map(|((project, task_name), patterns)| {
-            let inputs: Vec<String> = patterns
-                .iter()
-                .map(|pattern| format!("'{pattern}'"))
-                .collect();
-            let paths: Vec<String> = patterns
-                .iter()
-                .map(|pattern| format!("\"{pattern}\""))
-                .collect();
-            format!(
-                "task '{task_name}' of project {project}, input {}: to read the root file, add \
-                 `schema.#ModuleFiles & {{paths: [{}]}}`",
-                inputs.join(", "),
-                paths.join(", ")
-            )
-        })
-        .collect();
-    cuenv_events::emit_stderr!(format!(
-        "note: these tasks were also selected because a file at the root of the repository \
-         matches one of their inputs when read from there. Inputs are relative to their \
-         project, and these extra matches stop once the root-relative reading goes away \
-         (#611):\n  {}",
-        tasks.join("\n  ")
-    ));
+    Err(failures.into_iter().collect::<Vec<_>>().join("\n"))
 }
 
 /// The inputs of a node that matched a changed file only when read from
@@ -1082,14 +972,10 @@ struct RootRelative<'node> {
     /// Those that select no file under their own project: the root-relative
     /// reading is what the user relies on.
     relied_on: Vec<&'node str>,
-    /// Those that do select files under their project: the root file is a
-    /// namesake.
-    namesakes: Vec<&'node str>,
 }
 
 /// The inputs of `node` that matched a changed file only when read from the
-/// root of the checkout, told apart by whether they select files under
-/// their own project.
+/// root of the checkout and select no file under their own project.
 fn root_relative_inputs<'node>(
     changed: ChangedInputs<'_>,
     checkout_root: &Path,
@@ -1111,12 +997,13 @@ fn root_relative_inputs<'node>(
         })
         .collect();
     // A pattern the walker cannot read selects nothing under the project.
-    let (namesakes, relied_on) = matched_from_root
-        .into_iter()
-        .partition(|pattern| walker.selects_any(pattern).unwrap_or(false));
+    // One that selects files there matched a namesake at the root, which is
+    // no input of it.
     RootRelative {
-        relied_on,
-        namesakes,
+        relied_on: matched_from_root
+            .into_iter()
+            .filter(|pattern| !walker.selects_any(pattern).unwrap_or(false))
+            .collect(),
     }
 }
 

@@ -1,29 +1,41 @@
-//! Checks of a project's evaluated value that belong to single nodes.
+//! Checks of a project's evaluated value that belong to single nodes, and
+//! the names its references bind to.
 //!
 //! The schema stamps every task, group, service and image with the project
-//! it belongs to (`cuenvRef: {kind, project, name}`), and every output
-//! reference with its task's project (`cuenvProject`). A value that came
-//! from another project through an import therefore says so. Until
-//! cross-project task references are bound through imports, such a value
-//! is never named by its bare name, which would bind a same-named node of
-//! this project. It becomes a problem of the node that holds it instead:
+//! it belongs to (`cuenvRef: {kind, project, name}`), every output
+//! reference with its task's project (`cuenvProject`), and every task's
+//! `outputFiles` with its project and name. A value that came from another
+//! project through an import therefore says so, and a stamp that names a
+//! project is authoritative:
 //!
-//! - a `dependsOn` entry of another project (nested sequence lists
-//!   inspected, never an embedded dependency's own `dependsOn`);
+//! - a task's or group's `dependsOn` entry of this project is named by its
+//!   stamp, and one of another project `#project:name` (a whole sequence of
+//!   another project, a step of one and another project's image or service
+//!   cannot be named and are problems of the node instead); a stamp that
+//!   names no project (a task outside every project) is named by reference
+//!   metadata, and is a problem when that metadata names nothing;
+//! - a task's `outputFiles` among another task's inputs reads as the
+//!   task-output input `{task: "<name>"}`, or `{task: "#project:name"}`;
 //! - another project's task, group, service or image in an output
 //!   reference, a CI pipeline's `tasks`, a matrix task's `task`, a
-//!   service's `watch.rebuild`, or a service's or image's `dependsOn`.
+//!   service's `watch.rebuild`, or a service's or image's `dependsOn` is not
+//!   supported across projects yet.
 //!
-//! The entry is removed and the problem recorded against the node (see
-//! [`NodeDiagnostics`]), which fails only what reaches that node.
+//! An entry that cannot be read is removed and the problem recorded against
+//! the node (see [`NodeDiagnostics`]), which fails only what reaches that
+//! node.
 //!
 //! The evaluation is lenient: a value `cue export` rejects can still
-//! arrive. A file reference without paths (`inputs: [content.#Files]`), a
-//! `null` input and the like would fail the whole project when it is
-//! deserialized; they are removed and recorded against their task here, so
-//! the rest of the project loads.
+//! arrive, and so can the shapes of an older pinned schema. A string input
+//! that leaves the project (`../content/**`), the removed
+//! `{project, task, map}` reference and `#project:task:path` shorthand, a
+//! file reference without paths (`inputs: [content.#Files]`), a `null`
+//! input and the like would fail the whole project when it is deserialized,
+//! or worse be read as something else; they are removed and recorded
+//! against their task here, so the rest of the project loads.
 
 use std::collections::BTreeMap;
+use std::path::{Component, Path, PathBuf};
 
 use serde_json::{Map, Value};
 
@@ -98,24 +110,54 @@ pub(super) fn check_identities(value: &mut Value) -> NodeDiagnostics {
     checks.diagnostics
 }
 
-/// Remove what [`check_identities`] marked, check every task's inputs, and
-/// write the problems found by both into the value, where the project reads
-/// them. Runs once tasks carry their source locations.
-pub(super) fn check_inputs(value: &mut Value, mut diagnostics: NodeDiagnostics) {
+/// Where the instance being checked lies, and the projects around it: what
+/// a message about an input that leaves the project points at.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct InstancePlace<'place> {
+    /// The instance's directory relative to the module root (`.` for the
+    /// root).
+    pub(super) path: &'place Path,
+    /// The declaring directory of every project name the evaluation knows,
+    /// relative to the module root.
+    pub(super) projects: &'place BTreeMap<String, PathBuf>,
+}
+
+/// Remove what [`check_identities`] marked, check every task's inputs and
+/// that every dependency is named, and write the problems found into the
+/// value, where the project reads them. Runs once tasks carry their source
+/// locations and reference metadata has named what it can.
+pub(super) fn check_inputs(
+    value: &mut Value,
+    mut diagnostics: NodeDiagnostics,
+    place: InstancePlace<'_>,
+) {
     remove_marked(value);
     let Some(root) = value.as_object_mut() else {
         return;
     };
-    let is_project = root
+    let Some(owner) = root
         .get("name")
         .and_then(Value::as_str)
-        .is_some_and(|name| !name.is_empty());
-    if !is_project {
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+    else {
         return;
-    }
+    };
+    let checks = InputChecks {
+        owner: &owner,
+        place,
+    };
     if let Some(Value::Object(tasks)) = root.get_mut("tasks") {
         for (name, node) in tasks.iter_mut() {
-            task_inputs(name, node, &mut diagnostics.tasks);
+            checks.task_node(name, node, &mut diagnostics.tasks);
+        }
+    }
+    if let Some(Value::Object(images)) = root.get_mut("images") {
+        for (name, image) in images.iter_mut() {
+            if let Value::Object(object) = image {
+                let problems = worded("image", name, checks.inputs(object));
+                record(&mut diagnostics.images, name, problems);
+            }
         }
     }
     if !diagnostics.is_empty()
@@ -143,32 +185,293 @@ fn remove_marked(value: &mut Value) {
     }
 }
 
-/// Check the inputs of the task, group or sequence called `name` and of
-/// everything below it.
-fn task_inputs(name: &str, node: &mut Value, into: &mut BTreeMap<String, Vec<String>>) {
-    match node {
-        Value::Array(steps) => {
-            for (index, step) in steps.iter_mut().enumerate() {
-                task_inputs(&format!("{name}[{index}]"), step, into);
-            }
-        }
-        Value::Object(object) if is_group(object) => {
-            for (child, child_node) in object.iter_mut() {
-                if !GROUP_FIELDS.contains(&child.as_str()) {
-                    task_inputs(&format!("{name}.{child}"), child_node, into);
+/// The checks of inputs and dependency names, once names are assigned.
+struct InputChecks<'checks> {
+    /// The name of the project being checked.
+    owner: &'checks str,
+    place: InstancePlace<'checks>,
+}
+
+impl InputChecks<'_> {
+    /// Check the inputs and dependencies of the task, group or sequence
+    /// called `name` and of everything below it.
+    fn task_node(&self, name: &str, node: &mut Value, into: &mut BTreeMap<String, Vec<String>>) {
+        match node {
+            Value::Array(steps) => {
+                for (index, step) in steps.iter_mut().enumerate() {
+                    self.task_node(&format!("{name}[{index}]"), step, into);
                 }
             }
+            Value::Object(object) if is_group(object) => {
+                let problems: Vec<String> = unnamed_dependencies(object)
+                    .iter()
+                    .map(|problem| for_task(name, None, problem))
+                    .collect();
+                record(into, name, problems);
+                for (child, child_node) in object.iter_mut() {
+                    if !GROUP_FIELDS.contains(&child.as_str()) {
+                        self.task_node(&format!("{name}.{child}"), child_node, into);
+                    }
+                }
+            }
+            Value::Object(object) => {
+                let source = source_of(object);
+                let mut problems = unnamed_dependencies(object);
+                problems.extend(self.inputs(object));
+                let worded: Vec<String> = problems
+                    .iter()
+                    .map(|problem| for_task(name, source.as_ref(), problem))
+                    .collect();
+                record(into, name, worded);
+            }
+            Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
         }
-        Value::Object(object) => {
-            let source = source_of(object);
-            let problems: Vec<String> = unreadable_inputs(object)
-                .iter()
-                .map(|problem| for_task(name, source.as_ref(), problem))
-                .collect();
-            record(into, name, problems);
-        }
-        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
     }
+
+    /// Read every input of a task or image the way the rest of cuenv reads
+    /// inputs: a task's `outputFiles` becomes a task-output input, and an
+    /// input that cannot be read is removed, saying why.
+    fn inputs(&self, object: &mut Map<String, Value>) -> Vec<String> {
+        let Some(inputs) = object.get_mut("inputs") else {
+            return Vec::new();
+        };
+        let Value::Array(entries) = inputs else {
+            let problem = "`inputs` is not a list".to_string();
+            object.remove("inputs");
+            return vec![problem];
+        };
+        let mut problems = Vec::new();
+        let mut kept = Vec::with_capacity(entries.len());
+        for (index, entry) in std::mem::take(entries).into_iter().enumerate() {
+            match self.input(entry) {
+                Ok(entry) => kept.push(entry),
+                Err(problem) => problems.push(format!("inputs[{index}] {problem}")),
+            }
+        }
+        *entries = kept;
+        problems
+    }
+
+    /// One input as the rest of cuenv reads it, or why it cannot be read.
+    fn input(&self, entry: Value) -> Result<Value, String> {
+        match &entry {
+            Value::Null => Err("has no value".to_string()),
+            Value::Object(object) if object.contains_key("cuenvFiles") => {
+                file_reference_problem(object).map_or(Ok(entry), Err)
+            }
+            Value::Object(object) if object.contains_key("cuenvOutputFilesRef") => {
+                self.output_files(object)
+            }
+            Value::Object(object) if object.contains_key("project") => {
+                Err(removed_project_reference(object))
+            }
+            Value::String(path) => {
+                if let Some(problem) = removed_shorthand(path) {
+                    return Err(problem);
+                }
+                if has_parent_segment(path) {
+                    return Err(self.leaves_project(path));
+                }
+                Ok(entry)
+            }
+            Value::Object(_) | Value::Bool(_) | Value::Number(_) | Value::Array(_) => Ok(entry),
+        }
+    }
+
+    /// A task's `outputFiles` as the task-output input of the task it
+    /// stamps (R5): by its name in this project, `#project:name` in
+    /// another.
+    fn output_files(&self, object: &Map<String, Value>) -> Result<Value, String> {
+        let text = |field: &str| {
+            object
+                .get(field)
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+        };
+        let (project, task) = (text("cuenvProject"), text("cuenvTask"));
+        if project.is_empty() {
+            return Err(
+                "reads the `outputFiles` of a task outside every project: tasks \
+                        outside a project cannot be referenced; move it into a project"
+                    .to_string(),
+            );
+        }
+        if task.is_empty() {
+            return Err(format!(
+                "reads the `outputFiles` of a task of project '{project}' that has no name \
+                 here (a step of a sequence): read the `outputFiles` of a named task"
+            ));
+        }
+        let name = if project == self.owner {
+            task.to_string()
+        } else {
+            format!("#{project}:{task}")
+        };
+        Ok(serde_json::json!({ "task": name }))
+    }
+
+    /// What to do about a string input that leaves the project (R0): how to
+    /// name its files from the project that holds them, or from the module
+    /// root.
+    fn leaves_project(&self, input: &str) -> String {
+        let rewrite = match module_relative(self.place.path, input) {
+            Some(path) => self.files_spelling(&path),
+            None => "it leaves the CUE module too, and nothing above the module root can be \
+                     named"
+                .to_string(),
+        };
+        format!(
+            "`{input}` leaves the project directory, and `..` inputs are no longer read: \
+             {rewrite}. Built files of another project are read through \
+             `<pkg>.tasks.<name>.outputFiles`. On a schema that does not offer these \
+             references yet, run `cue mod get github.com/cuenv/cuenv@latest` first"
+        )
+    }
+
+    /// How a file at `path` (relative to the module root) is named from this
+    /// instance: through the project whose directory holds it, else from the
+    /// module root.
+    fn files_spelling(&self, path: &Path) -> String {
+        // A project cannot import a project of a directory above it, or
+        // itself: that would be an import cycle.
+        let holder = self
+            .place
+            .projects
+            .iter()
+            .filter(|(_, directory)| !directory.as_os_str().is_empty())
+            .filter(|(_, directory)| path.starts_with(directory))
+            .filter(|(_, directory)| !self.place.path.starts_with(directory))
+            .max_by_key(|(name, directory)| (directory.components().count(), *name));
+        let module_form = format!(
+            "`schema.#ModuleFiles & {{paths: [\"{}\"]}}`",
+            forward_slashes(path)
+        );
+        match holder {
+            Some((name, directory)) => {
+                let rest = path
+                    .strip_prefix(directory)
+                    .map(forward_slashes)
+                    .unwrap_or_default();
+                let rest = if rest.is_empty() {
+                    "**".to_string()
+                } else {
+                    rest
+                };
+                format!(
+                    "import project '{name}' from `{}` and write `<pkg>.#Files & {{paths: \
+                     [\"{rest}\"]}}`, or read it from the module root with {module_form}",
+                    forward_slashes(directory)
+                )
+            }
+            None => format!("read it from the module root with {module_form}"),
+        }
+    }
+}
+
+/// Remove the dependencies of a task or group that no rule could name, and
+/// say why each one was removed.
+fn unnamed_dependencies(object: &mut Map<String, Value>) -> Vec<String> {
+    let Some(Value::Array(entries)) = object.get_mut("dependsOn") else {
+        return Vec::new();
+    };
+    let mut problems = Vec::new();
+    let mut index = 0;
+    entries.retain(|entry| {
+        let named = match entry {
+            Value::Object(fields) => fields
+                .get("_name")
+                .and_then(Value::as_str)
+                .is_some_and(|name| !name.is_empty()),
+            Value::String(name) => !name.is_empty(),
+            Value::Null | Value::Bool(_) | Value::Number(_) | Value::Array(_) => false,
+        };
+        if !named {
+            let stamped = entry.get("cuenvRef").is_some();
+            problems.push(if stamped {
+                format!(
+                    "dependsOn[{index}] is a task outside every project: tasks outside a \
+                     project cannot be referenced; move it into a project"
+                )
+            } else {
+                format!("dependsOn[{index}] does not name a task of this project")
+            });
+        }
+        index += 1;
+        named
+    });
+    problems
+}
+
+/// Whether a string input has a `..` segment.
+fn has_parent_segment(path: &str) -> bool {
+    path.trim()
+        .split(['/', '\\'])
+        .any(|segment| segment == "..")
+}
+
+/// `input`, written in the project at `project_path`, as a path from the
+/// module root; `None` when it leaves the module or is absolute.
+fn module_relative(project_path: &Path, input: &str) -> Option<PathBuf> {
+    let input = input.trim();
+    if input.starts_with(['/', '\\']) {
+        return None;
+    }
+    let mut resolved = PathBuf::new();
+    for component in project_path.join(input).components() {
+        match component {
+            Component::Normal(part) => resolved.push(part),
+            Component::ParentDir => {
+                if !resolved.pop() {
+                    return None;
+                }
+            }
+            Component::CurDir => {}
+            Component::RootDir | Component::Prefix(_) => return None,
+        }
+    }
+    Some(resolved)
+}
+
+fn forward_slashes(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
+/// What replaces a `{project, task, map}` input, which cuenv no longer
+/// reads.
+fn removed_project_reference(object: &Map<String, Value>) -> String {
+    let text = |field: &str| {
+        object
+            .get(field)
+            .and_then(Value::as_str)
+            .unwrap_or("<task>")
+    };
+    format!(
+        "is a `{{project: \"{}\", task: \"{}\", map: [...]}}` reference, which cuenv no \
+         longer reads: import the project and read `<pkg>.tasks.{}.outputFiles` (it also \
+         depends on that task), or `<pkg>.#Files & {{paths: [...]}}` for files no task builds. \
+         Run `cue mod get github.com/cuenv/cuenv@latest` first if your schema does not offer \
+         them",
+        text("project"),
+        text("task"),
+        text("task")
+    )
+}
+
+/// What replaces the `#project:task:path` and `#project:task` input
+/// shorthands, which cuenv no longer reads; `None` for any other string.
+fn removed_shorthand(input: &str) -> Option<String> {
+    let reference = input.strip_prefix('#')?;
+    let (project, rest) = reference.split_once(':')?;
+    if project.is_empty() || project.contains(['/', '\\']) || rest.is_empty() {
+        return None;
+    }
+    let task = rest.split(':').next().unwrap_or(rest);
+    Some(format!(
+        "is the `{input}` shorthand, which cuenv no longer reads: import project '{project}' \
+         and read `<pkg>.tasks.{task}.outputFiles` (it also depends on that task), or \
+         `<pkg>.#Files & {{paths: [...]}}` for files no task builds. Run `cue mod get \
+         github.com/cuenv/cuenv@latest` first if your schema does not offer them"
+    ))
 }
 
 fn marker() -> Value {
@@ -280,22 +583,67 @@ impl NodeChecks<'_> {
         }
     }
 
-    /// Remove the entries of a task's or group's `dependsOn` that belong to
-    /// another project, and say why (the interim rule).
+    /// Name the entries of a task's or group's `dependsOn` by their stamps:
+    /// a node of this project by its name (R1), a task or group of another
+    /// project as `#project:name` (R2). What a stamp cannot name is removed,
+    /// saying why. An entry whose stamp names no project, or that has no
+    /// stamp (an older pinned schema), is left to reference metadata.
     fn task_dependencies(&self, object: &mut Map<String, Value>) -> Vec<String> {
-        self.foreign_entries(object, "dependsOn")
-            .into_iter()
-            .map(|(index, identity)| {
+        let Some(Value::Array(entries)) = object.get_mut("dependsOn") else {
+            return Vec::new();
+        };
+        let mut problems = Vec::new();
+        for (index, entry) in entries.iter_mut().enumerate() {
+            if let Some(problem) = self.dependency(index, entry) {
+                problems.push(problem);
+                *entry = marker();
+            }
+        }
+        problems
+    }
+
+    /// Name one `dependsOn` entry by its stamp, or say why it cannot be a
+    /// dependency.
+    fn dependency(&self, index: usize, entry: &mut Value) -> Option<String> {
+        if entry.is_array() {
+            // A whole sequence has no stamp of its own and no name another
+            // project could know it by.
+            return self.foreign(entry).map(|identity| {
                 format!(
-                    "dependsOn[{index}] is {identity}: tasks of another project cannot be \
-                     depended on through an import yet, and are never bound by name to a task of \
-                     this project. Cross-project task references arrive in a later cuenv \
-                     release; to read that project's files, use `{}.#Files & {{paths: \
-                     [...]}}`",
+                    "dependsOn[{index}] is a sequence holding {identity}: depend on a named task \
+                     or group of project '{}'",
                     identity.project
                 )
-            })
-            .collect()
+            });
+        }
+        let identity = stamped(entry)?;
+        let local = identity.project == self.owner;
+        let name = if local {
+            if identity.name.is_empty() {
+                // A step of a sequence of this project: the bridge names it
+                // through reference metadata.
+                return None;
+            }
+            identity.name.clone()
+        } else {
+            if !matches!(identity.kind.as_str(), "task" | "group") {
+                return Some(format!(
+                    "dependsOn[{index}] is {identity}: not supported across projects yet"
+                ));
+            }
+            if identity.name.is_empty() {
+                return Some(format!(
+                    "dependsOn[{index}] is {identity} with no name here (a step of a \
+                     sequence): depend on a named task or group of project '{}'",
+                    identity.project
+                ));
+            }
+            format!("#{}:{}", identity.project, identity.name)
+        };
+        if let Value::Object(fields) = entry {
+            fields.insert("_name".to_string(), Value::String(name));
+        }
+        None
     }
 
     /// Mark the entries of the list `field` of `object` that belong to
@@ -452,45 +800,6 @@ fn source_of(object: &Map<String, Value>) -> Option<SourceLocation> {
         .and_then(|source| serde_json::from_value(source.clone()).ok())
 }
 
-/// Remove the inputs of a task that cannot be read, saying why each one
-/// was removed.
-fn unreadable_inputs(object: &mut Map<String, Value>) -> Vec<String> {
-    let Some(inputs) = object.get_mut("inputs") else {
-        return Vec::new();
-    };
-    let Value::Array(entries) = inputs else {
-        let problem = "`inputs` is not a list".to_string();
-        object.remove("inputs");
-        return vec![problem];
-    };
-    let mut problems = Vec::new();
-    let mut index = 0;
-    entries.retain(|entry| {
-        let problem = input_problem(entry);
-        if let Some(problem) = &problem {
-            problems.push(format!("inputs[{index}] {problem}"));
-        }
-        index += 1;
-        problem.is_none()
-    });
-    problems
-}
-
-/// Why one input cannot be read, if it cannot.
-fn input_problem(entry: &Value) -> Option<String> {
-    match entry {
-        Value::Null => Some("has no value".to_string()),
-        Value::Object(object) if object.contains_key("cuenvFiles") => {
-            file_reference_problem(object)
-        }
-        Value::Object(_)
-        | Value::Bool(_)
-        | Value::Number(_)
-        | Value::String(_)
-        | Value::Array(_) => None,
-    }
-}
-
 /// Why a file reference as exported cannot be read, if it cannot.
 fn file_reference_problem(object: &Map<String, Value>) -> Option<String> {
     let kind = object.get("cuenvFiles").and_then(Value::as_str);
@@ -544,9 +853,26 @@ mod tests {
         })
     }
 
+    /// The projects of the module the checked instance (`app`) lies in.
+    fn module_projects() -> BTreeMap<String, PathBuf> {
+        BTreeMap::from([
+            ("app".to_string(), PathBuf::from("app")),
+            ("content".to_string(), PathBuf::from("content")),
+            ("site".to_string(), PathBuf::new()),
+        ])
+    }
+
     fn check_nodes(value: &mut Value) {
         let diagnostics = check_identities(value);
-        check_inputs(value, diagnostics);
+        let projects = module_projects();
+        check_inputs(
+            value,
+            diagnostics,
+            InstancePlace {
+                path: Path::new("app"),
+                projects: &projects,
+            },
+        );
     }
 
     fn checked(mut value: Value) -> Project {
@@ -555,11 +881,12 @@ mod tests {
     }
 
     #[test]
-    fn a_dependency_on_another_projects_task_is_never_bound_by_name() {
+    fn a_dependency_is_named_by_its_stamp() {
         let mut consumer = task("app", "deploy");
         consumer["dependsOn"] = json!([
-            {"_name": "build", "cuenvRef": {"kind": "task", "project": "content", "name": "build"}, "command": "true"},
-            {"_name": "lint", "cuenvRef": {"kind": "task", "project": "app", "name": "lint"}, "command": "true"},
+            task("content", "build"),
+            task("app", "lint"),
+            task("content", "checks.unit"),
         ]);
         let project = checked(json!({
             "name": "app",
@@ -568,32 +895,178 @@ mod tests {
 
         let deploy = project.tasks["deploy"].as_task().expect("a task");
         let names: Vec<&str> = deploy.dependency_names().collect();
-        assert_eq!(names, ["lint"], "the local build is not bound");
-        let problems = project.diagnostics.task("deploy");
-        assert_eq!(problems.len(), 1);
-        assert!(
-            problems[0].contains("dependsOn[0] is task 'build' of project 'content'"),
-            "{problems:?}"
+        assert_eq!(
+            names,
+            ["#content:build", "lint", "#content:checks.unit"],
+            "another project's build is never this project's build"
         );
-        assert!(problems[0].contains("content.#Files"), "{problems:?}");
-        assert!(project.diagnostics.task("build").is_empty());
+        assert!(project.diagnostics.task("deploy").is_empty());
     }
 
     #[test]
-    fn a_dependency_on_a_sequence_is_inspected_member_by_member() {
+    fn a_stamp_names_a_dependency_before_reference_metadata() {
+        // Reference metadata names what the bridge saw, which a `let` or a
+        // re-export can spell any way; the stamp says what the value is.
+        let mut value = json!({
+            "name": "app",
+            "tasks": {"deploy": {"command": "true", "dependsOn": [task("content", "build")]}},
+        });
+        let diagnostics = check_identities(&mut value);
+        assert!(diagnostics.is_empty());
+        assert_eq!(
+            value["tasks"]["deploy"]["dependsOn"][0]["_name"],
+            json!("#content:build")
+        );
+    }
+
+    #[test]
+    fn what_another_project_cannot_be_named_by_is_a_problem_of_the_node() {
         let mut group = json!({
             "type": "group",
             "cuenvRef": {"kind": "group", "project": "app", "name": "checks"},
             "dependsOn": [[task("app", "a"), [task("content", "b")]]],
             "unit": task("app", "checks.unit"),
         });
-        group["unit"]["dependsOn"] = json!([task("content", "build")]);
+        group["unit"]["dependsOn"] = json!([
+            task("content", ""),
+            {"cuenvRef": {"kind": "image", "project": "content", "name": "base"}, "type": "image"},
+            task("content", "build"),
+        ]);
         let project = checked(json!({"name": "app", "tasks": {"checks": group}}));
 
-        assert_eq!(project.diagnostics.task("checks").len(), 1);
-        assert_eq!(project.diagnostics.task("checks.unit").len(), 1);
+        let problems = project.diagnostics.task("checks");
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(
+            problems[0].contains("is a sequence holding task 'b' of project 'content'"),
+            "{problems:?}"
+        );
+        assert!(problems[0].contains("depend on a named task or group of project 'content'"));
+        let unit = project.diagnostics.task("checks.unit");
+        assert_eq!(unit.len(), 2, "{unit:?}");
+        assert!(
+            unit[0].contains("with no name here (a step of a sequence)"),
+            "{unit:?}"
+        );
+        assert!(
+            unit[1].contains("image 'base' of project 'content': not supported across projects"),
+            "{unit:?}"
+        );
         let checks = project.tasks["checks"].as_group().expect("a group");
         assert!(checks.depends_on.is_empty());
+        let unit = checks.children["unit"].as_task().expect("a task");
+        assert_eq!(
+            unit.dependency_names().collect::<Vec<_>>(),
+            ["#content:build"]
+        );
+    }
+
+    #[test]
+    fn a_task_outside_every_project_is_named_only_by_reference_metadata() {
+        // `#Svc.tasks.migrate` names a local task through reference metadata
+        // (R3); with no metadata it names nothing, and says so.
+        let mut consumer = task("app", "deploy");
+        consumer["dependsOn"] = json!([
+            {"_name": "migrate", "cuenvRef": {"kind": "task", "project": "", "name": ""}, "command": "true"},
+            {"cuenvRef": {"kind": "task", "project": "", "name": ""}, "command": "true"},
+        ]);
+        let project = checked(json!({
+            "name": "app",
+            "tasks": {"migrate": task("app", "migrate"), "deploy": consumer},
+        }));
+
+        let deploy = project.tasks["deploy"].as_task().expect("a task");
+        assert_eq!(deploy.dependency_names().collect::<Vec<_>>(), ["migrate"]);
+        let problems = project.diagnostics.task("deploy");
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(
+            problems[0].contains("dependsOn[1] is a task outside every project"),
+            "{problems:?}"
+        );
+    }
+
+    #[test]
+    fn output_files_read_as_the_task_output_of_the_task_they_stamp() {
+        let mut consumer = task("app", "deploy");
+        consumer["inputs"] = json!([
+            {"cuenvOutputFilesRef": true, "cuenvProject": "content", "cuenvTask": "build"},
+            {"cuenvOutputFilesRef": true, "cuenvProject": "app", "cuenvTask": "docs.build"},
+            {"cuenvOutputFilesRef": true, "cuenvProject": "content", "cuenvTask": ""},
+            {"cuenvOutputFilesRef": true, "cuenvProject": "", "cuenvTask": "migrate"},
+        ]);
+        let project = checked(json!({"name": "app", "tasks": {"deploy": consumer}}));
+
+        let deploy = project.tasks["deploy"].as_task().expect("a task");
+        let outputs: Vec<&str> = deploy.iter_task_output_names().collect();
+        assert_eq!(outputs, ["#content:build", "docs.build"]);
+        let problems = project.diagnostics.task("deploy");
+        assert_eq!(problems.len(), 2, "{problems:?}");
+        assert!(problems[0].contains("inputs[2] reads the `outputFiles` of a task of project"));
+        assert!(problems[1].contains("inputs[3] reads the `outputFiles` of a task outside"));
+    }
+
+    #[test]
+    fn an_input_that_leaves_the_project_names_its_rewrite() {
+        let mut consumer = task("app", "build");
+        consumer["_source"] = json!({"file": "app/env.cue", "line": 4, "column": 2});
+        consumer["inputs"] = json!([
+            "src/**",
+            "../content/articles/**",
+            "../bun.lock",
+            "../../outside.txt",
+            "a..b/c",
+        ]);
+        let project = checked(json!({"name": "app", "tasks": {"build": consumer}}));
+
+        let problems = project.diagnostics.task("build");
+        assert_eq!(problems.len(), 3, "{problems:?}");
+        assert!(
+            problems[0]
+                .starts_with("task 'build' (app/env.cue:4): inputs[1] `../content/articles/**`"),
+            "{problems:?}"
+        );
+        assert!(
+            problems[0].contains("import project 'content' from `content` and write `<pkg>.#Files & {paths: [\"articles/**\"]}`"),
+            "{problems:?}"
+        );
+        assert!(
+            problems[0].contains("`schema.#ModuleFiles & {paths: [\"content/articles/**\"]}`"),
+            "{problems:?}"
+        );
+        // The root project is above `app`: importing it would be a cycle.
+        assert!(
+            problems[1].contains(
+                "read it from the module root with `schema.#ModuleFiles & {paths: [\"bun.lock\"]}`"
+            ),
+            "{problems:?}"
+        );
+        assert!(problems[2].contains("nothing above the module root can be named"));
+        let build = project.tasks["build"].as_task().expect("a task");
+        assert_eq!(build.inputs.len(), 2, "`src/**` and `a..b/c` remain");
+    }
+
+    #[test]
+    fn the_removed_cross_project_forms_fail_their_task() {
+        let mut consumer = task("app", "build");
+        consumer["inputs"] = json!([
+            {"project": "content", "task": "build", "map": [{"from": "dist", "to": "dist"}]},
+            "#content:build:dist/app.js",
+            "#content:build",
+            "#not-a-reference",
+        ]);
+        let project = checked(json!({"name": "app", "tasks": {"build": consumer}}));
+
+        let problems = project.diagnostics.task("build");
+        assert_eq!(problems.len(), 3, "{problems:?}");
+        assert!(problems[0].contains("inputs[0] is a `{project: \"content\", task: \"build\""));
+        assert!(problems[0].contains("`<pkg>.tasks.build.outputFiles`"));
+        assert!(problems[1].contains("inputs[1] is the `#content:build:dist/app.js` shorthand"));
+        assert!(problems[2].contains("inputs[2] is the `#content:build` shorthand"));
+        let build = project.tasks["build"].as_task().expect("a task");
+        assert_eq!(
+            build.inputs.len(),
+            1,
+            "a path that only starts with `#` remains"
+        );
     }
 
     #[test]

@@ -135,8 +135,8 @@ fn test_multiple_hook_steps_in_order() {
     // Test that multiple hook steps (TaskRef, Match, Task) chain correctly
     let mut graph = TaskGraph::new();
 
-    // Step 0: TaskRef
-    let step0 = test_utils::create_task_ref("#projen-generator:types", vec![]);
+    // Step 0: a task another project runs
+    let step0 = test_utils::create_task("projen-generator.types", vec![], vec![]);
 
     // Step 1: Match (expands to 2 tasks in parallel)
     let step1_a = test_utils::create_task(

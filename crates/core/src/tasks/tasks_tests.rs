@@ -1,7 +1,7 @@
 use super::{
-    FilesAnchor, FilesReference, Input, InputPattern, Mapping, ParamDef, ParamType,
-    ProjectReference, ResolvedArgs, ScriptShell, ShellOptionToggle, ShellOptions, Task,
-    TaskCacheMode, TaskGroup, TaskNode, TaskParams, Tasks,
+    FilesAnchor, FilesReference, Input, InputPattern, ParamDef, ParamType, ResolvedArgs,
+    ScriptShell, ShellOptionToggle, ShellOptions, Task, TaskCacheMode, TaskGroup, TaskNode,
+    TaskParams, Tasks,
 };
 use std::collections::HashMap;
 use std::path::Path;
@@ -371,23 +371,6 @@ fn test_input_deserialization_variants() {
     let path_input: Input = serde_json::from_str(path_json).unwrap();
     assert_eq!(path_input, Input::Path("src/**/*.rs".to_string()));
 
-    let project_json = r#"{
-        "project": "../projB",
-        "task": "build",
-        "map": [{"from": "dist/app.txt", "to": "vendor/app.txt"}]
-    }"#;
-    let project_input: Input = serde_json::from_str(project_json).unwrap();
-    match project_input {
-        Input::Project(reference) => {
-            assert_eq!(reference.project, "../projB");
-            assert_eq!(reference.task, "build");
-            assert_eq!(reference.map.len(), 1);
-            assert_eq!(reference.map[0].from, "dist/app.txt");
-            assert_eq!(reference.map[0].to, "vendor/app.txt");
-        }
-        other => panic!("Expected project reference, got {:?}", other),
-    }
-
     // Test TaskOutput variant (same-project task reference)
     let task_json = r#"{"task": "build.deps"}"#;
     let task_input: Input = serde_json::from_str(task_json).unwrap();
@@ -398,46 +381,42 @@ fn test_input_deserialization_variants() {
         }
         other => panic!("Expected task output reference, got {:?}", other),
     }
+
+    // A task output of another project, as `outputFiles` is read.
+    let external: Input = serde_json::from_str(r##"{"task": "#content:build"}"##).unwrap();
+    assert_eq!(external.task_output_name(), Some("#content:build"));
 }
 
 #[test]
-fn test_task_input_helpers_collect() {
-    use std::collections::HashSet;
-    use std::path::Path;
+fn the_removed_project_reference_is_never_read_as_a_task_output() {
+    // `{project, task, map}` was removed. Read as a task output it would
+    // name a same-named task of this project.
+    let removed = serde_json::from_str::<Input>(
+        r#"{"project": "../projB", "task": "build", "map": [{"from": "a", "to": "b"}]}"#,
+    );
+    assert!(removed.is_err(), "{removed:?}");
+}
+
+#[test]
+fn a_task_reading_only_task_outputs_is_affected_through_its_producers() {
+    use crate::AffectedBy;
 
     let task = Task {
-        inputs: vec![
-            Input::Path("src".into()),
-            Input::Project(ProjectReference {
-                project: "../projB".into(),
-                task: "build".into(),
-                map: vec![Mapping {
-                    from: "dist/app.txt".into(),
-                    to: "vendor/app.txt".into(),
-                }],
-            }),
-        ],
+        inputs: vec![Input::Task(super::TaskOutput {
+            task: "#content:build".into(),
+            map: None,
+        })],
         ..Default::default()
     };
+    let anchors = crate::NoAnchors;
+    let frame = crate::InputFrame {
+        project_root: Path::new("app"),
+        anchors: &anchors,
+    };
 
-    let path_inputs: Vec<InputPattern<'_>> = task.input_patterns().collect();
-    assert_eq!(path_inputs, vec![InputPattern::Project("src")]);
-
-    let project_refs: Vec<&ProjectReference> = task.iter_project_refs().collect();
-    assert_eq!(project_refs.len(), 1);
-    assert_eq!(project_refs[0].project, "../projB");
-
-    let prefix = Path::new("prefix");
-    let collected = task.collect_all_inputs_with_prefix(Some(prefix));
-    let collected: HashSet<_> = collected
-        .into_iter()
-        .map(std::path::PathBuf::from)
-        .collect();
-    let expected: HashSet<_> = ["src", "vendor/app.txt"]
-        .into_iter()
-        .map(|p| prefix.join(p))
-        .collect();
-    assert_eq!(collected, expected);
+    assert!(!task.is_affected_by(&[std::path::PathBuf::from("app/README.md")], frame));
+    let no_inputs = Task::default();
+    assert!(no_inputs.is_affected_by(&[std::path::PathBuf::from("app/README.md")], frame));
 }
 
 #[test]

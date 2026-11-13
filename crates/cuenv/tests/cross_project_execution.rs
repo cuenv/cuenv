@@ -36,9 +36,12 @@ tasks: articles: {
 }
 "#;
 
-/// `app`: reads the article `content` rendered, at the path it mapped it to.
+/// `app`: reads the article `content` rendered, through `content`'s import
+/// (`content.tasks.articles.outputFiles`, spelled out: the fixtures have no
+/// schema), where `content` wrote it.
 /// `APP_SECRET` is a secret of `app`, and of no other project.
 const APP: &str = r#"package cuenv
+import content "test.example/monorepo/content:cuenv"
 name: "app"
 env: {
 	APP_SECRET: {resolver: "exec", command: "echo", args: ["app-only"]}
@@ -48,8 +51,8 @@ env: {
 tasks: {
 	build: {
 		command: "sh"
-		args: ["-c", "cp vendor/one.md seen.md && printf '%s|%s|%s' \"${APP_SECRET:-unset}\" \"${APP_MODE:-unset}\" \"${CONTENT_VALUE:-unset}\" > env.txt"]
-		inputs: ["src/**", {project: "content", task: "articles", map: [{from: "out/one.md", to: "vendor/one.md"}]}]
+		args: ["-c", "cp ../content/out/one.md seen.md && printf '%s|%s|%s' \"${APP_SECRET:-unset}\" \"${APP_MODE:-unset}\" \"${CONTENT_VALUE:-unset}\" > env.txt"]
+		inputs: ["src/**", {cuenvOutputFilesRef: true, cuenvProject: content.name, cuenvTask: "articles"}]
 		outputs: ["seen.md", "env.txt"]
 	}
 	lint: {
@@ -207,12 +210,11 @@ fn a_task_of_another_project_runs_first_and_the_consumer_reads_its_output() -> T
     let output = workspace.task("app", &["build"])?;
 
     assert_success(&output);
-    // The consumer read what the producer wrote, at the path it mapped it to.
+    // The consumer read what the producer wrote, where it wrote it.
     assert_eq!(workspace.read("app/seen.md")?, "one\n");
     // The producer ran in its own project and left its output there.
     assert_eq!(workspace.read("content/out/one.md")?, "one\n");
-    // The mapping is staged in the consumer's execution root, not written
-    // into the checkout.
+    // Nothing is staged anywhere else in the checkout.
     assert!(!workspace.exists("app/vendor"));
     assert_eq!(
         execution_order(&workspace.task("app", &["build", "--dry-run"])?)?,
@@ -241,10 +243,15 @@ fn the_selected_environment_applies_to_every_project_that_defines_it() -> TestRe
     // A third project that does not define `production` uses its base.
     workspace.write(
         "content/env.cue",
-        &CONTENT.replace(
-            "inputs: [\"articles/**\"]",
-            "inputs: [\"articles/**\", {project: \"sources\", task: \"pull\", map: []}]",
-        ),
+        &CONTENT
+            .replace(
+                "package cuenv\n",
+                "package cuenv\nimport sources \"test.example/monorepo/sources:cuenv\"\n",
+            )
+            .replace(
+                "inputs: [\"articles/**\"]",
+                "inputs: [\"articles/**\", {cuenvOutputFilesRef: true, cuenvProject: sources.name, cuenvTask: \"pull\"}]",
+            ),
     )?;
     workspace.write("sources/env.cue", SOURCES)?;
 
@@ -290,11 +297,12 @@ fn a_dependency_chain_across_three_projects_runs_in_order() -> TestResult {
     workspace.write(
         "content/env.cue",
         r#"package cuenv
+import sources "test.example/monorepo/sources:cuenv"
 name: "content"
 tasks: articles: {
 	command: "sh"
-	args: ["-c", "mkdir -p out && cat articles/one.md in/raw.md > out/one.md"]
-	inputs: ["articles/**", {project: "../sources", task: "pull", map: [{from: "raw.md", to: "in/raw.md"}]}]
+	args: ["-c", "mkdir -p out && cat articles/one.md ../sources/raw.md > out/one.md"]
+	inputs: ["articles/**", {cuenvOutputFilesRef: true, cuenvProject: sources.name, cuenvTask: "pull"}]
 	outputs: ["out/one.md"]
 }
 "#,
@@ -316,9 +324,8 @@ tasks: pull: {
 
     assert_success(&output);
     assert_eq!(workspace.read("app/seen.md")?, "one\nraw\n");
-    // `content` spells `sources` as a path and `app` spells `content` by
-    // name: each project is one set of nodes however it is spelled, named
-    // by its name once the module's names are known.
+    // Each project is reached through the import of the project before it,
+    // and named by its name.
     assert_eq!(
         execution_order(&workspace.task("app", &["build", "--dry-run"])?)?,
         ["#sources:pull", "#content:articles", "build"]
@@ -333,6 +340,7 @@ fn module_below_the_repository_root() -> TestResult<Workspace> {
     workspace.write(
         "app/env.cue",
         r#"package cuenv
+import content "test.example/monorepo/content:cuenv"
 name: "app"
 tasks: {
 	generate: {
@@ -355,8 +363,8 @@ tasks: {
 	}
 	cross: {
 		command: "sh"
-		args: ["-c", "cp vendor/one.md cross.txt"]
-		inputs: [{project: "content", task: "articles", map: [{from: "out/one.md", to: "vendor/one.md"}]}]
+		args: ["-c", "cp ../content/out/one.md cross.txt"]
+		inputs: [{cuenvOutputFilesRef: true, cuenvProject: content.name, cuenvTask: "articles"}]
 		outputs: ["cross.txt"]
 	}
 }
@@ -483,7 +491,9 @@ tasks: {
 }
 
 #[test]
-fn a_mapping_on_a_task_that_runs_in_the_workspace_is_an_error() -> TestResult {
+fn a_task_of_another_project_read_in_the_workspace_is_read_where_it_was_built() -> TestResult {
+    // Nothing relocates another project's outputs: a task that runs in the
+    // live checkout reads them where they were built.
     let workspace = Workspace::app_and_content()?;
     for opt_out in ["hermetic: false", "hermetic: sandbox: \"none\""] {
         workspace.write(
@@ -496,17 +506,14 @@ fn a_mapping_on_a_task_that_runs_in_the_workspace_is_an_error() -> TestResult {
 
         let output = workspace.task("app", &["build"])?;
 
-        assert_failure(&output);
-        let printed = text(&output);
-        assert!(printed.contains("nothing is staged"), "{printed}");
-        assert!(printed.contains("vendor/one.md"), "{printed}");
-        assert!(!workspace.exists("app/seen.md"), "{printed}");
+        assert_success(&output);
+        assert_eq!(workspace.read("app/seen.md")?, "one\n");
     }
     Ok(())
 }
 
 #[test]
-fn a_directory_that_does_not_evaluate_only_stops_references_by_name() -> TestResult {
+fn a_directory_that_does_not_evaluate_stops_no_reference_through_an_import() -> TestResult {
     let workspace = Workspace::app_and_content()?;
     workspace.write("broken/env.cue", "package cuenv\nname: 12\ntasks: {")?;
 
@@ -515,26 +522,37 @@ fn a_directory_that_does_not_evaluate_only_stops_references_by_name() -> TestRes
     assert_success(&unrelated);
     assert_eq!(workspace.read("app/linted.txt")?, "linted");
 
-    // A name could be carried by the directory that does not evaluate, so
-    // the task that refers to a project by name fails, and says why.
-    let by_name = workspace.task("app", &["build"])?;
-    assert_failure(&by_name);
-    let printed = text(&by_name);
-    assert!(printed.contains("#content:articles"), "{printed}");
-    assert!(
-        printed.contains("Project 'content' could not be loaded"),
-        "{printed}"
-    );
-    assert!(!workspace.exists("app/seen.md"), "{printed}");
+    // A project name binds among what the project imports: the directory
+    // that does not evaluate is never looked at.
+    let imported = workspace.task("app", &["build"])?;
+    assert_success(&imported);
+    assert_eq!(workspace.read("app/seen.md")?, "one\n");
+    Ok(())
+}
 
-    // A path names one directory whatever the rest of the module holds.
+#[test]
+fn a_project_that_is_not_imported_is_never_bound() -> TestResult {
+    // The stamp names `content`, but `app` does not import it: the name
+    // binds nothing, even though a project of the module carries it.
+    let workspace = Workspace::app_and_content()?;
     workspace.write(
         "app/env.cue",
-        &APP.replace("project: \"content\"", "project: \"../content\""),
+        &APP.replace(
+            "import content \"test.example/monorepo/content:cuenv\"\n",
+            "",
+        )
+        .replace("content.name", "\"content\""),
     )?;
-    let by_path = workspace.task("app", &["build"])?;
-    assert_success(&by_path);
-    assert_eq!(workspace.read("app/seen.md")?, "one\n");
+
+    let output = workspace.task("app", &["build"])?;
+
+    assert_failure(&output);
+    let printed = text(&output);
+    assert!(
+        printed.contains("project 'content' is not imported here"),
+        "{printed}"
+    );
+    assert!(!workspace.exists("content/out"), "{printed}");
     Ok(())
 }
 
@@ -544,6 +562,7 @@ fn a_group_runs_what_its_children_depend_on_in_another_project() -> TestResult {
     workspace.write(
         "app/env.cue",
         r#"package cuenv
+import content "test.example/monorepo/content:cuenv"
 name: "app"
 tasks: {
 	prepare: {
@@ -556,8 +575,8 @@ tasks: {
 		type: "group"
 		articles: {
 			command: "sh"
-			args: ["-c", "cp vendor/one.md seen.md"]
-			inputs: [{project: "content", task: "articles", map: [{from: "out/one.md", to: "vendor/one.md"}]}]
+			args: ["-c", "cp ../content/out/one.md seen.md"]
+			inputs: [{cuenvOutputFilesRef: true, cuenvProject: content.name, cuenvTask: "articles"}]
 			outputs: ["seen.md"]
 		}
 		local: {
@@ -592,11 +611,13 @@ fn two_members_of_a_workspace_install_its_dependencies_once() -> TestResult {
     workspace.write(
         "app/env.cue",
         r#"package cuenv
+import content "test.example/monorepo/content:cuenv"
 name: "app"
 tasks: build: {
 	command: "bun"
 	args: ["run", "build"]
-	inputs: ["package.json", {project: "content", task: "articles", map: []}]
+	inputs: ["package.json"]
+	dependsOn: [{cuenvRef: {kind: "task", project: content.name, name: "articles"}}]
 }
 "#,
     )?;

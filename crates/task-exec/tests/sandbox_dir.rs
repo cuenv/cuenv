@@ -52,7 +52,6 @@ fn build_executor(workspace: &Path, cache_root: &Path) -> TaskExecutor {
         secret_salt: Some("test-salt".to_string()),
         mode_override: None,
         cache_root: cache_root.to_path_buf(),
-        project_roots: BTreeMap::new(),
     };
 
     TaskExecutor::new(ExecutorConfig {

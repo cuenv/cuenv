@@ -456,7 +456,7 @@ fn test_compute_affected_tasks_external_nested_dep_affected() {
     let deploy_task = make_task(vec!["deploy/**"], vec!["#external:deploy:preview"]);
     let project = make_project(vec![("deploy", deploy_task)]);
 
-    let changed_files = vec![PathBuf::from("src/lib.rs")];
+    let changed_files = vec![PathBuf::from("external/src/lib.rs")];
     let root = Path::new(".");
     let pipeline_tasks = vec!["deploy".to_string()];
 
@@ -881,7 +881,7 @@ fn test_check_external_dependency_directly_affected() {
         (PathBuf::from("external"), external_project),
     );
 
-    let changed_files = vec![PathBuf::from("src/lib.rs")];
+    let changed_files = vec![PathBuf::from("external/src/lib.rs")];
     let mut cache = HashMap::new();
 
     let result = check_external_dependency_for_test(
@@ -1400,8 +1400,11 @@ fn a_checkout_frame_places_a_project_by_an_exact_prefix() {
 }
 
 #[test]
-fn an_input_read_only_from_the_checkout_root_keeps_its_task_affected_and_is_reported() {
-    // `app` reads `shared/**`, and the only `shared/` is at the root.
+fn an_input_read_only_from_the_checkout_root_fails_the_run_with_its_rewrite() {
+    // `app` reads `shared/**`, and the only `shared/` is at the root. The
+    // task is no longer selected by it, and the run fails rather than skip
+    // it silently.
+    let _ = super::fail_on_root_relative_inputs();
     let checkout = checkout_with(&["app/src/main.ts", "shared/x.txt"]);
     let build = make_task(vec!["src/**", "shared/**"], vec![]);
     let project = make_project(vec![("build", build)]);
@@ -1423,17 +1426,22 @@ fn an_input_read_only_from_the_checkout_root_keeps_its_task_affected_and_is_repo
         },
     );
 
-    assert_eq!(affected, ["build"]);
+    assert!(affected.is_empty());
     let found = super::root_relative_inputs(inputs, checkout.path(), &project.tasks["build"]);
     assert_eq!(found.relied_on, ["shared/**"]);
-    assert!(found.namesakes.is_empty());
+    let failures = super::fail_on_root_relative_inputs().expect_err("the run fails");
+    assert!(failures.contains("has input 'shared/**'"), "{failures}");
+    assert!(
+        failures.contains("no longer read from the root"),
+        "{failures}"
+    );
 }
 
 #[test]
-fn a_correct_project_whose_root_has_files_of_the_same_name_is_not_reported() {
+fn a_correct_project_whose_root_has_files_of_the_same_name_is_not_selected_by_them() {
     // The ordinary monorepo: `app` has its own `package.json` and `src/`,
-    // and so does the root. A root change still selects the task for now,
-    // and the configuration is not at fault.
+    // and so does the root. A root file is no input of `app`, and the
+    // configuration is not at fault.
     let checkout = checkout_with(&[
         "app/package.json",
         "app/src/main.ts",
@@ -1463,10 +1471,9 @@ fn a_correct_project_whose_root_has_files_of_the_same_name_is_not_reported() {
             },
         );
 
-        assert_eq!(affected, ["build"]);
+        assert!(affected.is_empty());
         let found = super::root_relative_inputs(inputs, checkout.path(), &project.tasks["build"]);
-        assert!(found.relied_on.is_empty(), "never a warning");
-        assert_eq!(found.namesakes.len(), 1, "one note names the namesake");
+        assert!(found.relied_on.is_empty(), "never a failure");
     }
 }
 
@@ -1626,7 +1633,7 @@ fn a_dependency_on_a_step_of_a_sequence_resolves_to_that_step() {
 /// `content` and, beside it, `sources`, which `content`'s task depends on by
 /// a path of its own.
 fn content_and_sources() -> HashMap<String, (PathBuf, Project)> {
-    let articles = make_task(vec!["articles/**"], vec!["#../sources:pull"]);
+    let articles = make_task(vec!["articles/**"], vec!["#sources:pull"]);
     let pull = make_task(vec!["feeds/**"], vec![]);
     HashMap::from([
         (
@@ -1644,48 +1651,39 @@ fn content_and_sources() -> HashMap<String, (PathBuf, Project)> {
 }
 
 #[test]
-fn a_project_spelled_as_a_path_is_found_like_one_spelled_by_name() {
+fn a_dependency_on_another_project_is_compared_with_that_projects_inputs() {
     let all_projects = content_and_sources();
-    // By name, from the project that depends on it, and from the root of
-    // the checkout: each is the dependency on `content`.
-    for spelling in [
-        "#content:articles",
-        "#../content:articles",
-        "#/content:articles",
-    ] {
-        let consumer = make_task(vec!["src/**"], vec![spelling]);
-        let project = make_project(vec![("build", consumer)]);
-        let affected_by = |file: &str| {
-            affected_in(
-                &Change {
-                    project: &project,
-                    all_projects: &all_projects,
-                    files: &[PathBuf::from(file)],
-                },
-                &["build"],
-            )
-        };
+    // `#content:articles` is how loading names `content.tasks.articles`,
+    // reached through an import; `content` depends on `sources` in turn.
+    let consumer = make_task(vec!["src/**"], vec!["#content:articles"]);
+    let project = make_project(vec![("build", consumer)]);
+    let affected_by = |file: &str| {
+        affected_in(
+            &Change {
+                project: &project,
+                all_projects: &all_projects,
+                files: &[PathBuf::from(file)],
+            },
+            &["build"],
+        )
+    };
 
-        assert_eq!(
-            affected_by("content/articles/one.md"),
-            ["build"],
-            "{spelling}"
-        );
-        // A path written in `content` is relative to `content`.
-        assert_eq!(affected_by("sources/feeds/a.xml"), ["build"], "{spelling}");
-        // The project was found, so a change to nothing it reads leaves
-        // the task out: it is not selected for want of a comparison.
-        assert!(affected_by("docs/readme.md").is_empty(), "{spelling}");
-    }
+    assert_eq!(affected_by("content/articles/one.md"), ["build"]);
+    // What `content` depends on affects it, and so its dependents.
+    assert_eq!(affected_by("sources/feeds/a.xml"), ["build"]);
+    // The project was found, so a change to nothing it reads leaves the
+    // task out: it is not selected for want of a comparison.
+    assert!(affected_by("docs/readme.md").is_empty());
 }
 
 #[test]
-fn a_path_that_names_no_project_counts_as_affected() {
+fn a_dependency_that_names_no_project_counts_as_affected() {
     let all_projects = content_and_sources();
+    // A project is known by its name only: a path never names one.
     for spelling in [
-        "#../nowhere:articles",
-        "#../../outside:articles",
-        "#/content/drafts:articles",
+        "#nowhere:articles",
+        "#../content:articles",
+        "#/content:articles",
     ] {
         let consumer = make_task(vec!["src/**"], vec![spelling]);
         let project = make_project(vec![("build", consumer)]);
@@ -1936,8 +1934,17 @@ fn a_producers_references_are_checked_where_a_pipeline_reaches_them() {
         problems[0].contains("`bun.lock` matches nothing in the module root"),
         "{problems:?}"
     );
-    // The producer's references are bound among what the producer imports.
-    assert_eq!(owners, [PathBuf::from("content"), PathBuf::from("content")]);
+    // The consumer binds the producer's project among what the consumer
+    // imports, and the producer's references among what the producer
+    // imports.
+    assert_eq!(
+        owners,
+        [
+            PathBuf::from("app"),
+            PathBuf::from("content"),
+            PathBuf::from("content")
+        ]
+    );
 }
 
 #[test]

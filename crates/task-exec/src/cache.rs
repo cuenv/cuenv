@@ -16,7 +16,7 @@ use cuenv_cas::{
     DirectoryNode, ExecutionMetadata, FileNode, OutputDirectory, OutputFile, Platform,
 };
 use cuenv_core::environment::{ActionEnvironment, Environment};
-use cuenv_core::tasks::{Input, MappedInput, ProjectReference};
+use cuenv_core::tasks::{Input, MappedInput};
 use cuenv_core::{Error, Result};
 use cuenv_events::CacheSkipReason;
 use cuenv_vcs::{HashedInput, VcsHasher, WalkOptions};
@@ -105,14 +105,6 @@ pub struct TaskCacheConfig {
     /// the workspace means an interrupted run leaves nothing in the user's
     /// checkout.
     pub cache_root: PathBuf,
-    /// Roots of every project in the CUE module, so a cross-project input can
-    /// be resolved to files on disk.
-    ///
-    /// Keyed by both the project's `name` and its module-relative path,
-    /// because a `#ProjectReference` may be written either way. Empty means
-    /// no cross-project input can be hashed, and tasks that declare one are
-    /// not cached.
-    pub project_roots: BTreeMap<String, PathBuf>,
 }
 
 impl std::fmt::Debug for TaskCacheConfig {
@@ -225,12 +217,10 @@ pub async fn build_action(input: BuildActionInput<'_>) -> Result<CacheOutcome> {
     };
 
     let mut patterns = Vec::with_capacity(task.inputs.len());
-    let mut project_references = Vec::new();
     let mut local_mappings = Vec::new();
     for input in &task.inputs {
         match input {
             Input::Path(path) => patterns.push(path.clone()),
-            Input::Project(reference) => project_references.push(reference),
             Input::Mapped(mapping) => local_mappings.push(mapping),
             // `Input::Task` is rewritten to the producer's declared output
             // paths during manifest expansion. One that survives to here is
@@ -261,7 +251,7 @@ pub async fn build_action(input: BuildActionInput<'_>) -> Result<CacheOutcome> {
         project_root,
         task_name,
     };
-    let mut hashed = if patterns.is_empty() {
+    let hashed = if patterns.is_empty() {
         Vec::new()
     } else {
         match resolve_hashed_inputs(input_context, &patterns).await? {
@@ -270,12 +260,6 @@ pub async fn build_action(input: BuildActionInput<'_>) -> Result<CacheOutcome> {
         }
     };
 
-    for reference in project_references {
-        match resolve_project_reference(input_context, reference).await? {
-            ResolveOutcome::Resolved(external) => hashed.extend(external),
-            ResolveOutcome::Skipped(reason) => return Ok(skipped(reason, None)),
-        }
-    }
     // Path inputs are declared relative to the project and move to where the
     // project sits in the frame. A mapped input already names its place in
     // the frame, so it is resolved there and never prefixed again.
@@ -542,93 +526,6 @@ async fn resolve_hashed_inputs(
     Ok(ResolveOutcome::Resolved(rebased))
 }
 
-/// Hash a cross-project input and place it where the task will see it.
-///
-/// A `#ProjectReference` names another project's task and maps files out of
-/// that project into this task's workspace. The key has to be a function of
-/// the *content* those files carry, not of the producing task's own key:
-/// hashing content is what gives early cutoff, so a producer that reruns and
-/// emits identical bytes leaves every consumer's key unchanged. This is the
-/// same reason `Input::Task` is rewritten to concrete output paths.
-///
-/// Files are recorded at their `to` path, because that is the layout the
-/// action actually executes against. Two different sources mapped to one
-/// destination therefore collide, and [`build_input_root_digest`] rejects it.
-async fn resolve_project_reference(
-    context: InputResolutionContext<'_>,
-    reference: &ProjectReference,
-) -> Result<ResolveOutcome> {
-    let InputResolutionContext {
-        cache,
-        project_root,
-        task_name,
-    } = context;
-    let external_root = cache
-        .project_roots
-        .get(&reference.project)
-        .cloned()
-        .or_else(|| resolve_project_path(cache, project_root, &reference.project));
-    let Some(external_root) = external_root else {
-        tracing::debug!(
-            task = %task_name,
-            project = reference.project,
-            "skipping cache: cross-project input names an unknown project"
-        );
-        return Ok(ResolveOutcome::Skipped(CacheSkipReason::UnknownProject {
-            project: reference.project.clone(),
-        }));
-    };
-
-    let mut resolved = Vec::new();
-    for mapping in &reference.map {
-        let input = PathMappingInput {
-            source: &mapping.from,
-            destination: &mapping.to,
-            source_root: &external_root,
-            task_name,
-        };
-        match resolve_path_mapping(cache, input).await? {
-            ResolveOutcome::Resolved(mapped) => resolved.extend(mapped),
-            ResolveOutcome::Skipped(reason) => return Ok(ResolveOutcome::Skipped(reason)),
-        }
-    }
-
-    Ok(ResolveOutcome::Resolved(resolved))
-}
-
-/// Resolve a path-shaped project reference relative to the consuming project.
-///
-/// A leading slash means "from the VCS workspace root", not the host root.
-/// Canonicalization both normalizes `..` and prevents symlinks from escaping
-/// the workspace boundary used by the input hasher.
-fn resolve_project_path(
-    cache: &TaskCacheConfig,
-    project_root: &Path,
-    declared_project: &str,
-) -> Option<PathBuf> {
-    let declared = Path::new(declared_project);
-    let candidate = if declared.is_absolute() {
-        let workspace_relative = declared.components().try_fold(
-            PathBuf::new(),
-            |mut path, component| match component {
-                Component::Normal(part) => {
-                    path.push(part);
-                    Some(path)
-                }
-                Component::RootDir | Component::CurDir => Some(path),
-                Component::Prefix(_) | Component::ParentDir => None,
-            },
-        )?;
-        cache.vcs_hasher_root.join(workspace_relative)
-    } else {
-        project_root.join(declared)
-    };
-
-    let workspace_root = std::fs::canonicalize(&cache.vcs_hasher_root).ok()?;
-    let project = std::fs::canonicalize(candidate).ok()?;
-    project.starts_with(&workspace_root).then_some(project)
-}
-
 /// Resolves [`MappedInput`]s, whose paths are relative to the CUE module
 /// root, in the frame of the action: relative to the hasher root.
 struct MappedFrame<'mapped> {
@@ -807,59 +704,6 @@ fn frame_path(path: &Path) -> Option<PathBuf> {
             }
             Some(normalized)
         })
-}
-
-struct PathMappingInput<'mapping> {
-    source: &'mapping str,
-    destination: &'mapping str,
-    source_root: &'mapping Path,
-    task_name: &'mapping str,
-}
-
-async fn resolve_path_mapping(
-    cache: &TaskCacheConfig,
-    input: PathMappingInput<'_>,
-) -> Result<ResolveOutcome> {
-    let PathMappingInput {
-        source,
-        destination,
-        source_root,
-        task_name,
-    } = input;
-    let patterns = [source.to_string()];
-    let context = InputResolutionContext {
-        cache,
-        project_root: source_root,
-        task_name,
-    };
-    let hashed = match resolve_hashed_inputs(context, &patterns).await? {
-        ResolveOutcome::Resolved(hashed) => hashed,
-        ResolveOutcome::Skipped(reason) => return Ok(ResolveOutcome::Skipped(reason)),
-    };
-
-    // `from` bounds where its matches live; everything below that bound is
-    // reproduced under `to`, so directory mappings retain their structure.
-    let base = literal_prefix(source);
-    let destination = PathBuf::from(destination.trim_end_matches('/'));
-    let resolved = hashed
-        .into_iter()
-        .map(|input| {
-            let relative = input
-                .relative_path
-                .strip_prefix(&base)
-                .unwrap_or(input.relative_path.as_path());
-            let relative_path = if relative.as_os_str().is_empty() {
-                destination.clone()
-            } else {
-                destination.join(relative)
-            };
-            HashedInput {
-                relative_path,
-                ..input
-            }
-        })
-        .collect();
-    Ok(ResolveOutcome::Resolved(resolved))
 }
 
 /// Query the action cache for a previous result.

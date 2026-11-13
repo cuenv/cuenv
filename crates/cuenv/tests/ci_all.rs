@@ -206,7 +206,9 @@ ci: pipelines: verify: tasks: [_tasks.check]
 tasks: check: {
   command: "sh"
   args: ["-c", "test -r ../package.json && printf checked > checked"]
-  inputs: ["../package.json"]
+  // `schema.#ModuleFiles & {paths: ["package.json"]}`, spelled out: the
+  // fixture has no schema.
+  inputs: [{cuenvFiles: "module", paths: ["package.json"]}]
   hermetic: sandbox: "dir"
 }
 "#,

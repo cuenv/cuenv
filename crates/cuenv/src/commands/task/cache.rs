@@ -106,7 +106,6 @@ pub(super) async fn build_task_cache(
         cache_root: root,
         // A reference to another project is resolved by the task scope into
         // module-relative paths before a task reaches the cache.
-        project_roots: BTreeMap::new(),
         action_semantics_version: cuenv_cas::ACTION_SEMANTICS_VERSION,
         runtime_identity_properties: runtime_identity.properties,
         cache_disabled_reason: if cache_off {

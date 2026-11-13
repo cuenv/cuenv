@@ -236,9 +236,10 @@ pub enum Input {
     /// tried before the other object shapes and needs the `cuenvFiles`
     /// field, which no other input has.
     Files(FilesReference),
-    /// Cross-project reference
-    Project(ProjectReference),
-    /// Same-project task output reference
+    /// The declared outputs of a task: of this project by its name, or of
+    /// another project as `#project:task`. The schema's `outputFiles`
+    /// reference (`content.tasks.build.outputFiles`) is read as this shape
+    /// when the project's value is loaded.
     Task(TaskOutput),
     /// Internal expansion of a `from` → `to` task-output mapping, from the
     /// same project or another. The CUE schema never emits this shape
@@ -303,7 +304,7 @@ impl Input {
                     path,
                 })
                 .collect(),
-            Self::Project(_) | Self::Task(_) | Self::Mapped(_) => Vec::new(),
+            Self::Task(_) | Self::Mapped(_) => Vec::new(),
         }
     }
 
@@ -312,7 +313,7 @@ impl Input {
     pub const fn as_files(&self) -> Option<&FilesReference> {
         match self {
             Self::Files(reference) => Some(reference),
-            Self::Path(_) | Self::Project(_) | Self::Task(_) | Self::Mapped(_) => None,
+            Self::Path(_) | Self::Task(_) | Self::Mapped(_) => None,
         }
     }
 
@@ -321,16 +322,7 @@ impl Input {
     pub fn as_path(&self) -> Option<&str> {
         match self {
             Self::Path(path) => Some(path.as_str()),
-            Self::Files(_) | Self::Project(_) | Self::Task(_) | Self::Mapped(_) => None,
-        }
-    }
-
-    /// Return the project reference if this input references another project.
-    #[must_use]
-    pub fn as_project(&self) -> Option<&ProjectReference> {
-        match self {
-            Self::Project(reference) => Some(reference),
-            Self::Path(_) | Self::Files(_) | Self::Task(_) | Self::Mapped(_) => None,
+            Self::Files(_) | Self::Task(_) | Self::Mapped(_) => None,
         }
     }
 
@@ -339,7 +331,7 @@ impl Input {
     pub fn as_task_output(&self) -> Option<&TaskOutput> {
         match self {
             Self::Task(output) => Some(output),
-            Self::Path(_) | Self::Files(_) | Self::Project(_) | Self::Mapped(_) => None,
+            Self::Path(_) | Self::Files(_) | Self::Mapped(_) => None,
         }
     }
 
@@ -350,26 +342,21 @@ impl Input {
         match self {
             Self::Task(output) => Some(&output.task),
             Self::Mapped(mapping) => mapping.producer_task.as_deref(),
-            Self::Path(_) | Self::Files(_) | Self::Project(_) => None,
+            Self::Path(_) | Self::Files(_) => None,
         }
     }
 }
 
-/// Cross-project input declaration
+/// Reference to the declared outputs of another task.
+///
+/// Closed: an object with any other field is no task output. The removed
+/// cross-project form `{project, task, map}` must never be read as an output
+/// of a same-named task of this project.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ProjectReference {
-    /// Path to project root relative to env.cue or absolute-from-repo-root
-    pub project: String,
-    /// Name of the external task in that project
-    pub task: String,
-    /// Required explicit mappings
-    pub map: Vec<Mapping>,
-}
-
-/// Reference to another task's outputs within the same project
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct TaskOutput {
-    /// Name of the task whose cached outputs to consume (e.g. "docs.build")
+    /// Name of the task whose outputs to consume: `docs.build` for a task of
+    /// this project, `#content:build` for a task of another project.
     pub task: String,
     /// Optional explicit mapping of outputs. If omitted, all outputs are
     /// materialized at their original paths in the hermetic workspace.

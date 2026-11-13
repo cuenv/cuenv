@@ -1,22 +1,24 @@
 //! The tasks one run can reach.
 //!
 //! A run is asked for tasks of one project. A task there may depend on a task
-//! of another project (`#project:task`), which a `#ProjectReference` input
-//! implies. A [`TaskScope`] holds the project's own tasks, which a run is
-//! asked for by name or by label, and loads the projects their dependencies
-//! lead to as it follows them. The tasks of those projects are part of the
-//! graph only: they run as dependencies, in their own project's directory,
-//! environment and cache identity, and cannot be selected.
+//! of another project, reached through that project's import
+//! (`dependsOn: [content.tasks.build]`, or reading
+//! `content.tasks.build.outputFiles`), which loading names `#content:build`.
+//! A [`TaskScope`] holds the project's own tasks, which a run is asked for by
+//! name or by label, and loads the projects their dependencies lead to as it
+//! follows them. The tasks of those projects are part of the graph only: they
+//! run as dependencies, in their own project's directory, environment and
+//! cache identity, and cannot be selected.
 //!
 //! `cuenv task`, `cuenv ci` and `cuenv up` all build their graphs here, so a
 //! dependency on another project means the same thing to each of them. Where
-//! the projects come from is a [`ProjectSource`]: today the module's
-//! discovered projects, by name or by path.
+//! the projects come from is a [`ProjectSource`]: a project name means the
+//! directory that declares it among what the referring project imports.
 
 use crate::workspace::find_workspace_root;
 use crate::{
-    FilesAnchor, FilesReference, Input, MappedInput, ProjectReference, SourceLocation, Task,
-    TaskGraph, TaskIndex, TaskNode, TaskPath, Tasks,
+    FilesAnchor, FilesReference, Input, MappedInput, SourceLocation, Task, TaskGraph, TaskIndex,
+    TaskNode, TaskOutput, Tasks,
 };
 use cuenv_core::contributors::CONTRIBUTOR_TASK_PREFIX;
 use cuenv_core::manifest::Project;
@@ -92,29 +94,17 @@ pub struct SourcedProject {
 
 /// Where the projects that tasks refer to come from.
 ///
-/// A reference names a project (`content`) or spells a path to it
-/// (`../content`, or `/content` from the workspace root). A source answers
-/// both: which directory a name means, and what the project in a directory
-/// is.
+/// A task of another project is reached through an import: its value
+/// carries that project's name (`#content:build` once loaded), and so does a
+/// file reference (`content.#Files`). A source answers which directory such
+/// a name means to the project that wrote it, and what the project in a
+/// directory is.
 pub trait ProjectSource {
-    /// The directory of the project a task of the project in `origin`
-    /// calls `name`; `None` when the source knows no project by that name.
-    /// A name is looked up among the projects of the CUE module `origin`
-    /// lies in, and one carried by several directories means the shallowest
-    /// of them.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the source cannot list those projects, so that
-    /// it cannot say whether one of them carries the name.
-    fn directory_of(&self, origin: &Path, name: &str) -> Result<Option<PathBuf>>;
-
-    /// The directory a file reference to the project called `name`, in a
-    /// task of the project in `origin`, starts from: the directory that
-    /// declares that name among the packages the project in `origin`
-    /// imports. Only an import can stamp a reference with a project's name,
-    /// so the module's other projects are never looked at, and no project is
-    /// evaluated to answer.
+    /// The directory of the project called `name`, as the project in
+    /// `origin` means it: the directory that declares that name among the
+    /// packages the project in `origin` imports. Only an import can stamp a
+    /// value with a project's name, so the module's other projects are
+    /// never looked at, and no project is evaluated to answer.
     ///
     /// # Errors
     ///
@@ -122,16 +112,10 @@ pub trait ProjectSource {
     /// is not imported, is imported from a directory that only inherits its
     /// name, lies in another package or module, or the imports cannot be
     /// listed.
-    fn files_anchor(&self, origin: &Path, name: &str) -> std::result::Result<PathBuf, String>;
+    fn imported_project(&self, origin: &Path, name: &str) -> std::result::Result<PathBuf, String>;
 
-    /// The name that means the project in the directory `root`, when the
-    /// source already knows it: the name [`Self::directory_of`] would lead
-    /// back to `root` from. `None` when it would have to list projects to
-    /// tell, and for a directory that only inherits a name.
-    fn name_of(&self, root: &Path) -> Option<String>;
-
-    /// The directory a path-shaped reference made in `origin` may not leave:
-    /// the VCS workspace, or the CUE module where there is none.
+    /// The directory the files of a reference made in `origin` are checked
+    /// against: the VCS workspace, or the CUE module where there is none.
     fn workspace_root(&self, origin: &Path) -> PathBuf;
 
     /// The project in the directory `root`.
@@ -323,6 +307,18 @@ impl TaskScope {
                 Some((project.clone(), target))
             })
             .collect();
+        // A task of another project read through its `outputFiles` stands
+        // for the files it declares, where it writes them.
+        let outputs: BTreeMap<String, OutputFiles> = survey
+            .outputs
+            .iter()
+            .filter_map(|written| {
+                let external = ExternalTaskName::parse(written)?;
+                let target = projects.get(external.project)?;
+                let files = self.output_files(&owner, target, external.task)?;
+                Some((written.clone(), files))
+            })
+            .collect();
         // A file reference needs only the directory its anchor means: the
         // project it names is not loaded, and no task of it runs.
         let anchors: BTreeMap<FilesAnchor, std::result::Result<PathBuf, String>> = survey
@@ -348,6 +344,7 @@ impl TaskScope {
             Rewrite {
                 owner: &owner,
                 projects: &projects,
+                outputs: &outputs,
                 resolved: &survey.resolved,
                 files: FileBinding {
                     anchors: &anchors,
@@ -417,9 +414,12 @@ impl TaskScope {
                 survey
                     .declared
                     .extend(projects_in_dependencies(&task.depends_on));
-                survey.declared.extend(
-                    task.iter_project_refs()
-                        .map(|reference| reference.project.clone()),
+                // A task output of another project is also a dependency, so
+                // its project is among those above.
+                survey.outputs.extend(
+                    task.iter_task_outputs()
+                        .filter(|output| ExternalTaskName::parse(&output.task).is_some())
+                        .map(|output| output.task.clone()),
                 );
                 survey.anchors.extend(
                     task.inputs
@@ -627,15 +627,14 @@ impl TaskScope {
         declared: &str,
         source: &dyn ProjectSource,
     ) -> Result<ResolvedProject> {
-        let located = locate_project(owner, declared, source)?;
-        let root = located.root().to_path_buf();
+        let root = locate_project(owner, declared, source)?;
         if root == self.root.root {
             return Ok(ResolvedProject { key: None, root });
         }
         let key = match self.keys.get(&root) {
             Some(key) => key.clone(),
             None => {
-                let key = self.key_for(&located, Reference { declared, source });
+                let key = self.key_for(declared);
                 self.merge(source.project_at(&root)?, &key)?;
                 key
             }
@@ -712,34 +711,57 @@ impl TaskScope {
         Ok(())
     }
 
-    /// What to qualify a newly located project's tasks with.
-    ///
-    /// A project is qualified with the name that means it: the name it was
-    /// found by, or, for one found by a path, the name its source already
-    /// knows it by. Otherwise it is qualified with its path from the
-    /// workspace root (`/services/api`), which is how any project of the
-    /// workspace may spell it.
-    fn key_for(&self, located: &LocatedProject, reference: Reference<'_>) -> String {
-        let key = match located {
-            LocatedProject::ByName(_) => reference.declared.to_string(),
-            // A task name is split from its project at the first colon,
-            // so the project's part holds none.
-            LocatedProject::ByPath { root, workspace } => reference
-                .source
-                .name_of(root)
-                .filter(|name| !name.is_empty() && !name.contains(':'))
-                .unwrap_or_else(|| {
-                    format!("/{}", forward_slashes(&relative_from(workspace, root)))
-                        .replace(':', "_")
-                }),
-        };
-        if !self.external.contains_key(&key) {
-            return key;
+    /// What to qualify a newly located project's tasks with: the name that
+    /// means it. Project names are unique in a module, so a second project
+    /// under one name can only come from another module.
+    fn key_for(&self, declared: &str) -> String {
+        if !self.external.contains_key(declared) {
+            return declared.to_string();
         }
         (2_usize..)
-            .map(|attempt| format!("{key}~{attempt}"))
+            .map(|attempt| format!("{declared}~{attempt}"))
             .find(|candidate| !self.external.contains_key(candidate))
-            .unwrap_or(key)
+            .unwrap_or_else(|| declared.to_string())
+    }
+
+    /// The files a task of another project declares, as the input of a task
+    /// of `owner` that reads its `outputFiles`; `None` while the project
+    /// has no such task, which the dependency on it reports.
+    fn output_files(
+        &self,
+        owner: &OwnerFrame,
+        target: &ResolvedProject,
+        task: &str,
+    ) -> Option<OutputFiles> {
+        let producer = target.task(task);
+        let node = self.node(&producer)?;
+        let TaskNode::Task(declared) = node else {
+            return Some(OutputFiles::Problem(format!(
+                "reads the `outputFiles` of '{producer}', which is not a single task: a group or \
+                 a sequence declares no outputs of its own; read its tasks' `outputFiles`"
+            )));
+        };
+        if declared.outputs.is_empty() {
+            return Some(OutputFiles::Problem(format!(
+                "reads the `outputFiles` of '{producer}', which declares no `outputs`: a task \
+                 read through `outputFiles` lists the files it builds in `outputs`"
+            )));
+        }
+        let project_path = relative_from(&owner.module_root, &target.root);
+        let files = declared
+            .output_file_inputs(&project_path, &producer)
+            .filter(|_| {
+                project_path
+                    .components()
+                    .all(|component| matches!(component, Component::Normal(_)))
+            });
+        Some(match files {
+            Some(files) => OutputFiles::Files(files.into_iter().map(Input::Mapped).collect()),
+            None => OutputFiles::Problem(format!(
+                "reads the `outputFiles` of '{producer}', which writes them outside this CUE \
+                 module: tasks of the same module only can be read this way"
+            )),
+        })
     }
 
     /// Add to a graph error why the project a missing dependency names
@@ -802,10 +824,22 @@ struct Survey {
     declared: BTreeSet<String>,
     /// Where the file references of those nodes start from.
     anchors: BTreeSet<FilesAnchor>,
+    /// The tasks of other projects whose `outputFiles` those nodes read, as
+    /// written (`#content:build`).
+    outputs: BTreeSet<String>,
     /// Nodes below the surveyed one that are already resolved.
     resolved: BTreeSet<String>,
     /// Names that mean a node this resolves.
     resolving: Vec<String>,
+}
+
+/// What reading the `outputFiles` of a task of another project stands for.
+#[derive(Debug, Clone)]
+enum OutputFiles {
+    /// The files the task declares, staged where it writes them.
+    Files(Vec<Input>),
+    /// Why they cannot be read.
+    Problem(String),
 }
 
 /// A node of the tree being surveyed.
@@ -819,127 +853,20 @@ struct SurveyedNode<'node> {
     node: &'node TaskNode,
 }
 
-/// A reference to a project as a task wrote it, and where projects come
-/// from.
-#[derive(Clone, Copy)]
-struct Reference<'reference> {
-    declared: &'reference str,
-    source: &'reference dyn ProjectSource,
-}
-
-/// A project's directory, and how a reference to it found it.
-#[derive(Debug, Clone)]
-enum LocatedProject {
-    /// The reference is the project's name.
-    ByName(PathBuf),
-    /// The reference is a path, within `workspace`.
-    ByPath { root: PathBuf, workspace: PathBuf },
-}
-
-impl LocatedProject {
-    fn root(&self) -> &Path {
-        match self {
-            Self::ByName(root) | Self::ByPath { root, .. } => root,
-        }
-    }
-}
-
-/// The directory a task of `owner` means by `declared`: a project's name
-/// first, then a path.
-///
-/// A reference that could be a name is looked up as one before anything
-/// else. When the names cannot be listed it fails: a directory spelled the
-/// same way may not be the project the name means. A reference that can
-/// only be a path (`../content`, `/content`) needs no listing at all.
+/// The directory of the project a task of `owner` calls `declared`: the
+/// directory that declares that name among what the owner imports. A name
+/// that is not imported binds nothing, even when another project of the
+/// module carries it.
 fn locate_project(
     owner: &OwnerFrame,
     declared: &str,
     source: &dyn ProjectSource,
-) -> Result<LocatedProject> {
-    if may_be_a_name(declared) {
-        let named = source
-            .directory_of(&owner.root, declared)
-            .map_err(|error| {
-                Error::configuration(format!(
-                    "the project named '{declared}' cannot be looked up: {error}"
-                ))
-            })?;
-        if let Some(directory) = named {
-            return std::fs::canonicalize(&directory)
-                .map(LocatedProject::ByName)
-                .map_err(|error| {
-                    Error::io_with_path("canonicalize referenced project", directory, error)
-                });
-        }
-    }
-    locate_by_path(owner, declared, source)
-}
-
-/// Whether a reference could be a project's name: anything that is not
-/// spelled as a path.
-fn may_be_a_name(declared: &str) -> bool {
-    !declared.is_empty() && !declared.contains(['/', '\\']) && declared != "." && declared != ".."
-}
-
-/// Resolve a path-shaped reference: relative to the project that makes it,
-/// or else to that project's CUE module.
-///
-/// A leading slash means "from the workspace root", not the host root.
-/// Canonicalization both normalizes `..` and keeps a symlink from leaving
-/// the workspace.
-fn locate_by_path(
-    owner: &OwnerFrame,
-    declared: &str,
-    source: &dyn ProjectSource,
-) -> Result<LocatedProject> {
-    let workspace_root = source.workspace_root(&owner.root);
-    let workspace = std::fs::canonicalize(&workspace_root).map_err(|error| {
-        Error::io_with_path(
-            "canonicalize cross-project workspace",
-            workspace_root,
-            error,
-        )
-    })?;
-    let path = Path::new(declared);
-    let candidates = if path.is_absolute() {
-        let relative: PathBuf = path
-            .components()
-            .filter_map(|component| match component {
-                Component::Normal(part) => Some(part),
-                Component::ParentDir => Some(std::ffi::OsStr::new("..")),
-                Component::Prefix(_) | Component::RootDir | Component::CurDir => None,
-            })
-            .collect();
-        vec![workspace.join(relative)]
-    } else {
-        vec![owner.root.join(path), owner.module_root.join(path)]
-    };
-    let mut missing = None;
-    for candidate in candidates {
-        match std::fs::canonicalize(&candidate) {
-            Ok(root) if root.starts_with(&workspace) => {
-                return Ok(LocatedProject::ByPath { root, workspace });
-            }
-            Ok(_) => {
-                return Err(Error::configuration(format!(
-                    "cross-project reference '{declared}' resolves outside workspace '{}'",
-                    workspace.display()
-                )));
-            }
-            Err(error) => {
-                missing.get_or_insert(Error::io_with_path(
-                    "canonicalize referenced project",
-                    candidate,
-                    error,
-                ));
-            }
-        }
-    }
-    Err(missing.unwrap_or_else(|| {
-        Error::configuration(format!(
-            "cross-project reference '{declared}' names no path"
-        ))
-    }))
+) -> Result<PathBuf> {
+    let directory = source
+        .imported_project(&owner.root, declared)
+        .map_err(Error::configuration)?;
+    std::fs::canonicalize(&directory)
+        .map_err(|error| Error::io_with_path("canonicalize referenced project", directory, error))
 }
 
 /// The directory a file reference's anchor means for a task of `owner`:
@@ -952,7 +879,7 @@ fn bind_anchor(
 ) -> std::result::Result<PathBuf, String> {
     match anchor {
         FilesAnchor::Module => Ok(owner.module_root.clone()),
-        FilesAnchor::Project(name) => source.files_anchor(&owner.root, name).map(canonical),
+        FilesAnchor::Project(name) => source.imported_project(&owner.root, name).map(canonical),
     }
 }
 
@@ -987,6 +914,9 @@ struct Rewrite<'rewrite> {
     owner: &'rewrite OwnerFrame,
     /// What each project the nodes refer to resolved to.
     projects: &'rewrite BTreeMap<String, ResolvedProject>,
+    /// What reading each task output of another project stands for, by the
+    /// task as written (`#content:build`).
+    outputs: &'rewrite BTreeMap<String, OutputFiles>,
     /// Nodes that are already resolved, by their name in the graph.
     resolved: &'rewrite BTreeSet<String>,
     /// How the nodes' file references are bound.
@@ -1044,12 +974,32 @@ impl Rewrite<'_> {
         let mut inputs = Vec::with_capacity(task.inputs.len());
         for input in std::mem::take(&mut task.inputs) {
             match input {
-                Input::Project(reference) => inputs.extend(self.mapped(reference)),
                 Input::Files(reference) => inputs.extend(self.files(binding, reference)),
-                other @ (Input::Path(_) | Input::Task(_) | Input::Mapped(_)) => inputs.push(other),
+                Input::Task(output) => inputs.extend(self.task_output(binding, output)),
+                other @ (Input::Path(_) | Input::Mapped(_)) => inputs.push(other),
             }
         }
         task.inputs = inputs;
+    }
+
+    /// The files a task output of another project stands for (a task's
+    /// `outputFiles` read through an import), staged where that task writes
+    /// them. Any other task output was expanded when its project loaded. A
+    /// task output that cannot be read is left as written, and the task
+    /// fails when a graph reaches it.
+    fn task_output(&mut self, task: BindingTask<'_>, output: TaskOutput) -> Vec<Input> {
+        match self.outputs.get(&output.task) {
+            Some(OutputFiles::Files(files)) => files.clone(),
+            Some(OutputFiles::Problem(problem)) => {
+                self.files
+                    .problems
+                    .entry(task.name.to_string())
+                    .or_default()
+                    .push(for_task(task.name, task.source, problem));
+                vec![Input::Task(output)]
+            }
+            None => vec![Input::Task(output)],
+        }
     }
 
     /// The files a file reference names, each path bound to its anchor's
@@ -1157,32 +1107,6 @@ impl Rewrite<'_> {
                 dependency.name = spelled;
             }
         }
-    }
-
-    /// The files a `#ProjectReference` stands for: each `from`, below the
-    /// project that produces it, staged at `to` below the project that owns
-    /// the consuming task. Left as written when its project did not load.
-    fn mapped(&self, reference: ProjectReference) -> Vec<Input> {
-        let Some(target) = self.projects.get(&reference.project) else {
-            return vec![Input::Project(reference)];
-        };
-        let source = relative_from(&self.owner.module_root, &target.root);
-        let destination = relative_from(&self.owner.module_root, &self.owner.root);
-        let task = TaskPath::parse(&reference.task)
-            .map_or_else(|_| reference.task.clone(), |path| path.canonical());
-        let producer = target.task(&task);
-        reference
-            .map
-            .iter()
-            .map(|mapping| {
-                Input::Mapped(MappedInput {
-                    source: forward_slashes(&source.join(&mapping.from)),
-                    destination: forward_slashes(&destination.join(&mapping.to)),
-                    producer_task: Some(producer.clone()),
-                    anchor: None,
-                })
-            })
-            .collect()
     }
 }
 

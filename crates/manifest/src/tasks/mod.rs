@@ -30,9 +30,8 @@ pub use dependency::TaskDependency;
 pub use group::TaskGroup;
 pub use hermetic::{Hermetic, HermeticOptions, Sandbox};
 pub use inputs::{
-    FilesAnchor, FilesReference, Input, InputPattern, MappedInput, Mapping, ProjectReference,
-    SourceLocation, TaskDirectory, TaskDirectoryBase, TaskOutput, anchored_path_problem,
-    literal_path_prefix,
+    FilesAnchor, FilesReference, Input, InputPattern, MappedInput, Mapping, SourceLocation,
+    TaskDirectory, TaskDirectoryBase, TaskOutput, anchored_path_problem, literal_path_prefix,
 };
 pub use node::{TaskNode, Tasks};
 pub use params::{ParamDef, ParamType, ResolvedArgs, TaskParams};

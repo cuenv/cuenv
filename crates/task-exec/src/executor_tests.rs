@@ -1030,7 +1030,6 @@ async fn test_cache_hit_replays_task_output_events() {
         secret_salt: Some("test-salt".to_string()),
         mode_override: None,
         cache_root: cache_root.path().to_path_buf(),
-        project_roots: BTreeMap::new(),
     };
     let executor = TaskExecutor::new(ExecutorConfig {
         environment: host_path_environment(),

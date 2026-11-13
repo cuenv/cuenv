@@ -11,8 +11,8 @@ use crate::context::ContextDefinition;
 use crate::environment::Env;
 use crate::hook::{Hook, Hooks};
 use crate::tasks::{
-    Input, MappedInput, Mapping, ProjectReference, SourceLocation, Task, TaskDirectoryBase,
-    TaskNode, TaskOutput, literal_path_prefix,
+    Input, MappedInput, SourceLocation, Task, TaskDirectoryBase, TaskNode, TaskOutput,
+    literal_path_prefix,
 };
 
 // ============================================================================
@@ -166,13 +166,12 @@ impl Project {
         hooks.into_iter().map(|(_, h)| h).collect()
     }
 
-    /// Expand shorthand cross-project references in inputs and implicit dependencies.
+    /// Expand task-output inputs and add the dependencies they imply.
     ///
-    /// Handles inputs in the format: "#project:task:path/to/file"
-    /// Converts them to explicit ProjectReference inputs.
-    /// Also adds implicit dependsOn entries for all project references, and
-    /// rewrites each same-project task-output input to the files its producer
-    /// declares (see [`MappedInput`]).
+    /// Every task-output input (`{task: "x"}`, or a task's `outputFiles`) adds
+    /// a dependency on its producer. One of this project is rewritten to the
+    /// files its producer declares (see [`MappedInput`]); one of another
+    /// project (`#project:task`) is rewritten once that project is loaded.
     ///
     /// `instance_path` is the project's directory relative to the CUE module
     /// root (`.` or empty for the root): an explicit `map` places its `to`
@@ -301,43 +300,13 @@ impl TaskExpansion<'_> {
         // Process existing inputs
         for input in &task.inputs {
             match input {
-                Input::Path(path) if path.starts_with('#') => {
-                    // Parse "#project:task:path"
-                    // Remove leading #
-                    let parts: Vec<&str> = path[1..].split(':').collect();
-                    if parts.len() >= 3 {
-                        let project = parts[0].to_string();
-                        let task_name = parts[1].to_string();
-                        // Rejoin the rest as the path (it might contain colons)
-                        let file_path = parts[2..].join(":");
-
-                        new_inputs.push(Input::Project(ProjectReference {
-                            project: project.clone(),
-                            task: task_name.clone(),
-                            map: vec![Mapping {
-                                from: file_path.clone(),
-                                to: file_path,
-                            }],
-                        }));
-
-                        // Add implicit dependency
-                        implicit_deps.push(format!("#{}:{}", project, task_name));
-                    } else {
-                        // `#project:task` without a file is a dependency
-                        // reference, not an input mapping: keep it verbatim.
-                        new_inputs.push(input.clone());
-                    }
-                }
-                Input::Project(proj_ref) => {
-                    // Add implicit dependency for explicit project references too
-                    implicit_deps.push(format!("#{}:{}", proj_ref.project, proj_ref.task));
-                    new_inputs.push(input.clone());
-                }
                 Input::Task(task_output) => {
                     // Consuming a task's output is a dependency on it. Bazel
                     // and buck2 both derive the edge from the reference rather
                     // than making you declare it twice; without this the
-                    // consumer can be scheduled alongside its producer.
+                    // consumer can be scheduled alongside its producer. A
+                    // task of another project (`#project:task`) is expanded
+                    // once that project is loaded.
                     implicit_deps.push(task_output.task.clone());
                     match self.mapped_task_output(task_output) {
                         Some(mapped) => new_inputs.extend(mapped.into_iter().map(Input::Mapped)),
@@ -398,6 +367,36 @@ impl TaskExpansion<'_> {
                 .map(|output| mapped(output, base.join(literal_path_prefix(output))))
                 .collect(),
         })
+    }
+}
+
+impl Task {
+    /// Every file this task declares in `outputs`, as the input of a task
+    /// that reads them through `outputFiles`: each staged where this task
+    /// writes it, with `producer` (the name the reader's graph gives this
+    /// task) as its producer. Paths are relative to the root of the CUE
+    /// module, in which this task's project lies at `project_path`.
+    ///
+    /// `None` when the task writes outside the module.
+    #[must_use]
+    pub fn output_file_inputs(
+        &self,
+        project_path: &Path,
+        producer: &str,
+    ) -> Option<Vec<MappedInput>> {
+        let project_path = normalize_relative(project_path)?;
+        let base = task_output_base(self, &project_path)?;
+        Some(
+            self.outputs
+                .iter()
+                .map(|output| MappedInput {
+                    source: path_to_forward_slashes(&base.join(output)),
+                    destination: path_to_forward_slashes(&base.join(literal_path_prefix(output))),
+                    producer_task: Some(producer.to_string()),
+                    anchor: None,
+                })
+                .collect(),
+        )
     }
 }
 

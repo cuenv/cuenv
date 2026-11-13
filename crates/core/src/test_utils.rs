@@ -28,13 +28,6 @@ pub fn create_task(name: &str, deps: Vec<&str>, labels: Vec<&str>) -> Task {
     }
 }
 
-/// Create a task that references another project's task (TaskRef placeholder)
-pub fn create_task_ref(ref_str: &str, deps: Vec<&str>) -> Task {
-    let mut task = Task::from_task_ref(ref_str);
-    task.depends_on = deps.into_iter().map(TaskDependency::from_name).collect();
-    task
-}
-
 /// Create a test hook for onEnter/onExit testing
 pub fn create_test_hook(order: i32, command: &str) -> cuenv_hooks::Hook {
     cuenv_hooks::Hook {

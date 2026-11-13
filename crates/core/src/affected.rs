@@ -57,9 +57,9 @@ pub enum PatternMatch {
     /// the project does when the pattern is read from the root of the
     /// checkout instead of from the project.
     ///
-    /// cuenv has always counted this as a match, so it still does, but a
-    /// pattern is relative to its project: whether this is a root-relative
-    /// input someone relies on or an accident of two directories sharing a
+    /// A pattern is relative to its project, so this is no match. Whether
+    /// it is a root-relative input someone relied on (which is now an error
+    /// for the caller to raise) or an accident of two directories sharing a
     /// name is for the caller to tell apart.
     OnlyFromCheckoutRoot,
 }
@@ -133,10 +133,11 @@ pub fn match_pattern(files: &[PathBuf], project_root: &Path, pattern: &str) -> P
 /// Check if any of the given files match a pattern.
 ///
 /// See [`match_pattern`], which this reduces to a yes or no:
-/// [`PatternMatch::OnlyFromCheckoutRoot`] counts as a match.
+/// [`PatternMatch::OnlyFromCheckoutRoot`] is no match: a pattern is read
+/// from its project.
 #[must_use]
 pub fn matches_pattern(files: &[PathBuf], project_root: &Path, pattern: &str) -> bool {
-    match_pattern(files, project_root, pattern) != PatternMatch::None
+    match_pattern(files, project_root, pattern) == PatternMatch::Matched
 }
 
 /// One normalised pattern, compiled once.
@@ -478,7 +479,8 @@ mod tests {
             match_pattern(&shared, root, "shared"),
             PatternMatch::OnlyFromCheckoutRoot
         );
-        assert!(matches_pattern(&shared, root, "shared/**"));
+        // A pattern is read from its project: the root file is no match.
+        assert!(!matches_pattern(&shared, root, "shared/**"));
         assert_eq!(match_pattern(&shared, root, "src/**"), PatternMatch::None);
 
         // A file of the project wins over a root namesake.

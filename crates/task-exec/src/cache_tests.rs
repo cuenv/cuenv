@@ -5,7 +5,7 @@ use super::{
 use crate::{Input, Sandbox, Task, TaskCacheMode, TaskCachePolicy};
 use cuenv_cas::{LocalActionCache, LocalCas, OutputDirectory};
 use cuenv_core::environment::Environment;
-use cuenv_manifest::tasks::{MappedInput, Mapping, ProjectReference};
+use cuenv_manifest::tasks::MappedInput;
 use cuenv_vcs::{HashedInput, WalkHasher};
 use std::fs;
 use std::time::Duration;
@@ -23,7 +23,6 @@ fn make_cache(root: &Path) -> TaskCacheConfig {
         secret_salt: Some("test-salt".to_string()),
         mode_override: None,
         cache_root: root.to_path_buf(),
-        project_roots: BTreeMap::new(),
     }
 }
 
@@ -1824,10 +1823,7 @@ fn cross_project_module() -> CrossProjectModule {
     fs::write(producer_root.join("dist/nested/lib.js"), "nested").unwrap();
     fs::write(consumer_root.join("main.ts"), "local").unwrap();
 
-    let mut cache = make_cache(&module_root);
-    cache
-        .project_roots
-        .insert("producer".to_string(), producer_root);
+    let cache = make_cache(&module_root);
     CrossProjectModule {
         _tmp: tmp,
         module_root,
@@ -1845,17 +1841,19 @@ fn consuming_task(project: &str, mappings: &[(&str, &str)]) -> Task {
             outputs: &[],
         },
     );
-    task.inputs = vec![Input::Project(ProjectReference {
-        project: project.to_string(),
-        task: "build".to_string(),
-        map: mappings
-            .iter()
-            .map(|(from, to)| Mapping {
-                from: (*from).to_string(),
-                to: (*to).to_string(),
+    // Files of the producer's task, staged below the consumer: the shape a
+    // task output of another project takes once its project is loaded.
+    task.inputs = mappings
+        .iter()
+        .map(|(from, to)| {
+            Input::Mapped(MappedInput {
+                source: format!("{project}/{from}"),
+                destination: format!("consumer/{to}"),
+                producer_task: Some(format!("#{project}:build")),
+                anchor: None,
             })
-            .collect(),
-    })];
+        })
+        .collect();
     task
 }
 
@@ -1872,77 +1870,6 @@ async fn cross_project_digest(module: &CrossProjectModule, task: &Task) -> Optio
     })
     .await
     .map(|(_, digest)| digest)
-}
-
-#[tokio::test]
-async fn a_relative_project_path_resolves_within_the_hasher_workspace() {
-    let mut module = cross_project_module();
-    module.cache.project_roots.clear();
-    let task = consuming_task("../producer", &[("dist/app.js", "vendor/app.js")]);
-    let env = Environment::new();
-
-    let outcome = super::build_action(BuildActionInput {
-        task: &task,
-        task_name: "consumer.bundle",
-        environment: &env,
-        cache: &module.cache,
-        workdir: &module.consumer_root,
-        project_root: &module.consumer_root,
-        module_root: &module.cache.vcs_hasher_root,
-    })
-    .await
-    .unwrap();
-
-    let CacheOutcome::Eligible(eligible) = outcome else {
-        panic!("safe sibling project path should be cache eligible");
-    };
-    assert_eq!(
-        eligible.inputs[0].absolute_path,
-        module.module_root.join("producer/dist/app.js")
-    );
-    assert_eq!(
-        eligible.inputs[0].relative_path,
-        // Destinations are consumer-relative; the action frame is the
-        // workspace, where the consumer lives at `consumer/`.
-        PathBuf::from("consumer/vendor/app.js")
-    );
-}
-
-#[tokio::test]
-async fn a_relative_project_path_cannot_escape_the_hasher_workspace() {
-    let mut module = cross_project_module();
-    module.cache.project_roots.clear();
-    let outside = TempDir::new().unwrap();
-    fs::create_dir_all(outside.path().join("dist")).unwrap();
-    fs::write(outside.path().join("dist/app.js"), "outside").unwrap();
-    let outside_path = outside.path().canonicalize().unwrap();
-    assert_eq!(module.module_root.parent(), outside_path.parent());
-    let relative = PathBuf::from("../..").join(outside_path.file_name().unwrap());
-    let task = consuming_task(
-        &relative.to_string_lossy(),
-        &[("dist/app.js", "vendor/app.js")],
-    );
-    let env = Environment::new();
-
-    let outcome = super::build_action(BuildActionInput {
-        task: &task,
-        task_name: "consumer.bundle",
-        environment: &env,
-        cache: &module.cache,
-        workdir: &module.consumer_root,
-        project_root: &module.consumer_root,
-        module_root: &module.cache.vcs_hasher_root,
-    })
-    .await
-    .unwrap();
-
-    assert!(matches!(
-        outcome,
-        CacheOutcome::Skipped {
-            reason: CacheSkipReason::UnknownProject { .. },
-            ..
-        }
-    ));
 }
 
 #[tokio::test]
@@ -2392,31 +2319,6 @@ async fn a_local_input_and_a_cross_project_input_combine() {
     fs::write(module.consumer_root.join("main.ts"), "edited").unwrap();
     let after = cross_project_digest(&module, &task).await.unwrap();
     assert_ne!(before, after, "the local input still contributes");
-}
-
-#[tokio::test]
-async fn an_unknown_project_reference_is_not_cached() {
-    let module = cross_project_module();
-    let task = consuming_task("does-not-exist", &[("dist/app.js", "vendor/app.js")]);
-    let env = Environment::new();
-
-    let reason = skip_reason_for_test(BuildActionInput {
-        task: &task,
-        task_name: "consumer.bundle",
-        environment: &env,
-        cache: &module.cache,
-        workdir: &module.consumer_root,
-        project_root: &module.consumer_root,
-        module_root: &module.cache.vcs_hasher_root,
-    })
-    .await;
-
-    assert_eq!(
-        reason,
-        Some(CacheSkipReason::UnknownProject {
-            project: "does-not-exist".to_string()
-        })
-    );
 }
 
 #[tokio::test]
