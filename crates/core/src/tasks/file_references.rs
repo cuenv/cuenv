@@ -269,7 +269,15 @@ mod tests {
         let content = FilesAnchor::Project("content".to_string());
         let content_directory = directory.path().join("content");
 
-        for path in ["../bun.lock", "/etc/hosts", "./readme.md", "readme.md ", ""] {
+        for path in [
+            "../bun.lock",
+            "/etc/hosts",
+            "./readme.md",
+            "readme.md ",
+            "",
+            ".git/config",
+            "vendor/.Git/HEAD",
+        ] {
             let error = checks
                 .check(BoundPath {
                     anchor: &content,

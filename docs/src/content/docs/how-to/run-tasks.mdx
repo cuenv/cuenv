@@ -391,9 +391,10 @@ glob that is legitimately empty at times (`.cuenv/changesets/*.md` after a
 release) fails its readers then.
 
 Paths of a reference are relative to their anchor and stay inside it: no `..`,
-`.` or empty segment, no leading `/`, no surrounding whitespace. The schema
-rejects these, and cuenv checks them again on every path it binds.
-`.github/**`, `a..b/x` and `src/**/*.{ts,tsx}` are fine.
+`.` or empty segment, no leading `/`, no surrounding whitespace, and no `.git`
+segment in any letter case, so no reference reads the repository's metadata.
+The schema rejects these, and cuenv checks them again on every path it binds.
+`.github/**`, `a..b/x`, `drafts.git` and `src/**/*.{ts,tsx}` are fine.
 
 A file reference stays in the real directories of its repository. Under a glob,
 a symbolic link (to a file or a directory) and a nested repository (a

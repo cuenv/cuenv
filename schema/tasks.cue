@@ -329,10 +329,11 @@ package schema
 // - #ModuleFiles: Files anywhere in the module, from the module root
 #Input: string | #ProjectReference | *#TaskOutput | #ProjectFiles | #ModuleFiles
 
-// One path of a file reference: relative to its anchor and inside it. Every
-// reader of inputs sees the same string: no empty path, no leading "/", no
-// "." or ".." segment, no empty segment, no whitespace at either end.
-#AnchoredPath: string & !="" & !~"^/" & !~"//" & !~"(^|/)\\.\\.?(/|$)" & !~"^[\\s\\v\\pZ\\x{85}]|[\\s\\v\\pZ\\x{85}]$"
+// One path of a file reference: relative to its anchor and inside it, and
+// never into the repository's metadata. Every reader of inputs sees the same
+// string: no empty path, no leading "/", no "." or ".." segment, no ".git"
+// segment in any letter case, no empty segment, no whitespace at either end.
+#AnchoredPath: string & !="" & !~"^/" & !~"//" & !~"(^|/)\\.\\.?(/|$)" & !~"(^|/)\\.(?i:git)(/|$)" & !~"^[\\s\\v\\pZ\\x{85}]|[\\s\\v\\pZ\\x{85}]$"
 
 // Files another project holds, chosen by the caller. Written through the
 // project's import: `content.#Files & {paths: ["articles/**"]}`. Paths (globs

@@ -100,8 +100,8 @@ impl FilesAnchor {
 /// Why `path` cannot be a path of a file reference, if it cannot.
 ///
 /// These are the rules of the schema's `#AnchoredPath`: a path is relative
-/// to its anchor and stays inside it, and every reader of inputs sees the
-/// same string. They are checked again on every path bound to an anchor,
+/// to its anchor and stays inside it, never reads the repository's `.git`
+/// (in any letter case), and every reader of inputs sees the same string. They are checked again on every path bound to an anchor,
 /// because a value the schema never checked (an old pinned schema,
 /// hand-written JSON) can still arrive, and joining an absolute path to an
 /// anchor would replace the anchor.
@@ -115,6 +115,8 @@ impl FilesAnchor {
 /// assert!(anchored_path_problem("/etc/hosts").is_some());
 /// assert!(anchored_path_problem("./bun.lock").is_some());
 /// assert!(anchored_path_problem("articles/** ").is_some());
+/// assert!(anchored_path_problem(".git/config").is_some());
+/// assert!(anchored_path_problem("vendor/.GIT/HEAD").is_some());
 /// ```
 #[must_use]
 pub fn anchored_path_problem(path: &str) -> Option<&'static str> {
@@ -135,6 +137,12 @@ pub fn anchored_path_problem(path: &str) -> Option<&'static str> {
         .any(|segment| segment == "." || segment == "..")
     {
         return Some("it has a `.` or `..` segment");
+    }
+    if path
+        .split('/')
+        .any(|segment| segment.eq_ignore_ascii_case(".git"))
+    {
+        return Some("it has a `.git` segment");
     }
     None
 }

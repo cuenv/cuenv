@@ -417,11 +417,14 @@ inputs: [schema.#ModuleFiles & {paths: ["bun.lock", "services/shared/**"]}]
 ### #AnchoredPath
 
 One path of a file reference: a non-empty string with no leading `/`, no `.`
-or `..` segment, no empty segment and no whitespace at either end, so every
-reader of inputs sees the same string. `.github/**`, `a..b/x` and
-`src/**/*.{ts,tsx}` are accepted; `./bun.lock`, `../shared/**` and
-`"articles/** "` are not. cuenv checks the same rules again on every path it
-binds, and checks that every file a glob resolves to lies under its anchor.
+or `..` segment, no `.git` segment (in any letter case), no empty segment and
+no whitespace at either end, so every reader of inputs sees the same string
+and none reads the repository's metadata. `.github/**`, `a..b/x`,
+`drafts.git` and `src/**/*.{ts,tsx}` are accepted; `./bun.lock`,
+`../shared/**`, `.git/config`, `vendor/.GIT/HEAD` and `"articles/** "` are
+not. cuenv checks the same rules again on every path it binds, never walks
+into a `.git` file or directory, and checks that every file a glob resolves to
+lies under its anchor.
 
 ### #Task
 

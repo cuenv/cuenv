@@ -405,7 +405,7 @@ flake check once, when it leaves draft; draft commits use the focused gates abov
    - Schema (verified, scratchpad/three13):
      ```cue
      // schema/tasks.cue
-     #AnchoredPath: string & !="" & !~"^/" & !~"//" & !~"(^|/)\\.\\.?(/|$)" & !~"^[\\s\\v\\pZ\\x{85}]|[\\s\\v\\pZ\\x{85}]$"
+     #AnchoredPath: string & !="" & !~"^/" & !~"//" & !~"(^|/)\\.\\.?(/|$)" & !~"(^|/)\\.(?i:git)(/|$)" & !~"^[\\s\\v\\pZ\\x{85}]|[\\s\\v\\pZ\\x{85}]$"
      #ProjectFiles: {
      	cuenvFiles:   "project"
      	cuenvProject: string
@@ -423,7 +423,9 @@ flake check once, when it leaves draft; draft commits use the focused gates abov
      reference can never make a task look "has inputs, never affected". A path is a typed
      element, not a guarded comprehension (cue-purist r12 N5: clearer errors on the fork,
      0.17.1 and 0.18.0-rc.3, with no `error()` or `!= _|_`): no empty string, no leading `/`,
-     no `.` or `..` segment, no empty segment, no leading or trailing Unicode whitespace (CUE's
+     no `.` or `..` segment, no `.git` segment in any letter case (a literal `.git/config` read the
+     repository's metadata, and a case-insensitive file system reads `.GIT/config` too), no empty
+     segment, no leading or trailing Unicode whitespace (CUE's
      `\s` alone is narrower than Rust's `trim`: a no-break space passed it, cue-purist r14 N2). So `./bun.lock`
      and `"articles/** "` — which the walker hashes and affected detection never matches —
      cannot be written (api-designer r12 B1; cue-purist r13 B3, verified on the fork, 0.17.1
@@ -495,7 +497,7 @@ flake check once, when it leaves draft; draft commits use the focused gates abov
    text, because the typed path's raw error is a regular expression (api-designer r13 N1):
    `inputs.<n>.paths.<m>: invalid value`, matched on the raw CUE text before cuenv's renderer
    wraps the line (cue-purist r14 N4) → "paths are relative to the project (for
-   `schema.#ModuleFiles`, the module root): no `..`, `.` or empty segment, no leading `/`, no
+   `schema.#ModuleFiles`, the module root): no `..`, `.`, `.git` or empty segment, no leading `/`, no
    surrounding space; for files outside the project use `schema.#ModuleFiles`".
    Acceptance: `cue vet ./schema` exits 0.
 5. **`..` rejection in the schema.** A hidden guarded field on `#Task` and `#ContainerImage`:
@@ -656,7 +658,8 @@ an `Instance.reference_errors` entry), never a failed evaluation.
        `result`, `.venv/bin/python`). A retargeted link or a bumped submodule is a changed
        path that may still match the pattern in CI: an over-run, never a skip.
     2. A pattern's literal prefix, or an explicit path, that passes through or ends at a
-       symlink or a nested repository → diagnostic naming it ("reference the target
+       `.git` segment (any letter case, whether or not it exists), a symlink or a nested
+       repository → diagnostic naming it ("reference the target
        directly"; "a file reference cannot reach into a submodule"). Each component is
        checked from the checkout root down (outside a git repository, from the hasher root:
        runtime-engineer r15 N2) — never above it, so a symlinked home directory or `/var`

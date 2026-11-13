@@ -365,6 +365,26 @@ fn a_path_that_leaves_its_anchor_is_rejected_with_the_rules() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn a_path_into_the_repository_metadata_is_rejected_with_the_rules() -> TestResult {
+    for path in [".git/config", "articles/.GIT/HEAD"] {
+        let app = APP.replace(
+            r#"paths: ["articles/**"]"#,
+            &format!(r#"paths: ["{path}"]"#),
+        );
+        let repository = Repository::new(&app, &[])?;
+
+        let output = repository.task("app", &["build"])?;
+
+        assert_failure(&output);
+        let printed = text(&output);
+        assert!(printed.contains("inputs.1.paths.0"), "{printed}");
+        assert!(printed.contains("`.git` or empty segment"), "{printed}");
+        assert!(!repository.root().join("app/seen.md").exists(), "{printed}");
+    }
+    Ok(())
+}
+
 #[cfg(unix)]
 #[test]
 fn a_reference_through_a_symbolic_link_is_an_error() -> TestResult {

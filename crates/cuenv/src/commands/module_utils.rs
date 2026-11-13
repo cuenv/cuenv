@@ -120,8 +120,8 @@ pub fn convert_engine_error(err: cuengine::CueEngineError) -> cuenv_core::Error 
 
 /// What to do about a path of a file reference the schema rejected.
 const REFERENCE_PATH_HINT: &str = "hint: paths are relative to the project (for \
-    `schema.#ModuleFiles`, the module root): no `..`, `.` or empty segment, no leading `/`, no \
-    surrounding space; for files outside the project use `schema.#ModuleFiles`";
+    `schema.#ModuleFiles`, the module root): no `..`, `.`, `.git` or empty segment, no leading \
+    `/`, no surrounding space; for files outside the project use `schema.#ModuleFiles`";
 
 /// Append what to do to a CUE error that says what is wrong with an input.
 ///

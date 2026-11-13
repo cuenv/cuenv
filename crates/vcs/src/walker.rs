@@ -122,10 +122,15 @@ impl WalkHasher {
     }
 
     /// What lies in the way of `pattern` staying in the real directories of
-    /// the repository: the first symbolic link or nested repository its
-    /// literal prefix passes through or ends at, looked at from the
+    /// the repository: the first `.git`, symbolic link or nested repository
+    /// its literal prefix passes through or ends at, looked at from the
     /// workspace root down and never above it. Nothing is resolved or
     /// followed to answer, so a link is reported whatever it points at.
+    ///
+    /// A `.git` segment is an obstacle in any letter case and whether or not
+    /// it exists: a walk never enters `.git`, and naming it must not read
+    /// the repository's metadata either, on a file system that ignores
+    /// case included.
     ///
     /// A nested repository is a directory other than the workspace root
     /// that holds a `.git` file or directory: a submodule, a worktree or an
@@ -144,6 +149,9 @@ impl WalkHasher {
         for segment in prefix.split('/').filter(|segment| !segment.is_empty()) {
             current.push(segment);
             relative.push(segment);
+            if segment.eq_ignore_ascii_case(".git") {
+                return Ok(Some(Obstacle::RepositoryMetadata(relative)));
+            }
             let metadata = match fs::symlink_metadata(&current) {
                 Ok(metadata) => metadata,
                 // What does not exist selects nothing; that is for the
@@ -377,6 +385,8 @@ pub enum Obstacle {
     Link(PathBuf),
     /// A nested repository, relative to the workspace root.
     NestedRepository(PathBuf),
+    /// A `.git` file or directory, relative to the workspace root.
+    RepositoryMetadata(PathBuf),
 }
 
 impl std::fmt::Display for Obstacle {
@@ -391,6 +401,11 @@ impl std::fmt::Display for Obstacle {
                 formatter,
                 "reaches into the nested repository `{}`; a file reference cannot reach into a \
                  submodule",
+                path.display()
+            ),
+            Self::RepositoryMetadata(path) => write!(
+                formatter,
+                "reads the repository metadata `{}`; a file reference cannot read `.git`",
                 path.display()
             ),
         }
@@ -799,9 +814,27 @@ mod tests {
         std::os::unix::fs::symlink("../shared/a.txt", root.join("content/a.txt")).unwrap();
         fs::create_dir_all(root.join("content/themes")).unwrap();
         fs::write(root.join("content/themes/.git"), "gitdir: elsewhere").unwrap();
+        fs::create_dir_all(root.join(".git")).unwrap();
+        fs::write(root.join(".git/config"), "[remote]").unwrap();
         let hasher = WalkHasher::new(root);
 
         for (pattern, obstacle) in [
+            (
+                ".git/config",
+                Obstacle::RepositoryMetadata(PathBuf::from(".git")),
+            ),
+            (
+                ".git/**",
+                Obstacle::RepositoryMetadata(PathBuf::from(".git")),
+            ),
+            (
+                ".GIT/config",
+                Obstacle::RepositoryMetadata(PathBuf::from(".GIT")),
+            ),
+            (
+                "shared/.git/config",
+                Obstacle::RepositoryMetadata(PathBuf::from("shared/.git")),
+            ),
             (
                 "content/vendor/**",
                 Obstacle::Link(PathBuf::from("content/vendor")),
@@ -827,7 +860,14 @@ mod tests {
             let error = resolved_in_real_directories(root, &[pattern]).unwrap_err();
             assert!(error.to_string().contains(pattern), "{error}");
         }
-        for clear in ["content/**", "shared/a.txt", "missing/**", "**/*.txt"] {
+        for clear in [
+            "content/**",
+            "shared/a.txt",
+            "missing/**",
+            "**/*.txt",
+            ".github/**",
+            "drafts.git",
+        ] {
             assert_eq!(hasher.obstacle(clear).unwrap(), None, "{clear}");
         }
         assert!(

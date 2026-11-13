@@ -51,7 +51,8 @@ task references ship.
   A reference cannot be optional: a glob that is legitimately empty at times is
   an error for its readers then.
 - Paths are relative to their anchor and stay inside it: no `..`, `.` or empty
-  segment, no leading `/`, no surrounding whitespace.
+  segment, no leading `/`, no surrounding whitespace. No path reads the
+  repository's metadata: a `.git` segment, in any letter case, is rejected.
 - A file reference never follows a symbolic link or enters a nested repository
   (a submodule, a worktree): under a glob they are left out, and a path through
   one is an error.
