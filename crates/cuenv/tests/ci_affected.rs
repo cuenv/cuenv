@@ -173,11 +173,26 @@ impl Monorepo {
 
 const MODULE: &str = "module: \"test.example/monorepo\"\nlanguage: version: \"v0.14.0\"\n";
 
+/// Write a file of the repository.
+///
+/// `cuenv task` runs a task with a hermetic `PATH` that names the usual
+/// system directories, which hold no `cp` or `mkdir` in the Nix build
+/// sandbox. Each project the tests declare gets the test's own `PATH`.
 fn write(root: &Path, relative: &str, content: &str) -> TestResult {
     let path = root.join(relative);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
+    let declares_a_project = relative.ends_with("env.cue") && content.contains("\nname:");
+    let content = if declares_a_project {
+        let search_path = std::env::var("PATH").unwrap_or_default();
+        format!(
+            "{content}\nenv: PATH: {}\n",
+            serde_json::to_string(&search_path)?
+        )
+    } else {
+        content.to_string()
+    };
     fs::write(path, content)?;
     Ok(())
 }
