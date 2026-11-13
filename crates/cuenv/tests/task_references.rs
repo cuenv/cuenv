@@ -438,6 +438,70 @@ fn a_workflow_of_a_job_per_task_cannot_run_a_task_of_another_project() -> TestRe
     Ok(())
 }
 
+/// A chain of `depth` projects whose two tasks each depend on both tasks of
+/// the next project through its import, and read one of its outputs.
+fn chain_of_projects(depth: usize) -> TestResult<TempDir> {
+    let directory = tempfile::Builder::new().prefix("cuenv_chain_").tempdir()?;
+    let root = directory.path();
+    write(root, "cue.mod/module.cue", MODULE)?;
+    copy_cue_files(
+        &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../schema"),
+        &root.join("schema"),
+    )?;
+    for index in 0..depth {
+        let next = index + 1;
+        let project = if next < depth {
+            format!(
+                "package cuenv\n\nimport (\n\t\"github.com/cuenv/cuenv/schema\"\n\tnext \
+                 \"github.com/cuenv/cuenv/p{next}:cuenv\"\n)\n\nschema.#Project\nname: \
+                 \"p{index}\"\ntasks: {{\n\ta: {{command: \"true\", dependsOn: [next.tasks.a, \
+                 next.tasks.b], inputs: [next.tasks.a.outputFiles], outputs: [\"a.txt\"]}}\n\tb: \
+                 {{command: \"true\", dependsOn: [next.tasks.a, next.tasks.b], outputs: \
+                 [\"b.txt\"]}}\n}}\n"
+            )
+        } else {
+            format!(
+                "package cuenv\n\nimport \"github.com/cuenv/cuenv/schema\"\n\nschema.#Project\n\
+                 name: \"p{index}\"\ntasks: {{\n\ta: {{command: \"true\", outputs: \
+                 [\"a.txt\"]}}\n\tb: {{command: \"true\", outputs: [\"b.txt\"]}}\n}}\n"
+            )
+        };
+        write(root, &format!("p{index}/env.cue"), &project)?;
+    }
+    Ok(directory)
+}
+
+#[test]
+fn a_deep_chain_of_projects_evaluates_without_exploding() -> TestResult {
+    // Stock CUE takes over a minute to export the first project of this
+    // chain; the bridge shares typed references into imported packages and
+    // evaluates it in about a second. The bound only catches an exponential
+    // regression, never a slow machine. The chain is generated here, never
+    // checked in: plain `cue export` of it is what explodes.
+    let chain = chain_of_projects(8)?;
+    let started = std::time::Instant::now();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cuenv"))
+        .current_dir(chain.path().join("p0"))
+        .env_clear()
+        .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .env("HOME", std::env::var("HOME").unwrap_or_default())
+        .env("CUENV_STATE_DIR", chain.path().join("state"))
+        .args(["task", "a", "--dry-run"])
+        .output()?;
+
+    assert_success(&output);
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < std::time::Duration::from_secs(60),
+        "took {elapsed:?}"
+    );
+    let order = execution_order(&output)?;
+    assert_eq!(order.len(), 15, "{order:?}");
+    assert_eq!(order.last().map(String::as_str), Some("a"));
+    Ok(())
+}
+
 #[test]
 fn an_export_runs_the_task_of_another_project_in_the_consumers_step() -> TestResult {
     let repository = Repository::new(APP, &[])?;
