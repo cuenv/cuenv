@@ -195,9 +195,11 @@ pub struct TaskScope {
     /// or with the group or sequence that holds it. A node is resolved
     /// once, while every reference in it is still as its project wrote it.
     resolved: BTreeSet<String>,
-    /// Why file references of a task could not be bound, by the task's
-    /// name in the graph. A graph that reaches the task fails with them.
-    file_problems: BTreeMap<String, Vec<String>>,
+    /// Why references of a task could not be followed (a file reference
+    /// that does not bind, a dependency on a project that does not bind
+    /// where the task's project writes it), by the task's name in the
+    /// graph. A graph that reaches the task fails with them.
+    reference_problems: BTreeMap<String, Vec<String>>,
     /// Checks of file reference paths against the repository each lies in,
     /// by its root, remembered for the run.
     reference_checks: BTreeMap<PathBuf, ReferenceChecks>,
@@ -232,7 +234,7 @@ impl TaskScope {
             contributors: BTreeMap::new(),
             walked: BTreeSet::new(),
             resolved: BTreeSet::new(),
-            file_problems: BTreeMap::new(),
+            reference_problems: BTreeMap::new(),
             reference_checks: BTreeMap::new(),
             cache_store: None,
         };
@@ -299,14 +301,21 @@ impl TaskScope {
         let Some(survey) = self.survey(name) else {
             return;
         };
-        let projects: BTreeMap<String, ResolvedProject> = survey
-            .declared
-            .iter()
-            .filter_map(|project| {
-                let target = self.resolve_project(&owner, project, source)?;
-                Some((project.clone(), target))
-            })
-            .collect();
+        // Each name is bound where the owner writes it. One that does not
+        // bind there fails the tasks that use it, whatever another project
+        // of the run bound under the same name.
+        let mut projects: BTreeMap<String, ResolvedProject> = BTreeMap::new();
+        let mut unbound: BTreeMap<String, String> = BTreeMap::new();
+        for project in &survey.declared {
+            match self.resolve_project(&owner, project, source) {
+                Ok(target) => {
+                    projects.insert(project.clone(), target);
+                }
+                Err(reason) => {
+                    unbound.insert(project.clone(), reason);
+                }
+            }
+        }
         // A task of another project read through its `outputFiles` stands
         // for the files it declares, where it writes them.
         let outputs: BTreeMap<String, OutputFiles> = survey
@@ -339,17 +348,18 @@ impl TaskScope {
                 }
             })
         });
-        let mut file_problems = BTreeMap::new();
+        let mut reference_problems = BTreeMap::new();
         if let Some(node) = self.node_mut(name) {
             Rewrite {
                 owner: &owner,
                 projects: &projects,
+                unbound: &unbound,
                 outputs: &outputs,
                 resolved: &survey.resolved,
                 files: FileBinding {
                     anchors: &anchors,
                     checks: checks.as_mut(),
-                    problems: &mut file_problems,
+                    problems: &mut reference_problems,
                 },
             }
             .node(name, node);
@@ -358,8 +368,11 @@ impl TaskScope {
         if let (Some(workspace), Some(checks)) = (workspace, checks) {
             self.reference_checks.insert(workspace, checks);
         }
-        for (task, problems) in file_problems {
-            self.file_problems.entry(task).or_default().extend(problems);
+        for (task, problems) in reference_problems {
+            self.reference_problems
+                .entry(task)
+                .or_default()
+                .extend(problems);
         }
     }
 
@@ -492,7 +505,7 @@ impl TaskScope {
             if let Some(owner) = self.owner(&name) {
                 problems.extend_from_slice(owner.project.manifest.diagnostics.task(owner.task));
             }
-            if let Some(found) = self.file_problems.get(&name) {
+            if let Some(found) = self.reference_problems.get(&name) {
                 problems.extend_from_slice(found);
             }
             if let Some(node) = self.node(&name) {
@@ -596,27 +609,31 @@ impl TaskScope {
     }
 
     /// The project a task of `owner` means by `declared`, loading it when it
-    /// is new. A reference that cannot be followed is recorded and `None`.
+    /// is new, or why it means none.
     fn resolve_project(
         &mut self,
         owner: &OwnerFrame,
         declared: &str,
         source: &dyn ProjectSource,
-    ) -> Option<ResolvedProject> {
+    ) -> std::result::Result<ResolvedProject, String> {
         let written = (owner.root.clone(), declared.to_string());
         if let Some(known) = self.declared.get(&written) {
-            return Some(known.clone());
+            return Ok(known.clone());
         }
         match self.locate_and_load(owner, declared, source) {
             Ok(target) => {
                 self.declared.insert(written, target.clone());
-                Some(target)
+                Ok(target)
             }
             Err(error) => {
                 tracing::debug!(project = declared, %error, "cross-project reference not followed");
-                self.unresolved
-                    .insert(declared.to_string(), error.to_string());
-                None
+                // The reason, without the kind of error a run reports it as.
+                let reason = match &error {
+                    Error::Configuration(configuration) => configuration.message.clone(),
+                    other => other.to_string(),
+                };
+                self.unresolved.insert(declared.to_string(), reason.clone());
+                Err(reason)
             }
         }
     }
@@ -914,6 +931,9 @@ struct Rewrite<'rewrite> {
     owner: &'rewrite OwnerFrame,
     /// What each project the nodes refer to resolved to.
     projects: &'rewrite BTreeMap<String, ResolvedProject>,
+    /// Why each project the nodes refer to that resolved to nothing does
+    /// not bind where the owner writes it.
+    unbound: &'rewrite BTreeMap<String, String>,
     /// What reading each task output of another project stands for, by the
     /// task as written (`#content:build`).
     outputs: &'rewrite BTreeMap<String, OutputFiles>,
@@ -930,7 +950,8 @@ struct FileBinding<'binding> {
     /// Checks every bound path against the files of its repository; `None`
     /// when the nodes read no file reference.
     checks: Option<&'binding mut ReferenceChecks>,
-    /// Why a reference could not be bound, by the task's name in the graph.
+    /// Why a reference of a node could not be followed, by the node's name
+    /// in the graph.
     problems: &'binding mut BTreeMap<String, Vec<String>>,
 }
 
@@ -951,7 +972,8 @@ impl Rewrite<'_> {
         match node {
             TaskNode::Task(task) => self.task(name, task),
             TaskNode::Group(group) => {
-                self.dependencies(&mut group.depends_on);
+                let group_node = BindingTask { name, source: None };
+                self.dependencies(group_node, &mut group.depends_on);
                 for (child_name, child) in &mut group.children {
                     self.node(&format!("{name}.{child_name}"), child);
                 }
@@ -965,12 +987,12 @@ impl Rewrite<'_> {
     }
 
     fn task(&mut self, name: &str, task: &mut Task) {
-        self.dependencies(&mut task.depends_on);
         let source = task.source.clone();
         let binding = BindingTask {
             name,
             source: source.as_ref(),
         };
+        self.dependencies(binding, &mut task.depends_on);
         let mut inputs = Vec::with_capacity(task.inputs.len());
         for input in std::mem::take(&mut task.inputs) {
             match input {
@@ -1105,17 +1127,35 @@ impl Rewrite<'_> {
         }
     }
 
-    /// Spell every dependency the one way the graph knows it: a task of
-    /// another project by what that project is qualified with, however the
-    /// reference was written, and a task of the owner's project by what the
-    /// owner is qualified with.
-    fn dependencies(&self, dependencies: &mut [crate::TaskDependency]) {
+    /// Spell every dependency of `node` the one way the graph knows it: a
+    /// task of another project by what that project is qualified with,
+    /// however the reference was written, and a task of the owner's project
+    /// by what the owner is qualified with. A dependency on a project that
+    /// does not bind where the owner writes it is a problem of `node`, even
+    /// when another project of the run bound that name: it is left as
+    /// written, and a graph that reaches `node` fails.
+    fn dependencies(&mut self, node: BindingTask<'_>, dependencies: &mut [crate::TaskDependency]) {
         for dependency in dependencies {
             let spelled = match ExternalTaskName::parse(&dependency.name) {
-                Some(external) => self
-                    .projects
-                    .get(external.project)
-                    .map(|target| target.task(external.task)),
+                Some(external) => match self.projects.get(external.project) {
+                    Some(target) => Some(target.task(external.task)),
+                    None => {
+                        let reason = self
+                            .unbound
+                            .get(external.project)
+                            .map_or("it was not looked up for this task", String::as_str);
+                        let problem = format!(
+                            "depends on '{}', but project '{}' does not bind here: {reason}",
+                            dependency.name, external.project
+                        );
+                        self.files
+                            .problems
+                            .entry(node.name.to_string())
+                            .or_default()
+                            .push(for_task(node.name, node.source, &problem));
+                        None
+                    }
+                },
                 None => Some(self.owner.task(&dependency.name)),
             };
             if let Some(spelled) = spelled {

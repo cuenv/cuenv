@@ -42,7 +42,8 @@ tasks: build: {
   listing the module: `cuenv task` no longer evaluates every directory of the
   module to follow a dependency, and a directory that fails to evaluate cannot
   fail a task that does not import it. A project that is not imported never
-  binds, even when the module has one of that name.
+  binds, even when the module has one of that name, or when another project of
+  the same run imports one: the task that names it fails, saying why.
 - `cuenv sync ci` now accepts these dependencies. Trigger paths follow them into
   the producer (its inputs and file references, or its directory when it has no
   inputs), and on through the producer's own dependencies: its own tasks, and

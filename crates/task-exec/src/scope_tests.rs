@@ -17,6 +17,9 @@ struct Module {
     evaluations: Cell<usize>,
     /// Names that cannot bind, and why.
     unbindable: BTreeMap<String, String>,
+    /// Names that cannot bind where the project in a directory writes them
+    /// (it does not import them), by directory and name, and why.
+    not_imported: BTreeMap<(String, String), String>,
 }
 
 impl Module {
@@ -31,6 +34,7 @@ impl Module {
             lookups: Cell::new(0),
             evaluations: Cell::new(0),
             unbindable: BTreeMap::new(),
+            not_imported: BTreeMap::new(),
         }
     }
 
@@ -74,6 +78,13 @@ impl ProjectSource for Module {
         // from a child directory that only inherits the name.
         self.lookups.set(self.lookups.get() + 1);
         if let Some(problem) = self.unbindable.get(name) {
+            return Err(problem.clone());
+        }
+        let written_in = origin
+            .strip_prefix(&self.root)
+            .map(forward_slashes)
+            .unwrap_or_default();
+        if let Some(problem) = self.not_imported.get(&(written_in, name.to_string())) {
             return Err(problem.clone());
         }
         self.projects
@@ -368,17 +379,57 @@ fn a_project_that_cannot_be_loaded_fails_the_task_that_needs_it_and_says_why() {
 
     assert!(scope.graph(["lint"]).is_ok());
     let error = scope.graph(["build"]).err().unwrap().to_string();
-    assert!(error.contains("#content:articles"), "{error}");
     assert!(
-        error.contains("Project 'content' could not be loaded"),
+        error.contains(
+            "task 'build': depends on '#content:articles', but project 'content' does not bind \
+             here: project 'content' is not imported here"
+        ),
         "{error}"
     );
-    assert!(error.contains("is not imported here"), "{error}");
     assert_eq!(module.evaluations.get(), 0, "nothing else is looked for");
     // The input is left as it was written, never dropped.
     assert_eq!(
         task(&scope, "build").inputs[1].task_output_name(),
         Some("#content:articles")
+    );
+}
+
+#[test]
+fn a_name_that_does_not_bind_where_it_is_written_fails_whatever_else_bound_it() {
+    // `app` imports `content` and `lib`; `lib` names `content` too, but does
+    // not import it. `content` is loaded for `app`, and never stands in for
+    // what `lib` wrote.
+    let mut module = app_and_content().project(
+        "lib",
+        json!({
+            "name": "lib",
+            "tasks": {"make": {"command": "make", "dependsOn": ["#content:articles"]}},
+        }),
+    );
+    if let Some(TaskNode::Task(build)) = module
+        .projects
+        .get_mut("app")
+        .and_then(|app| app.tasks.get_mut("build"))
+    {
+        build
+            .depends_on
+            .push(TaskDependency::from_name("#lib:make"));
+    }
+    module.not_imported.insert(
+        ("lib".to_string(), "content".to_string()),
+        "project 'content' is not imported here".to_string(),
+    );
+    let mut scope = module.scope("app");
+
+    scope.reach(["build"], &module);
+
+    let error = scope.graph(["build"]).err().unwrap().to_string();
+    assert!(
+        error.contains(
+            "task '#lib:make': depends on '#content:articles', but project 'content' does not \
+             bind here: project 'content' is not imported here"
+        ),
+        "{error}"
     );
 }
 
