@@ -1298,12 +1298,8 @@ fn prefix_patterns_for_hasher_root(
     patterns
         .iter()
         .map(|pattern| {
-            let trimmed = pattern.trim();
-            if trimmed.is_empty() {
-                Ok(String::new())
-            } else {
-                utf8_forward_slashes(&prefix.join(trimmed))
-            }
+            // A blank pattern means the project directory, as `.` does.
+            utf8_forward_slashes(&prefix.join(pattern.trim()))
         })
         .collect()
 }

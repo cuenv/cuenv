@@ -95,8 +95,11 @@ impl Compiler {
 
     /// The path filters under which a workflow for `pipeline` must start.
     ///
-    /// They are a superset of what `cuenv ci` treats as affecting a task of
-    /// the pipeline, by construction. GitHub's filter syntax is not the
+    /// They are a superset of the changes that affect a task of the
+    /// pipeline, by construction. The one exception is an input with a `..`
+    /// segment inside the repository: it is emitted at the path it resolves
+    /// to, while `cuenv ci` selects its task on any change until such inputs
+    /// are rejected. GitHub's filter syntax is not the
     /// glob dialect inputs are matched with at runtime (`*` stops at `/`
     /// there, and `?`, `+`, `[]` and a leading `!` mean something else), so
     /// no glob is translated: an input contributes its literal directory
@@ -113,15 +116,20 @@ impl Compiler {
         let project_path = self.options.project_path.as_deref();
         let mut paths = HashSet::new();
         for input in &inputs.patterns {
+            // `cuenv ci` selects a task with an absolute input or an invalid
+            // glob on any change, and no narrower filter covers what such an
+            // input reads.
+            let matches_anything = matches!(
+                cuenv_core::unmatchable_pattern(input),
+                Some(
+                    cuenv_core::UnmatchablePattern::Absolute
+                        | cuenv_core::UnmatchablePattern::InvalidGlob
+                )
+            );
             match trigger_paths_for_input(project_path, input) {
-                Some(derived) => paths.extend(derived),
-                None => {
-                    tracing::warn!(
-                        project_path = project_path.unwrap_or("."),
-                        input = input.as_str(),
-                        "Skipping task input that escapes the repository root or is absolute; \
-                         it will not contribute to derived GitHub path filters",
-                    );
+                Some(derived) if !matches_anything => paths.extend(derived),
+                _ => {
+                    paths.insert(directory_filter(&[]));
                 }
             }
         }
@@ -139,15 +147,12 @@ impl Compiler {
     }
 
     fn add_implicit_cue_trigger_paths(&self, paths: &mut HashSet<String>) {
-        if let Some(path) =
-            repo_relative_trigger_path(self.options.project_path.as_deref(), "env.cue")
-        {
-            paths.insert(path);
-        }
-        if let Some(path) =
-            repo_relative_trigger_path(self.options.project_path.as_deref(), "schema/**")
-        {
-            paths.insert(path);
+        for input in ["env.cue", "schema/**"] {
+            if let Some(derived) =
+                trigger_paths_for_input(self.options.project_path.as_deref(), input)
+            {
+                paths.extend(derived);
+            }
         }
 
         paths.insert("cue.mod/**".to_string());
@@ -205,9 +210,11 @@ impl Compiler {
         };
 
         for dep_path in workspace.resolve_workspace_dependency_paths(&current_member.name) {
-            let mut pattern = dep_path.clone();
-            pattern.push("**");
-            paths.insert(pattern.to_string_lossy().into_owned());
+            let dep_path = dep_path.to_string_lossy();
+            paths.extend(
+                trigger_paths_for_input(Some(&dep_path), "")
+                    .unwrap_or_else(|| vec![directory_filter(&[])]),
+            );
         }
     }
 
@@ -254,49 +261,12 @@ impl Compiler {
     }
 }
 
+/// Everything beneath the project's directory, cut where GitHub would read a
+/// segment as a pattern.
 fn add_project_fallback_path(project_path: Option<&str>, paths: &mut HashSet<String>) {
-    match project_path {
-        Some(".") | None => {
-            paths.insert("**".to_string());
-        }
-        Some(project_path) => {
-            paths.insert(format!("{project_path}/**"));
-        }
-    }
-}
-
-/// Convert a project-relative input glob into a repo-relative trigger path.
-///
-/// GitHub Actions path filters compare changed file names as repo-relative
-/// strings. They do not normalize `server/../flake.nix`, so derived trigger
-/// paths must be cleaned before emission.
-fn repo_relative_trigger_path(project_path: Option<&str>, input: &str) -> Option<String> {
-    let mut path = PathBuf::new();
-
-    if let Some(project_path) = project_path.filter(|p| !p.is_empty() && *p != ".")
-        && !push_relative_components(&mut path, Path::new(project_path))
-    {
-        return None;
-    }
-
-    if !push_relative_components(&mut path, Path::new(input)) {
-        return None;
-    }
-
-    let rendered = path
-        .components()
-        .filter_map(|component| match component {
-            Component::Normal(part) => Some(part.to_string_lossy().into_owned()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("/");
-
-    if rendered.is_empty() {
-        None
-    } else {
-        Some(rendered)
-    }
+    paths.extend(
+        trigger_paths_for_input(project_path, "").unwrap_or_else(|| vec![directory_filter(&[])]),
+    );
 }
 
 /// The path filters one input of a project contributes; `None` when the

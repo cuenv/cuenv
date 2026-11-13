@@ -281,8 +281,11 @@ fn test_derive_paths_deep_nested_project_normalizes_parent_inputs() {
 }
 
 #[test]
-fn test_derive_paths_skips_inputs_that_escape_repo_root() {
+fn an_input_that_escapes_the_repository_triggers_on_every_change() {
+    // `cuenv ci` selects the task on any change, so no narrower filter is a
+    // superset of what selects it.
     let paths = super::trigger_paths_for_project("server", &["../../outside/**"]);
+    assert!(paths.contains(&"**".to_string()), "{paths:?}");
 
     assert!(
         !paths.iter().any(|path| path.contains("outside")),
@@ -578,4 +581,28 @@ fn a_dependency_declared_on_a_group_is_followed() {
     let paths = pipeline_paths(project, &["check"]);
 
     assert!(paths.contains(&"app/schema/**".to_string()), "{paths:?}");
+}
+
+#[test]
+fn an_input_that_cannot_be_matched_triggers_on_every_change() {
+    for input in ["/etc/ssl/certs/**", "src/[a.ts"] {
+        let paths = super::trigger_paths_for_project("server", &["src/**", input]);
+        assert!(paths.contains(&"**".to_string()), "{input}: {paths:?}");
+    }
+}
+
+#[test]
+fn the_whole_project_fallback_is_cut_where_github_reads_a_pattern() {
+    let mut project = Project::new("app");
+    project.tasks.insert("gen".to_string(), task_with(&[], &[]));
+    let paths = {
+        let mut paths = pipeline_paths(project, &["gen"]);
+        paths.retain(|path| !path.starts_with("cue.mod"));
+        paths
+    };
+    assert!(paths.contains(&"app/**".to_string()), "{paths:?}");
+
+    let paths = super::trigger_paths_for_project("apps/c++", &[]);
+    assert!(paths.contains(&"apps/**".to_string()), "{paths:?}");
+    assert!(!paths.iter().any(|path| path.contains('+')), "{paths:?}");
 }

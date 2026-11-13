@@ -128,6 +128,16 @@ where
         "Computing affected tasks for CI pipeline"
     );
 
+    // A directory below a project inherits the project's name and is
+    // planned on its own. Its inherited inputs are written for the
+    // directory that declares the name, so the root-relative reading is no
+    // sign of a mistake there.
+    let warning_root = checkout_root.filter(|_| {
+        all_projects
+            .get(&config.name)
+            .is_none_or(|(declaring, _)| declaring == project_root)
+    });
+
     let mut affected = HashSet::new();
     let mut visited_external_cache: HashMap<String, bool> = HashMap::new();
     let mut visiting_external: HashSet<String> = HashSet::new();
@@ -158,7 +168,7 @@ where
             warn_about_unmatchable_inputs(project_root, task_name, &entry.node);
             warn_about_root_relative_inputs(
                 changed,
-                *checkout_root,
+                warning_root,
                 NamedNode {
                     name: task_name,
                     node: &entry.node,
