@@ -109,7 +109,9 @@ tasks: build: {
 Output references (`content.tasks.build.stdout`), another project's task in a
 pipeline's `tasks` or a matrix entry's `task`, in a service's `watch.rebuild`,
 or in a service's or image's `dependsOn`, and `outputFiles` on a group, remain
-errors for the node that holds them.
+errors for the node that holds them. So is a task's `outputFiles`, of this
+project or another, among an image's `inputs`, which nothing would stage for the
+build: `cuenv build` and `cuenv up` refuse the image.
 
 ## Limitations
 

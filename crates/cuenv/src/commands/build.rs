@@ -77,8 +77,30 @@ pub fn execute_build(options: &BuildOptions, executor: &CommandExecutor) -> cuen
         ));
     }
 
+    reject_image_problems(&project, &selected)?;
     emit_build_plan(&selected);
     build_images(&target_path, &selected)
+}
+
+/// Fail when a selected image has a problem recorded when the project's
+/// value was read: a dependency on another project's node, or an input
+/// that reads a task's outputs, which no build would honour.
+fn reject_image_problems(
+    project: &Project,
+    selected: &[(&str, &ContainerImage)],
+) -> cuenv_core::Result<()> {
+    let problems: Vec<&str> = selected
+        .iter()
+        .flat_map(|(name, _)| project.diagnostics.image(name))
+        .map(String::as_str)
+        .collect();
+    if problems.is_empty() {
+        return Ok(());
+    }
+    Err(cuenv_core::Error::configuration(format!(
+        "cuenv build: the images cannot be built:\n  {}",
+        problems.join("\n  ")
+    )))
 }
 
 struct ImageFilters<'image_filters> {
@@ -476,6 +498,33 @@ mod tests {
             inputs: vec![],
             description: None,
         }
+    }
+
+    #[test]
+    fn an_image_with_a_problem_is_not_built() {
+        let mut project = Project::new("app");
+        project
+            .images
+            .insert("api".to_string(), test_image(vec![], vec![]));
+        project
+            .images
+            .insert("web".to_string(), test_image(vec![], vec![]));
+        project.diagnostics.images.insert(
+            "api".to_string(),
+            vec!["image 'api': inputs[1] reads the outputs of task 'build'".to_string()],
+        );
+        let api = &project.images["api"];
+        let web = &project.images["web"];
+
+        let error = reject_image_problems(&project, &[("api", api), ("web", web)])
+            .expect_err("api has a problem");
+        assert!(
+            error
+                .to_string()
+                .contains("image 'api': inputs[1] reads the outputs of task 'build'"),
+            "{error}"
+        );
+        assert!(reject_image_problems(&project, &[("web", web)]).is_ok());
     }
 
     #[test]

@@ -242,7 +242,7 @@ pub(super) fn check_inputs(
                 let problems = worded(
                     "image",
                     name,
-                    checks.inputs(object, &format!("images.{name}")),
+                    checks.inputs(object, &format!("images.{name}"), Reader::Image),
                 );
                 record(&mut diagnostics.images, name, problems);
             }
@@ -271,6 +271,15 @@ fn remove_marked(value: &mut Value) {
         }
         Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
     }
+}
+
+/// What reads the inputs being checked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Reader {
+    Task,
+    /// An image, whose inputs only key its cache: nothing stages another
+    /// task's outputs for it, or orders it after that task.
+    Image,
 }
 
 /// The checks of inputs and dependency names, once names are assigned.
@@ -305,7 +314,7 @@ impl InputChecks<'_> {
             Value::Object(object) => {
                 let source = source_of(object);
                 let mut problems = unnamed_dependencies(object);
-                problems.extend(self.inputs(object, &format!("tasks.{name}")));
+                problems.extend(self.inputs(object, &format!("tasks.{name}"), Reader::Task));
                 let worded: Vec<String> = problems
                     .iter()
                     .map(|problem| for_task(name, source.as_ref(), problem))
@@ -318,8 +327,9 @@ impl InputChecks<'_> {
 
     /// Read every input of the task or image at `path` the way the rest of
     /// cuenv reads inputs: a task's `outputFiles` becomes a task-output
-    /// input, and an input that cannot be read is removed, saying why.
-    fn inputs(&self, object: &mut Map<String, Value>, path: &str) -> Vec<String> {
+    /// input of a task, and an input that cannot be read is removed, saying
+    /// why.
+    fn inputs(&self, object: &mut Map<String, Value>, path: &str, reader: Reader) -> Vec<String> {
         let Some(inputs) = object.get_mut("inputs") else {
             return Vec::new();
         };
@@ -331,7 +341,7 @@ impl InputChecks<'_> {
         let mut problems = Vec::new();
         let mut kept = Vec::with_capacity(entries.len());
         for (index, entry) in std::mem::take(entries).into_iter().enumerate() {
-            match self.input(entry, &format!("{path}.inputs[{index}]")) {
+            match self.input(entry, &format!("{path}.inputs[{index}]"), reader) {
                 Ok(entry) => kept.push(entry),
                 Err(problem) => problems.push(format!("inputs[{index}] {problem}")),
             }
@@ -342,11 +352,18 @@ impl InputChecks<'_> {
 
     /// The input at `path` as the rest of cuenv reads it, or why it cannot
     /// be read.
-    fn input(&self, entry: Value, path: &str) -> Result<Value, String> {
+    fn input(&self, entry: Value, path: &str, reader: Reader) -> Result<Value, String> {
         match &entry {
             Value::Null => Err("has no value".to_string()),
             Value::Object(object) if object.contains_key("cuenvFiles") => {
                 file_reference_problem(object).map_or(Ok(entry), Err)
+            }
+            Value::Object(object)
+                if reader == Reader::Image
+                    && (object.contains_key("cuenvOutputFilesRef")
+                        || (object.contains_key("task") && !object.contains_key("project"))) =>
+            {
+                Err(image_task_output(object))
             }
             Value::Object(object) if object.contains_key("cuenvOutputFilesRef") => {
                 self.output_files(object, path)
@@ -523,6 +540,28 @@ fn module_relative(project_path: &Path, input: &str) -> Option<PathBuf> {
 
 fn forward_slashes(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
+}
+
+/// Why an image cannot read a task's outputs, `<task>.outputFiles` or
+/// `{task}`: nothing would stage them for its build or order it after the
+/// task, so the input would be read as nothing at all.
+fn image_task_output(object: &Map<String, Value>) -> String {
+    let text = |field: &str| {
+        object
+            .get(field)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+    };
+    let read = if object.contains_key("cuenvOutputFilesRef") {
+        let (project, task) = (text("cuenvProject"), text("cuenvTask"));
+        format!("the `outputFiles` of task '{task}' of project '{project}'")
+    } else {
+        format!("the outputs of task '{}'", text("task"))
+    };
+    format!(
+        "reads {read}: an image does not read task outputs yet, so nothing would stage them for \
+         its build; list the files it reads as paths of this project"
+    )
 }
 
 /// What replaces a `{project, task, map}` input, which cuenv no longer
@@ -1230,6 +1269,43 @@ mod tests {
         assert_eq!(problems.len(), 2, "{problems:?}");
         assert!(problems[0].contains("inputs[2] reads the `outputFiles` of a task of project"));
         assert!(problems[1].contains("inputs[3] reads the `outputFiles` of a task outside"));
+    }
+
+    #[test]
+    fn an_image_reading_task_outputs_is_a_problem_of_the_image() {
+        let mut value = json!({
+            "name": "app",
+            "images": {"api": {
+                "cuenvRef": {"kind": "image", "project": "app", "name": "api"},
+                "type": "image",
+                "context": ".",
+                "inputs": [
+                    "src/**",
+                    {"cuenvOutputFilesRef": true, "cuenvProject": "content", "cuenvTask": "build"},
+                    {"cuenvOutputFilesRef": true, "cuenvProject": "app", "cuenvTask": "build"},
+                    {"task": "build"},
+                ],
+            }},
+        });
+        check_nodes(&mut value);
+
+        let diagnostics: NodeDiagnostics =
+            serde_json::from_value(value[DIAGNOSTICS_FIELD].clone()).expect("diagnostics");
+        let problems = diagnostics.image("api");
+        assert_eq!(problems.len(), 3, "{problems:?}");
+        assert!(
+            problems[0].contains(
+                "image 'api': inputs[1] reads the `outputFiles` of task 'build' of project \
+                 'content': an image does not read task outputs yet"
+            ),
+            "{problems:?}"
+        );
+        assert!(
+            problems[1]
+                .contains("inputs[2] reads the `outputFiles` of task 'build' of project 'app'")
+        );
+        assert!(problems[2].contains("inputs[3] reads the outputs of task 'build'"));
+        assert_eq!(value["images"]["api"]["inputs"], json!(["src/**"]));
     }
 
     #[test]

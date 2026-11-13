@@ -429,6 +429,32 @@ fn a_namesake_project_of_another_module_is_never_this_project() -> TestResult {
 }
 
 #[test]
+fn an_image_cannot_read_the_outputs_of_a_task() -> TestResult {
+    let app = APP.replace(
+        "tasks: {\n",
+        "images: api: {context: \".\", inputs: [\"src/**\", \
+         content.tasks.build.outputFiles]}\ntasks: {\n",
+    );
+    let repository = Repository::new(&app, &[])?;
+
+    let output = repository
+        .command(&repository.root().join("app"))
+        .args(["build", "api"])
+        .output()?;
+
+    assert_failure(&output);
+    let printed = text(&output);
+    assert!(
+        printed.contains(
+            "image 'api': inputs[1] reads the `outputFiles` of task 'build' of project \
+             'content': an image does not read task outputs yet"
+        ),
+        "{printed}"
+    );
+    Ok(())
+}
+
+#[test]
 fn a_change_to_the_producers_inputs_selects_the_consumer_in_ci() -> TestResult {
     let repository = Repository::new(APP, &[("content/articles/one.md", "two\n")])?;
 
