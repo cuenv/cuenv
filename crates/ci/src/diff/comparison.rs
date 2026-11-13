@@ -283,6 +283,7 @@ mod tests {
                 base_ref: None,
                 sha: sha.to_string(),
                 changed_files: vec![],
+                no_base: None,
             },
             started_at: Utc::now(),
             completed_at: Some(Utc::now()),

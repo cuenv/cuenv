@@ -31,13 +31,13 @@ use std::path::PathBuf;
 pub async fn execute_export(args: &CiArgs, format: ExportFormat) -> Result<()> {
     let provider = providers::detect_ci_provider(args.from.clone());
     let context = provider.context();
-    let changed_files = provider.changed_files().await?;
+    let changes = provider.changed_files().await?;
 
     tracing::info!(
         provider = %context.provider,
         event = %context.event,
         ref_name = %context.ref_name,
-        changed_files = changed_files.len(),
+        changed_files = changes.files().len(),
         "Export context"
     );
 

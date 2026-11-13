@@ -3,13 +3,17 @@
 //! Main entry point for CI pipeline execution, integrating with the provider
 //! system for context detection, file change tracking, and reporting.
 //!
+//! Tasks are left out of a run only when a comparison with the run's base
+//! shows them to be unaffected. A run whose provider has no base runs every
+//! task of the pipeline and says why.
+//!
 //! This module owns project-level scheduling and reporting. Per-task DAG
 //! execution lives in `task_execution`.
 
 use crate::affected::{AffectedProjects, ChangedInputs, CheckoutFrame};
 use crate::configuration::{ConfigurationSources, ProjectInstance};
 use crate::discovery;
-use crate::provider::CIProvider;
+use crate::provider::{CIProvider, ChangedFiles};
 use crate::report::{ContextReport, PipelineReport, PipelineStatus};
 use chrono::{DateTime, Utc};
 use cuenv_core::ci::PipelineTask;
@@ -26,7 +30,8 @@ use super::task_execution::{PipelineTaskResults, PipelineTasksRequest};
 /// Which tasks to select within the requested project and pipeline scope.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum TaskSelection {
-    /// Select tasks affected by the provider's changed files.
+    /// Select tasks affected by the provider's changed files, or every task
+    /// of the pipeline when the provider has no base to compare with.
     #[default]
     Affected,
     /// Select every declared named pipeline task.
@@ -72,9 +77,13 @@ pub async fn run_ci(request: RunCiRequest) -> Result<()> {
     let context = provider.context();
     cuenv_events::emit_ci_context!(&context.provider, &context.event, &context.ref_name);
 
-    // Get changed files
-    let changed_files = provider.changed_files().await?;
-    cuenv_events::emit_ci_changed_files!(changed_files.len());
+    // Compare the run with its base. A run without one cannot show any task
+    // to be unaffected, and says so where the user reads the run.
+    let changes = provider.changed_files().await?;
+    match &changes {
+        ChangedFiles::Compared(files) => cuenv_events::emit_ci_changed_files!(files.len()),
+        ChangedFiles::NoBase(why) => cuenv_events::emit_stdout!(why),
+    }
 
     let Some(discovered) = load_ci_projects(path_filter.as_deref())? else {
         return match task_selection {
@@ -92,7 +101,7 @@ pub async fn run_ci(request: RunCiRequest) -> Result<()> {
         specific_pipeline: specific_pipeline.as_deref(),
         environment: environment.as_deref(),
         context,
-        changed_files: &changed_files,
+        changes: &changes,
         discovered: &discovered,
         max_parallel: max_parallel.max(1),
     })
@@ -254,7 +263,7 @@ struct CiProjectRunRequest<'request> {
     specific_pipeline: Option<&'request str>,
     environment: Option<&'request str>,
     context: &'request crate::context::CIContext,
-    changed_files: &'request [PathBuf],
+    changes: &'request ChangedFiles,
     discovered: &'request DiscoveredCiProjects,
     max_parallel: usize,
 }
@@ -269,7 +278,7 @@ async fn run_ci_projects(
         specific_pipeline,
         environment,
         context,
-        changed_files,
+        changes,
         discovered,
         max_parallel,
     } = request;
@@ -279,7 +288,9 @@ async fn run_ci_projects(
 
     // Plan every project first, so secret providers can prepare for the
     // whole run before any task executes.
-    let changed_configuration = changed_configurations(discovered, changed_files);
+    // A run with no base compared nothing, so no configuration is known to
+    // have changed; it selects every task anyway.
+    let changed_configuration = changed_configurations(discovered, changes.files());
 
     let mut plans = Vec::new();
     let mut pipeline_defined = false;
@@ -296,8 +307,7 @@ async fn run_ci_projects(
             task_selection,
             requested_pipeline: specific_pipeline,
             requested_environment: environment,
-            context,
-            changed_files,
+            changes,
             project_map: &discovered.project_map,
             frame: &discovered.frame,
             changed_configuration: &changed_configuration,
@@ -337,7 +347,7 @@ async fn run_ci_projects(
                 tasks_to_run: &plan.tasks_to_run,
                 environment: plan.environment.as_deref(),
                 context,
-                changed_files,
+                changes,
                 provider,
                 project_configs: &discovered.project_configs,
                 max_parallel,
@@ -446,8 +456,7 @@ struct ProjectPipelinePlanRequest<'request> {
     task_selection: TaskSelection,
     requested_pipeline: Option<&'request str>,
     requested_environment: Option<&'request str>,
-    context: &'request crate::context::CIContext,
-    changed_files: &'request [PathBuf],
+    changes: &'request ChangedFiles,
     project_map: &'request ProjectDependencyMap,
     frame: &'request CheckoutFrame,
     /// The checkout-relative directories of the projects whose CUE
@@ -512,8 +521,7 @@ fn plan_project_pipeline(request: ProjectPipelinePlanRequest<'_>) -> Result<Proj
         requested_pipeline,
         requested_environment,
         task_selection,
-        context,
-        changed_files,
+        changes,
         project_map,
         frame,
         changed_configuration,
@@ -568,32 +576,43 @@ fn plan_project_pipeline(request: ProjectPipelinePlanRequest<'_>) -> Result<Proj
         validate_all_pipeline_tasks(pipeline, config)?;
     }
 
-    let tasks_to_run = if task_selection == TaskSelection::All || context.event == "release" {
-        pipeline_task_names
-    } else if let Some(project_root) = frame.place(project_path) {
-        crate::affected::compute_affected_tasks(
-            ChangedInputs {
-                files: changed_files,
-                project_root: &project_root,
-            },
-            &pipeline_task_names,
-            &AffectedProjects {
-                project: config,
-                all_projects: project_map,
-                checkout_root: Some(frame.root()),
-                changed_configuration: Some(changed_configuration),
-            },
-        )
-    } else {
-        // Changed files are relative to the checkout. A project that is not
-        // inside it cannot be shown to be unaffected by any of them.
-        cuenv_events::emit_stderr!(format!(
-            "warning: project {} is outside the checkout at {}, so its inputs cannot be \
-             compared with changes; every task of pipeline '{pipeline_name}' is selected",
-            project_path.display(),
-            frame.root().display()
-        ));
-        pipeline_task_names
+    let tasks_to_run = match (task_selection, changes) {
+        // `--all` asks for every task. A run with no base gets every task
+        // too: without a comparison none of them can be shown to be
+        // unaffected, and there is nothing to place in the checkout's frame.
+        // Inline and matrix entries run as they are written.
+        (TaskSelection::All, _) | (TaskSelection::Affected, ChangedFiles::NoBase(_)) => {
+            pipeline_task_names
+        }
+        (TaskSelection::Affected, ChangedFiles::Compared(changed_files)) => {
+            if let Some(project_root) = frame.place(project_path) {
+                crate::affected::compute_affected_tasks(
+                    ChangedInputs {
+                        files: changed_files,
+                        project_root: &project_root,
+                    },
+                    &pipeline_task_names,
+                    &AffectedProjects {
+                        project: config,
+                        all_projects: project_map,
+                        checkout_root: Some(frame.root()),
+                        changed_configuration: Some(changed_configuration),
+                    },
+                )
+            } else {
+                // Changed files are relative to the checkout. A project that
+                // is not inside it cannot be shown to be unaffected by any
+                // of them.
+                cuenv_events::emit_stderr!(format!(
+                    "warning: project {} is outside the checkout at {}, so its inputs cannot \
+                     be compared with changes; every task of pipeline '{pipeline_name}' is \
+                     selected",
+                    project_path.display(),
+                    frame.root().display()
+                ));
+                pipeline_task_names
+            }
+        }
     };
 
     if tasks_to_run.is_empty() {
@@ -645,7 +664,7 @@ struct PipelineExecutionRequest<'request> {
     tasks_to_run: &'request [String],
     environment: Option<&'request str>,
     context: &'request crate::context::CIContext,
-    changed_files: &'request [PathBuf],
+    changes: &'request ChangedFiles,
     provider: &'request dyn CIProvider,
     project_configs: &'request HashMap<PathBuf, Project>,
     max_parallel: usize,
@@ -663,7 +682,8 @@ async fn execute_project_pipeline(
     let tasks_to_run = request.tasks_to_run;
     let environment = request.environment;
     let context = request.context;
-    let changed_files = request.changed_files;
+    let changes = request.changes;
+    let changed_files = changes.files();
     let provider = request.provider;
     let project_configs = request.project_configs;
     let max_parallel = request.max_parallel;
@@ -731,6 +751,7 @@ async fn execute_project_pipeline(
                 .iter()
                 .map(|p| p.to_string_lossy().to_string())
                 .collect(),
+            no_base: changes.no_base().map(|why| why.reason().to_string()),
         },
         started_at: start_time,
         completed_at: Some(completed_at),
@@ -762,6 +783,7 @@ fn pipeline_duration_ms(started_at: DateTime<Utc>, completed_at: DateTime<Utc>) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::provider::NoBase;
     use chrono::Duration;
 
     fn selection_project() -> Project {
@@ -779,30 +801,33 @@ mod tests {
         .unwrap()
     }
 
-    fn plan_selection(config: &Project, selection: TaskSelection) -> Result<ProjectPlan> {
-        let context = crate::context::CIContext {
-            provider: "github".into(),
-            event: "merge_group".into(),
-            ref_name: "queue/candidate".into(),
-            base_ref: Some("main".into()),
-            sha: "candidate".into(),
-        };
-        let result = plan_project_pipeline(ProjectPipelinePlanRequest {
+    /// A comparison in which only `changed.txt` differs from the base.
+    fn one_changed_file() -> ChangedFiles {
+        ChangedFiles::Compared(vec![PathBuf::from("changed.txt")])
+    }
+
+    /// What a provider reports for a run it cannot compare with anything.
+    fn no_base() -> ChangedFiles {
+        ChangedFiles::NoBase(NoBase::new("GitHub schedule event"))
+    }
+
+    fn plan_selection(
+        config: &Project,
+        selection: TaskSelection,
+        changes: &ChangedFiles,
+    ) -> Result<ProjectPlan> {
+        plan_project_pipeline(ProjectPipelinePlanRequest {
             project_path: Path::new("/workspace"),
             config,
             scope: ProjectScope::Named,
             task_selection: selection,
             requested_pipeline: Some("verify"),
             requested_environment: None,
-            context: &context,
-            changed_files: &[PathBuf::from("changed.txt")],
+            changes,
             project_map: &HashMap::new(),
             frame: &CheckoutFrame::at(Path::new("/workspace")),
             changed_configuration: &HashSet::new(),
-        });
-        assert_eq!(context.event, "merge_group");
-        assert_eq!(context.sha, "candidate");
-        result
+        })
     }
 
     fn planned_tasks(plan: ProjectPlan) -> Vec<String> {
@@ -813,13 +838,6 @@ mod tests {
     }
 
     fn plan_in_scope(config: &Project, scope: ProjectScope, pipeline: &str) -> Result<ProjectPlan> {
-        let context = crate::context::CIContext {
-            provider: "local".into(),
-            event: "manual".into(),
-            ref_name: "current".into(),
-            base_ref: None,
-            sha: "current".into(),
-        };
         plan_project_pipeline(ProjectPipelinePlanRequest {
             project_path: Path::new("/workspace"),
             config,
@@ -827,8 +845,7 @@ mod tests {
             task_selection: TaskSelection::Affected,
             requested_pipeline: Some(pipeline),
             requested_environment: None,
-            context: &context,
-            changed_files: &[PathBuf::from("changed.txt")],
+            changes: &one_changed_file(),
             project_map: &HashMap::new(),
             frame: &CheckoutFrame::at(Path::new("/workspace")),
             changed_configuration: &HashSet::new(),
@@ -899,17 +916,77 @@ mod tests {
     }
 
     #[test]
-    fn all_selection_runs_unchanged_and_no_input_tasks_without_changing_context() {
+    fn all_selection_runs_unchanged_and_no_input_tasks() {
         let config = selection_project();
-        let plan = planned_tasks(plan_selection(&config, TaskSelection::All).unwrap());
+        let plan = planned_tasks(
+            plan_selection(&config, TaskSelection::All, &one_changed_file()).unwrap(),
+        );
         assert_eq!(plan, ["unchanged", "changed", "always"]);
     }
 
     #[test]
     fn default_selection_keeps_affected_filtering() {
         let config = selection_project();
-        let plan = planned_tasks(plan_selection(&config, TaskSelection::Affected).unwrap());
+        let plan = planned_tasks(
+            plan_selection(&config, TaskSelection::Affected, &one_changed_file()).unwrap(),
+        );
         assert_eq!(plan, ["changed", "always"]);
+    }
+
+    #[test]
+    fn a_run_without_a_base_selects_every_task_of_the_pipeline() {
+        let config = selection_project();
+        let plan =
+            planned_tasks(plan_selection(&config, TaskSelection::Affected, &no_base()).unwrap());
+        assert_eq!(plan, ["unchanged", "changed", "always"]);
+    }
+
+    #[test]
+    fn a_comparison_that_finds_nothing_is_not_a_missing_base() {
+        let mut config = selection_project();
+        config.tasks.remove("always");
+        config
+            .ci
+            .as_mut()
+            .unwrap()
+            .pipelines
+            .get_mut("verify")
+            .unwrap()
+            .tasks
+            .pop();
+        let nothing_changed = ChangedFiles::Compared(Vec::new());
+        assert!(matches!(
+            plan_selection(&config, TaskSelection::Affected, &nothing_changed).unwrap(),
+            ProjectPlan::NothingAffected
+        ));
+    }
+
+    #[test]
+    fn a_run_without_a_base_keeps_the_inline_and_matrix_entries_all_rejects() {
+        let mut config = selection_project();
+        config
+            .ci
+            .as_mut()
+            .unwrap()
+            .pipelines
+            .get_mut("verify")
+            .unwrap()
+            .tasks = serde_json::from_value(serde_json::json!([
+            {"command": "true", "description": "inline"},
+            {"type": "matrix", "task": {"_name": "unchanged"}, "matrix": {"arch": ["x64", "arm64"]}}
+        ]))
+        .unwrap();
+
+        let plan =
+            planned_tasks(plan_selection(&config, TaskSelection::Affected, &no_base()).unwrap());
+
+        assert_eq!(plan, ["inline", "unchanged"]);
+        assert!(
+            plan_selection(&config, TaskSelection::All, &no_base())
+                .unwrap_err()
+                .to_string()
+                .contains("named task references")
+        );
     }
 
     #[test]
@@ -925,14 +1002,14 @@ mod tests {
             .tasks
             .clear();
         assert!(
-            plan_selection(&config, TaskSelection::All)
+            plan_selection(&config, TaskSelection::All, &one_changed_file())
                 .unwrap_err()
                 .to_string()
                 .contains("has no tasks")
         );
         let mut config = selection_project();
         config.tasks.remove("unchanged");
-        assert!(plan_selection(&config, TaskSelection::All).is_err());
+        assert!(plan_selection(&config, TaskSelection::All, &one_changed_file()).is_err());
     }
 
     #[test]
@@ -950,7 +1027,7 @@ mod tests {
         )
         .unwrap();
         assert!(
-            plan_selection(&config, TaskSelection::All)
+            plan_selection(&config, TaskSelection::All, &one_changed_file())
                 .unwrap_err()
                 .to_string()
                 .contains("named task references")

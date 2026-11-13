@@ -88,11 +88,20 @@ pub fn generate_summary(report: &PipelineReport) -> String {
     if let Some(base_ref) = &report.context.base_ref {
         let _ = writeln!(md, "| Base | `{base_ref}` |");
     }
-    let _ = writeln!(
-        md,
-        "| Changed files | {} |",
-        report.context.changed_files.len()
-    );
+    // A run without a base compared nothing: "0 changed files" would say
+    // that it did, and found nothing.
+    let _ = match &report.context.no_base {
+        Some(reason) => writeln!(
+            md,
+            "| Changed files | not compared: {} |",
+            reason.replace('|', "\\|")
+        ),
+        None => writeln!(
+            md,
+            "| Changed files | {} |",
+            report.context.changed_files.len()
+        ),
+    };
     let _ = writeln!(md, "| Provider | {} |", report.context.provider);
 
     // Footer
@@ -186,6 +195,7 @@ mod tests {
                 base_ref: Some("main".to_string()),
                 sha: "abc123def456".to_string(),
                 changed_files: vec!["src/lib.rs".to_string()],
+                no_base: None,
             },
             started_at: Utc::now(),
             completed_at: Some(Utc::now()),
@@ -225,6 +235,7 @@ mod tests {
                 base_ref: Some("main".to_string()),
                 sha: "abc123def456".to_string(),
                 changed_files: vec!["src/lib.rs".to_string()],
+                no_base: None,
             },
             started_at: Utc::now(),
             completed_at: Some(Utc::now()),
@@ -268,6 +279,7 @@ mod tests {
                 base_ref: Some("main".to_string()),
                 sha: "abc123def456".to_string(),
                 changed_files: vec![],
+                no_base: None,
             },
             started_at: Utc::now(),
             completed_at: Some(Utc::now()),
@@ -286,6 +298,36 @@ mod tests {
         ));
         // Non-URL values should be plain
         assert!(md.contains("| Version | 1.2.3 |"));
+    }
+
+    #[test]
+    fn a_run_without_a_base_does_not_report_zero_changed_files() {
+        let mut report = PipelineReport {
+            version: "0.11.8".to_string(),
+            project: "my-project".to_string(),
+            pipeline: "default".to_string(),
+            context: ContextReport {
+                provider: "buildkite".to_string(),
+                event: "webhook".to_string(),
+                ref_name: "main".to_string(),
+                base_ref: None,
+                sha: "abc123def456".to_string(),
+                changed_files: vec![],
+                no_base: Some("Buildkite branch build".to_string()),
+            },
+            started_at: Utc::now(),
+            completed_at: Some(Utc::now()),
+            duration_ms: Some(1000),
+            status: PipelineStatus::Success,
+            tasks: vec![],
+            annotations: HashMap::new(),
+        };
+
+        let md = generate_summary(&report);
+        assert!(md.contains("| Changed files | not compared: Buildkite branch build |"));
+
+        report.context.no_base = None;
+        assert!(generate_summary(&report).contains("| Changed files | 0 |"));
     }
 
     #[test]

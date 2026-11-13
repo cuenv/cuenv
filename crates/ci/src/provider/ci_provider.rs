@@ -1,16 +1,16 @@
 //! Provider interface for CI pipeline reporting.
 
+use super::ChangedFiles;
 use crate::context::CIContext;
 use crate::report::{CheckHandle, PipelineReport};
 use async_trait::async_trait;
 use cuenv_core::Result;
-use std::path::PathBuf;
 
 /// Trait for CI/CD provider integrations.
 ///
 /// Implementations provide platform-specific functionality for:
 /// - Detecting the CI environment
-/// - Finding changed files
+/// - Comparing a run with its base, when it has one
 /// - Creating and updating check runs/statuses
 /// - Uploading reports
 #[async_trait]
@@ -26,11 +26,14 @@ pub trait CIProvider: Send + Sync {
     /// Get normalized CI context.
     fn context(&self) -> &CIContext;
 
-    /// Get files changed in this build.
+    /// Compare this run with its base.
     ///
-    /// For PRs, this returns files changed relative to the base branch.
-    /// For pushes, this returns files changed in the pushed commits.
-    async fn changed_files(&self) -> Result<Vec<PathBuf>>;
+    /// For a pull request the base is the branch it targets; for a push it
+    /// is the commit the branch was at before. A run with nothing to compare
+    /// with reports [`ChangedFiles::NoBase`] and why. A base is never
+    /// guessed: the parent of `HEAD` is not what a scheduled run, a tag or a
+    /// push of several commits came after.
+    async fn changed_files(&self) -> Result<ChangedFiles>;
 
     /// Create a check/status for a project pipeline.
     async fn create_check(&self, name: &str) -> Result<CheckHandle>;

@@ -32,6 +32,7 @@ mod tests {
                 base_ref: None,
                 sha: "abc123".to_string(),
                 changed_files: vec!["src/main.rs".to_string()],
+                no_base: None,
             },
             started_at: Utc::now(),
             completed_at: Some(Utc::now()),

@@ -32,8 +32,11 @@ pub struct CiArgs {
 
     /// Base ref for affected task detection.
     ///
-    /// Compare against this ref to determine which tasks need to run.
-    /// If not specified, uses the CI provider's default (e.g., PR base branch).
+    /// `HEAD` is compared with its merge base with this ref to determine
+    /// which tasks need to run. Ignored when GitHub Actions or Buildkite is
+    /// detected: the provider supplies the base there. Without it, a local
+    /// run sees uncommitted changes only, and a run on a CI system cuenv
+    /// does not recognise runs the whole pipeline.
     #[arg(long, value_name = "REF")]
     pub from: Option<String>,
 

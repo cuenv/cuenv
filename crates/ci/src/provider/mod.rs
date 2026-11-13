@@ -16,12 +16,13 @@
 //! // Try to detect a CI provider, fall back to local
 //! let provider = LocalProvider::detect().expect("LocalProvider always detects");
 //! let runtime = tokio::runtime::Runtime::new()?;
-//! let files = runtime.block_on(provider.changed_files())?;
+//! let changes = runtime.block_on(provider.changed_files())?;
 //! assert_eq!(provider.context().provider, "local");
-//! # let _ = files;
+//! # let _ = changes;
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 
+mod changed_files;
 mod ci_provider;
 /// The git checkout a provider runs in, read in process.
 pub mod git;
@@ -30,4 +31,5 @@ pub mod local;
 
 pub use local::LocalProvider;
 
+pub use changed_files::{ChangedFiles, NoBase};
 pub use ci_provider::CIProvider;
