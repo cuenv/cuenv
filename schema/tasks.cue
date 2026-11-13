@@ -265,7 +265,8 @@ package schema
 	// object while preserving the public task fields and flat child syntax.
 	let _childrenByType = {
 		group: {
-			{[childName= !~"^(type|dependsOn|maxConcurrency|description)$"]: ((#Task | #TaskGroup) & {
+			// `cuenvRef` is reserved for what cuenv writes on a group.
+			{[childName= !~"^(type|dependsOn|maxConcurrency|description|cuenvRef)$"]: ((#Task | #TaskGroup) & {
 				_cuenvPrefix: _name + "."
 				_cuenvSelf:   childName
 			}) | #TaskSequence
