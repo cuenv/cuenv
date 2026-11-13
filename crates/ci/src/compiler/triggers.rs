@@ -303,6 +303,10 @@ impl Compiler {
     }
 
     fn collect_task_inputs(&self, task_name: &str, inputs: &mut PipelineInputs) {
+        if task_name.starts_with('#') {
+            self.collect_external_inputs(None, task_name, inputs);
+            return;
+        }
         if !inputs.visited.insert(task_name.to_string()) {
             return;
         }
@@ -315,9 +319,6 @@ impl Compiler {
                 },
                 inputs,
             ),
-            None if task_name.starts_with('#') => {
-                self.collect_external_inputs(None, task_name, inputs);
-            }
             // Nothing is known about what an unresolved task reads.
             None => inputs.whole_project = true,
         }
@@ -326,7 +327,8 @@ impl Compiler {
     /// Follow a dependency on a task of another project (`#project:task`),
     /// written in the project at `from` (`None` for the project being
     /// compiled), into that project: what it reads triggers the pipeline as
-    /// it would select the task at runtime.
+    /// it would select the task at runtime. The project's name is bound
+    /// among what the project at `from` imports.
     fn collect_external_inputs(
         &self,
         from: Option<&Path>,
@@ -365,26 +367,45 @@ impl Compiler {
                 return;
             }
         };
-        let node = TaskIndex::build(&found.tasks).ok().and_then(|index| {
+        let producer = Producer {
+            name: project,
+            directory: &directory,
+            project: found,
+        };
+        self.collect_producer_task(&producer, task, inputs);
+    }
+
+    /// Walk the task called `task` of another project: the one a dependency
+    /// names, or one of that project's own dependencies, which its tasks
+    /// name without a project.
+    fn collect_producer_task(
+        &self,
+        producer: &Producer<'_>,
+        task: &str,
+        inputs: &mut PipelineInputs,
+    ) {
+        let Producer { name, project, .. } = *producer;
+        let node = TaskIndex::build(&project.tasks).ok().and_then(|index| {
             index
                 .resolve(task)
                 .ok()
                 .map(|entry| (entry.name.clone(), entry.node.clone()))
         });
-        let Some((name, node)) = node else {
+        let Some((resolved, node)) = node else {
             inputs.problems.push(format!(
-                "dependency '{dependency}': project '{project}' has no task '{task}'"
+                "dependency '#{name}:{task}': project '{name}' has no task '{task}'"
             ));
             return;
         };
+        // Project names are unique in a module: the name and the task say
+        // which task of which directory this is.
+        if !inputs.visited.insert(format!("#{name}:{resolved}")) {
+            return;
+        }
         self.collect_inputs_from_node(
             WalkedNode {
-                owner: &WalkOwner::External {
-                    name: project,
-                    directory: &directory,
-                    project: found,
-                },
-                name: &name,
+                owner: &WalkOwner::External(*producer),
+                name: &resolved,
                 node: &node,
             },
             inputs,
@@ -395,7 +416,7 @@ impl Compiler {
         let WalkedNode { owner, name, node } = walked;
         let project = match owner {
             WalkOwner::Compiled => &self.project,
-            WalkOwner::External { project, .. } => *project,
+            WalkOwner::External(producer) => producer.project,
         };
         inputs.problems.extend(
             project
@@ -438,7 +459,9 @@ impl Compiler {
         }
     }
 
-    /// Follow one dependency of a node of `owner`.
+    /// Follow one dependency of a node of `owner`: a task of `owner` by its
+    /// own name, a task of a project `owner` imports as `#project:task`,
+    /// whose name is bound among what `owner` imports.
     fn collect_dependency(
         &self,
         owner: &WalkOwner<'_>,
@@ -447,23 +470,11 @@ impl Compiler {
     ) {
         match owner {
             WalkOwner::Compiled => self.collect_task_inputs(dependency, inputs),
-            WalkOwner::External {
-                name, directory, ..
-            } => {
-                // Names inside another project are that project's.
-                let qualified = if dependency.starts_with('#') {
-                    dependency.to_string()
-                } else {
-                    format!("#{name}:{dependency}")
-                };
-                if !inputs.visited.insert(qualified.clone()) {
-                    return;
-                }
-                if dependency.starts_with('#') {
-                    self.collect_external_inputs(Some(directory), dependency, inputs);
-                } else {
-                    self.collect_external_inputs(Some(directory), &qualified, inputs);
-                }
+            WalkOwner::External(producer) if dependency.starts_with('#') => {
+                self.collect_external_inputs(Some(producer.directory), dependency, inputs);
+            }
+            WalkOwner::External(producer) => {
+                self.collect_producer_task(producer, dependency, inputs);
             }
         }
     }
@@ -479,10 +490,10 @@ impl Compiler {
                 (InputPattern::Project(path), WalkOwner::Compiled) => {
                     inputs.patterns.insert(path.to_owned());
                 }
-                (InputPattern::Project(path), WalkOwner::External { directory, .. }) => {
+                (InputPattern::Project(path), WalkOwner::External(producer)) => {
                     inputs
                         .anchored
-                        .insert((forward_slashes(directory), path.to_owned()));
+                        .insert((forward_slashes(producer.directory), path.to_owned()));
                 }
                 (InputPattern::Anchored { anchor, path }, _) => {
                     match self.bind(owner.directory(), anchor, path) {
@@ -505,10 +516,10 @@ impl Compiler {
         if declared == 0 && task.iter_task_output_names().next().is_none() {
             match owner {
                 WalkOwner::Compiled => inputs.whole_project = true,
-                WalkOwner::External { directory, .. } => {
+                WalkOwner::External(producer) => {
                     inputs
                         .anchored
-                        .insert((forward_slashes(directory), String::new()));
+                        .insert((forward_slashes(producer.directory), String::new()));
                 }
             }
         }
@@ -543,13 +554,17 @@ enum WalkOwner<'owner> {
     /// The project being compiled.
     Compiled,
     /// Another project, reached through a dependency on one of its tasks.
-    External {
-        /// Its name.
-        name: &'owner str,
-        /// Its directory relative to the module root.
-        directory: &'owner Path,
-        project: &'owner cuenv_core::manifest::Project,
-    },
+    External(Producer<'owner>),
+}
+
+/// Another project whose tasks a pipeline reaches through a dependency.
+#[derive(Clone, Copy)]
+struct Producer<'producer> {
+    /// Its name.
+    name: &'producer str,
+    /// Its directory relative to the module root.
+    directory: &'producer Path,
+    project: &'producer cuenv_core::manifest::Project,
 }
 
 impl WalkOwner<'_> {
@@ -558,7 +573,7 @@ impl WalkOwner<'_> {
     fn directory(&self) -> Option<&Path> {
         match self {
             Self::Compiled => None,
-            Self::External { directory, .. } => Some(directory),
+            Self::External(producer) => Some(producer.directory),
         }
     }
 
@@ -566,7 +581,7 @@ impl WalkOwner<'_> {
     fn worded(&self, problem: &str) -> String {
         match self {
             Self::Compiled => problem.to_string(),
-            Self::External { name, .. } => format!("project '{name}': {problem}"),
+            Self::External(producer) => format!("project '{}': {problem}", producer.name),
         }
     }
 }

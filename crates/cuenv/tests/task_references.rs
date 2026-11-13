@@ -418,6 +418,62 @@ fn sync_ci_triggers_a_thin_workflow_on_the_producers_inputs() -> TestResult {
     Ok(())
 }
 
+/// `sources`: a project `content` imports and `app` does not.
+const SOURCES: &str = r#"package cuenv
+
+import "github.com/cuenv/cuenv/schema"
+
+schema.#Project
+name: "sources"
+tasks: fetch: {command: "true", inputs: ["feeds/**"], outputs: ["feed.txt"]}
+"#;
+
+/// `content`, whose `build` depends on a task of its own, `gen`, which
+/// depends on a task of `sources`.
+fn content_with_dependencies() -> String {
+    CONTENT
+        .replace(
+            "import \"github.com/cuenv/cuenv/schema\"",
+            "import (\n\t\"github.com/cuenv/cuenv/schema\"\n\tsources \
+             \"github.com/cuenv/cuenv/sources:cuenv\"\n)",
+        )
+        .replace(
+            "tasks: {\n\tbuild: {\n",
+            "tasks: {\n\tgen: {command: \"true\", dependsOn: [sources.tasks.fetch], inputs: \
+             [\"drafts/**\"], outputs: [\"gen.txt\"]}\n\tbuild: {\n\t\tdependsOn: [gen]\n",
+        )
+}
+
+#[test]
+fn sync_ci_follows_the_producers_own_dependencies_and_what_it_imports() -> TestResult {
+    let content = content_with_dependencies();
+    // Through a `let`, a dependency two projects deep evaluates for over a
+    // minute in the bridge: name the task through the import.
+    let app = APP
+        .replace("let _content = content.tasks\n", "")
+        .replace("[_content.build]", "[content.tasks.build]");
+    let repository = Repository::new(
+        &app,
+        &[
+            ("content/env.cue", content.as_str()),
+            ("sources/env.cue", SOURCES),
+        ],
+    )?;
+
+    let output = repository.sync_ci()?;
+
+    assert_success(&output);
+    let workflow = repository.read(".github/workflows/app-default.yml")?;
+    for path in [
+        "content/articles/**",
+        "content/drafts/**",
+        "sources/feeds/**",
+    ] {
+        assert!(workflow.contains(path), "{path}: {workflow}");
+    }
+    Ok(())
+}
+
 #[test]
 fn a_workflow_of_a_job_per_task_cannot_run_a_task_of_another_project() -> TestResult {
     let app = APP.replace(

@@ -513,8 +513,33 @@ fn a_problem_recorded_against_a_reached_node_fails_compilation() {
 fn compiled_with_a_dependency_on_content(
     content: Project,
 ) -> Result<crate::ir::IntermediateRepresentation, crate::compiler::CompilerError> {
+    compiled_in_module(ModuleUnderTest {
+        content,
+        others: Vec::new(),
+        module_root: None,
+    })
+}
+
+/// The module `app` is compiled in: `content` (in `content`), the other
+/// projects by directory, and where the module lies on disk, which the
+/// imports of `content` are read from.
+struct ModuleUnderTest {
+    content: Project,
+    others: Vec<(&'static str, Project)>,
+    module_root: Option<std::path::PathBuf>,
+}
+
+fn compiled_in_module(
+    module: ModuleUnderTest,
+) -> Result<crate::ir::IntermediateRepresentation, crate::compiler::CompilerError> {
     use cuenv_core::ci::{CI, Pipeline, PipelineCondition, PipelineTask, StringOrVec, TaskRef};
     use std::collections::BTreeMap;
+
+    let ModuleUnderTest {
+        content,
+        others,
+        module_root,
+    } = module;
 
     let mut project = Project::new("app");
     project.tasks.insert(
@@ -552,13 +577,123 @@ fn compiled_with_a_dependency_on_content(
         file_anchors: Some(crate::compiler::FileAnchors::Known(imported(&[(
             "content", "content",
         )]))),
-        module_projects: Some(std::sync::Arc::new(BTreeMap::from([
-            (std::path::PathBuf::from("content"), content),
-            (std::path::PathBuf::from("services/app"), project.clone()),
-        ]))),
+        module_root,
+        module_projects: Some(std::sync::Arc::new(
+            [
+                (std::path::PathBuf::from("content"), content),
+                (std::path::PathBuf::from("services/app"), project.clone()),
+            ]
+            .into_iter()
+            .chain(
+                others
+                    .into_iter()
+                    .map(|(directory, other)| (std::path::PathBuf::from(directory), other)),
+            )
+            .collect(),
+        )),
         ..Default::default()
     };
     Compiler::with_options(project, options).compile()
+}
+
+fn task_reading(inputs: &[&str], dependencies: &[&str]) -> TaskNode {
+    TaskNode::Task(Box::new(Task {
+        command: "true".to_string(),
+        depends_on: dependencies
+            .iter()
+            .map(|name| cuenv_core::tasks::TaskDependency::from_name(*name))
+            .collect(),
+        inputs: inputs
+            .iter()
+            .map(|path| cuenv_core::tasks::Input::Path((*path).to_string()))
+            .collect(),
+        outputs: vec!["dist/out".to_string()],
+        ..Default::default()
+    }))
+}
+
+#[test]
+fn a_producers_own_dependencies_are_its_own_tasks() {
+    // `content`'s `build` depends on its own `gen`, by the name `content`
+    // gives it, and reads its outputs.
+    let mut content = Project::new("content");
+    content
+        .tasks
+        .insert("gen".to_string(), task_reading(&["articles/**"], &[]));
+    let mut build = task_reading(&["templates/**"], &["gen"]);
+    if let TaskNode::Task(task) = &mut build {
+        task.inputs.push(cuenv_core::tasks::Input::Task(
+            cuenv_core::tasks::TaskOutput {
+                task: "gen".to_string(),
+                map: None,
+            },
+        ));
+    }
+    content.tasks.insert("build".to_string(), build);
+
+    let ir = compiled_with_a_dependency_on_content(content).unwrap();
+    let paths = ir.pipeline.trigger.expect("a trigger").paths;
+
+    for expected in ["content/templates/**", "content/articles/**"] {
+        assert!(
+            paths.contains(&expected.to_string()),
+            "{expected}: {paths:?}"
+        );
+    }
+}
+
+#[test]
+fn a_producers_dependency_on_a_third_project_binds_among_the_producers_imports() {
+    // `app` imports `content`, which imports `sources`; `app` does not.
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let root = directory.path();
+    for (path, text) in [
+        (
+            "cue.mod/module.cue",
+            "module: \"example.com/site@v0\"\nlanguage: version: \"v0.14.1\"\n",
+        ),
+        ("sources/env.cue", "package cuenv\n\nname: \"sources\"\n"),
+        (
+            "content/env.cue",
+            "package cuenv\n\nimport sources \"example.com/site/sources:cuenv\"\n\nname: \
+             \"content\"\nuses: sources.name\n",
+        ),
+    ] {
+        let file = root.join(path);
+        std::fs::create_dir_all(file.parent().expect("a parent")).expect("a directory");
+        std::fs::write(file, text).expect("a file");
+    }
+    let mut content = Project::new("content");
+    content.tasks.insert(
+        "build".to_string(),
+        task_reading(&["templates/**"], &["prepare", "#sources:fetch"]),
+    );
+    content
+        .tasks
+        .insert("prepare".to_string(), task_reading(&["drafts/**"], &[]));
+    let mut sources = Project::new("sources");
+    sources
+        .tasks
+        .insert("fetch".to_string(), task_reading(&["feeds/**"], &[]));
+
+    let ir = compiled_in_module(ModuleUnderTest {
+        content,
+        others: vec![("sources", sources)],
+        module_root: Some(root.to_path_buf()),
+    })
+    .unwrap();
+    let paths = ir.pipeline.trigger.expect("a trigger").paths;
+
+    for expected in [
+        "content/templates/**",
+        "content/drafts/**",
+        "sources/feeds/**",
+    ] {
+        assert!(
+            paths.contains(&expected.to_string()),
+            "{expected}: {paths:?}"
+        );
+    }
 }
 
 #[test]
