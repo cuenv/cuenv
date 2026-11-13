@@ -375,8 +375,11 @@ to the consuming project (`../design-system`), or with a leading `/`, which is
 VCS-workspace-relative, not host-root-relative. A name means the shallowest
 directory that carries it. Path references are canonicalized and must remain
 inside the VCS workspace. However a project is spelled, its tasks are one set of
-nodes in the graph: a project found by name is shown as `#design-system:build`,
-and one found only by path as `#/packages/design-system:build`.
+nodes in the graph, shown under the project's name (`#design-system:build`).
+A project reached only by a path, in a run that never had to list the module's
+names, is shown by its path from the workspace root instead
+(`#/packages/design-system:build`), as is a directory that only inherits its
+project's name.
 
 Looking a project up **by name** needs every directory of the module to
 evaluate, because a directory that does not could be the one that carries the

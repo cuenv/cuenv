@@ -83,6 +83,22 @@ impl ProjectSource for ModuleProjects<'_> {
         }
     }
 
+    fn name_of(&self, root: &Path) -> Option<String> {
+        // Only from a listing a name lookup already paid for: a project
+        // reached by path alone needs none.
+        let module_root = env_file::find_cue_module_root(root)?;
+        let directories = self.directories.borrow();
+        let named = directories.get(&module_root)?.as_ref().ok()?;
+        named
+            .iter()
+            .find(|(_, directory)| {
+                directory
+                    .canonicalize()
+                    .is_ok_and(|directory| directory == root)
+            })
+            .map(|(name, _)| name.clone())
+    }
+
     fn workspace_root(&self, origin: &Path) -> PathBuf {
         workspace_root(origin)
     }

@@ -79,6 +79,25 @@ impl ProjectSource for Module {
             .map(|(directory, _)| self.directory(directory)))
     }
 
+    fn name_of(&self, root: &Path) -> Option<String> {
+        if !self.lists_projects {
+            return None;
+        }
+        let name = &self
+            .projects
+            .iter()
+            .find(|(directory, _)| self.directory(directory) == root)?
+            .1
+            .name;
+        // The name means the first directory that carries it.
+        let means = self
+            .projects
+            .iter()
+            .find(|(_, project)| &project.name == name)
+            .map(|(directory, _)| self.directory(directory))?;
+        (means == root).then(|| name.clone())
+    }
+
     fn workspace_root(&self, _origin: &Path) -> PathBuf {
         self.root.clone()
     }
@@ -476,9 +495,9 @@ fn mapped_from_content(task: &Task) -> bool {
         == [Input::Mapped(MappedInput {
             source: "content/out/one.md".to_string(),
             destination: "app/vendor/one.md".to_string(),
-            producer_task: Some("#/content:articles".to_string()),
+            producer_task: Some("#content:articles".to_string()),
         })]
-        && dependencies(task) == ["#/content:articles"]
+        && dependencies(task) == ["#content:articles"]
 }
 
 #[test]
@@ -519,7 +538,7 @@ fn every_copy_of_a_node_is_resolved_once_whichever_name_reaches_it_first() {
         assert!(mapped_from_content(task(&scope, "release[0]")), "{first:?}");
         assert_eq!(
             order(&scope.graph(["release"]).unwrap()),
-            ["#/content:articles", "release[0]", "release[1]"],
+            ["#content:articles", "release[0]", "release[1]"],
             "{first:?}"
         );
     }
@@ -777,7 +796,32 @@ fn a_module_below_its_workspace_and_a_project_beside_it_share_one_frame() {
         vec![Input::Mapped(MappedInput {
             source: "../tools/out".to_string(),
             destination: "app/generated".to_string(),
-            producer_task: Some("#/tools:generate".to_string()),
+            producer_task: Some("#tools:generate".to_string()),
         })]
+    );
+}
+
+#[test]
+fn a_project_whose_name_is_not_known_is_qualified_with_its_path() {
+    // The module's names cannot be listed, and a path needs no listing: the
+    // project is still found, and named by where it lies in the workspace.
+    let mut module = app_and_content("../content");
+    module.lists_projects = false;
+    let mut scope = module.scope("app");
+
+    scope.reach(["build"], &module);
+
+    assert_eq!(module.lookups.get(), 0);
+    assert_eq!(
+        order(&scope.graph(["build"]).unwrap()),
+        ["#/content:articles", "build"]
+    );
+    assert_eq!(
+        task(&scope, "build").inputs.last(),
+        Some(&Input::Mapped(MappedInput {
+            source: "content/out/one.md".to_string(),
+            destination: "app/vendor/one.md".to_string(),
+            producer_task: Some("#/content:articles".to_string()),
+        }))
     );
 }

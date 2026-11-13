@@ -9,55 +9,63 @@
 
 use cuenv_core::Result;
 use cuenv_core::manifest::Project;
-use cuenv_core::module::{NamedProject, declaring_directories};
 use cuenv_task_exec::{ProjectSource, SourcedProject};
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use tokio::sync::OnceCell;
 
 /// The environment a project's hooks and static `env` provide.
 pub(super) type HookEnvironment = Arc<BTreeMap<String, String>>;
 
+/// What a run knows of its module before `--path` narrows what it runs.
+#[derive(Clone, Copy)]
+pub(super) struct CiModule<'module> {
+    /// The root of the CUE module.
+    pub(super) module_root: &'module Path,
+    /// The root of the checkout: the frame changed files are reported in,
+    /// and the directory task inputs are hashed below.
+    pub(super) checkout_root: &'module Path,
+    /// Every project of the module with its directory.
+    pub(super) projects: &'module [(PathBuf, Project)],
+    /// The directory each project name means, as the selection of affected
+    /// tasks resolves it. A dependency runs in the project it was selected
+    /// by.
+    pub(super) named: &'module HashMap<String, (PathBuf, Project)>,
+}
+
 /// Every project of the module a run was started in, in or out of scope.
 pub(super) struct CiProjects {
     module_root: PathBuf,
+    checkout_root: PathBuf,
     /// The projects by directory.
     by_directory: BTreeMap<PathBuf, Project>,
     /// The directory each project name means.
     by_name: BTreeMap<String, PathBuf>,
-    /// The checkout the module lies in, looked up once.
-    workspace_root: OnceLock<PathBuf>,
     /// Hook environments built so far in this run, by project directory.
     hook_environments: Mutex<HashMap<PathBuf, Arc<OnceCell<HookEnvironment>>>>,
 }
 
 impl CiProjects {
-    /// The projects of the module rooted at `module_root`, each with its
-    /// directory.
-    pub(super) fn new(module_root: &Path, projects: &[(PathBuf, Project)]) -> Self {
-        let directories: Vec<(PathBuf, &Project)> = projects
-            .iter()
-            .map(|(path, project)| (canonical(path), project))
-            .collect();
-        // A name means the shallowest directory that carries it: the rule
-        // affected detection resolves dependencies by.
-        let by_name =
-            declaring_directories(directories.iter().map(|(path, project)| NamedProject {
-                path,
-                name: &project.name,
-            }))
-            .into_iter()
-            .map(|(name, path)| (name.to_string(), path.to_path_buf()))
-            .collect();
+    /// The projects of a module, each with its directory.
+    pub(super) fn new(module: CiModule<'_>) -> Self {
+        let CiModule {
+            module_root,
+            checkout_root,
+            projects,
+            named,
+        } = module;
         Self {
             module_root: canonical(module_root),
-            by_directory: directories
-                .into_iter()
-                .map(|(path, project)| (path, project.clone()))
+            checkout_root: canonical(checkout_root),
+            by_directory: projects
+                .iter()
+                .map(|(path, project)| (canonical(path), project.clone()))
                 .collect(),
-            by_name,
-            workspace_root: OnceLock::new(),
+            by_name: named
+                .iter()
+                .map(|(name, (path, _))| (name.clone(), canonical(path)))
+                .collect(),
             hook_environments: Mutex::default(),
         }
     }
@@ -67,15 +75,10 @@ impl CiProjects {
         &self.module_root
     }
 
-    /// The directory task inputs are hashed below: the checkout, or the
-    /// module where there is no repository.
+    /// The directory task inputs are hashed below, and which a project
+    /// spelled as a path may not leave: the root of the checkout.
     pub(super) fn workspace_root(&self) -> &Path {
-        self.workspace_root.get_or_init(|| {
-            gix::discover(&self.module_root)
-                .ok()
-                .and_then(|repository| repository.workdir().map(canonical))
-                .unwrap_or_else(|| self.module_root.clone())
-        })
+        &self.checkout_root
     }
 
     /// The environment the hooks and static `env` of the project in
@@ -125,6 +128,13 @@ impl ProjectSource for CiProjects {
     fn directory_of(&self, _origin: &Path, name: &str) -> Result<Option<PathBuf>> {
         // Every project a CI run knows lies in the one module it runs in.
         Ok(self.by_name.get(name).cloned())
+    }
+
+    fn name_of(&self, root: &Path) -> Option<String> {
+        self.by_name
+            .iter()
+            .find(|(_, directory)| directory.as_path() == root)
+            .map(|(name, _)| name.clone())
     }
 
     fn workspace_root(&self, _origin: &Path) -> PathBuf {

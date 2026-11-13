@@ -1582,3 +1582,87 @@ fn a_dependency_on_a_step_of_a_sequence_resolves_to_that_step() {
 
     assert!(affected.is_empty(), "{affected:?}");
 }
+
+// ==========================================================================
+// A project spelled as a path
+// ==========================================================================
+
+/// `content` and, beside it, `sources`, which `content`'s task depends on by
+/// a path of its own.
+fn content_and_sources() -> HashMap<String, (PathBuf, Project)> {
+    let articles = make_task(vec!["articles/**"], vec!["#../sources:pull"]);
+    let pull = make_task(vec!["feeds/**"], vec![]);
+    HashMap::from([
+        (
+            "content".to_string(),
+            (
+                PathBuf::from("content"),
+                make_project(vec![("articles", articles)]),
+            ),
+        ),
+        (
+            "sources".to_string(),
+            (PathBuf::from("sources"), make_project(vec![("pull", pull)])),
+        ),
+    ])
+}
+
+#[test]
+fn a_project_spelled_as_a_path_is_found_like_one_spelled_by_name() {
+    let all_projects = content_and_sources();
+    // By name, from the project that depends on it, and from the root of
+    // the checkout: each is the dependency on `content`.
+    for spelling in [
+        "#content:articles",
+        "#../content:articles",
+        "#/content:articles",
+    ] {
+        let consumer = make_task(vec!["src/**"], vec![spelling]);
+        let project = make_project(vec![("build", consumer)]);
+        let affected_by = |file: &str| {
+            affected_in(
+                &Change {
+                    project: &project,
+                    all_projects: &all_projects,
+                    files: &[PathBuf::from(file)],
+                },
+                &["build"],
+            )
+        };
+
+        assert_eq!(
+            affected_by("content/articles/one.md"),
+            ["build"],
+            "{spelling}"
+        );
+        // A path written in `content` is relative to `content`.
+        assert_eq!(affected_by("sources/feeds/a.xml"), ["build"], "{spelling}");
+        // The project was found, so a change to nothing it reads leaves
+        // the task out: it is not selected for want of a comparison.
+        assert!(affected_by("docs/readme.md").is_empty(), "{spelling}");
+    }
+}
+
+#[test]
+fn a_path_that_names_no_project_counts_as_affected() {
+    let all_projects = content_and_sources();
+    for spelling in [
+        "#../nowhere:articles",
+        "#../../outside:articles",
+        "#/content/drafts:articles",
+    ] {
+        let consumer = make_task(vec!["src/**"], vec![spelling]);
+        let project = make_project(vec![("build", consumer)]);
+
+        let affected = affected_in(
+            &Change {
+                project: &project,
+                all_projects: &all_projects,
+                files: &[PathBuf::from("docs/readme.md")],
+            },
+            &["build"],
+        );
+
+        assert_eq!(affected, ["build"], "{spelling}");
+    }
+}

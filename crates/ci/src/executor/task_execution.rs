@@ -1,5 +1,7 @@
 //! CI task DAG execution and per-task IR runner setup.
 
+#[cfg(test)]
+use super::projects::CiModule;
 use super::projects::{CiProjects, HookEnvironment, HookProject};
 use super::runner::{IRTaskRunner, TaskOutput};
 
@@ -1004,7 +1006,16 @@ mod tests {
                 serde_json::json!({"site": {"command": "true"}}),
             ),
         ];
-        let projects = CiProjects::new(&root, &all);
+        let named: HashMap<String, (PathBuf, Project)> = all
+            .iter()
+            .map(|(path, project)| (project.name.clone(), (path.clone(), project.clone())))
+            .collect();
+        let projects = CiProjects::new(CiModule {
+            module_root: &root,
+            checkout_root: &root,
+            projects: &all,
+            named: &named,
+        });
         let values_for = |task: &str| {
             let mut values: Vec<String> = pipeline_env_values(PlannedPipeline {
                 project_path: &app.0,

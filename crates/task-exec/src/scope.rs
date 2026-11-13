@@ -107,6 +107,12 @@ pub trait ProjectSource {
     /// it cannot say whether one of them carries the name.
     fn directory_of(&self, origin: &Path, name: &str) -> Result<Option<PathBuf>>;
 
+    /// The name that means the project in the directory `root`, when the
+    /// source already knows it: the name [`Self::directory_of`] would lead
+    /// back to `root` from. `None` when it would have to list projects to
+    /// tell, and for a directory that only inherits a name.
+    fn name_of(&self, root: &Path) -> Option<String>;
+
     /// The directory a path-shaped reference made in `origin` may not leave:
     /// the VCS workspace, or the CUE module where there is none.
     fn workspace_root(&self, origin: &Path) -> PathBuf;
@@ -517,7 +523,7 @@ impl TaskScope {
         let key = match self.keys.get(&root) {
             Some(key) => key.clone(),
             None => {
-                let key = self.key_for(&located, declared);
+                let key = self.key_for(&located, Reference { declared, source });
                 self.merge(source.project_at(&root)?, &key)?;
                 key
             }
@@ -596,18 +602,24 @@ impl TaskScope {
 
     /// What to qualify a newly located project's tasks with.
     ///
-    /// A project found by its name is qualified with that name, which means
-    /// the same project wherever it is written. One found by a path is
-    /// qualified with its path from the workspace root (`/services/api`),
-    /// which is how any project of the workspace may spell it.
-    fn key_for(&self, located: &LocatedProject, declared: &str) -> String {
+    /// A project is qualified with the name that means it: the name it was
+    /// found by, or, for one found by a path, the name its source already
+    /// knows it by. Otherwise it is qualified with its path from the
+    /// workspace root (`/services/api`), which is how any project of the
+    /// workspace may spell it.
+    fn key_for(&self, located: &LocatedProject, reference: Reference<'_>) -> String {
         let key = match located {
-            LocatedProject::ByName(_) => declared.to_string(),
+            LocatedProject::ByName(_) => reference.declared.to_string(),
             // A task name is split from its project at the first colon,
             // so the project's part holds none.
-            LocatedProject::ByPath { root, workspace } => {
-                format!("/{}", forward_slashes(&relative_from(workspace, root))).replace(':', "_")
-            }
+            LocatedProject::ByPath { root, workspace } => reference
+                .source
+                .name_of(root)
+                .filter(|name| !name.is_empty() && !name.contains(':'))
+                .unwrap_or_else(|| {
+                    format!("/{}", forward_slashes(&relative_from(workspace, root)))
+                        .replace(':', "_")
+                }),
         };
         if !self.external.contains_key(&key) {
             return key;
@@ -691,6 +703,14 @@ struct SurveyedNode<'node> {
     /// The node's name in the graph.
     name: String,
     node: &'node TaskNode,
+}
+
+/// A reference to a project as a task wrote it, and where projects come
+/// from.
+#[derive(Clone, Copy)]
+struct Reference<'reference> {
+    declared: &'reference str,
+    source: &'reference dyn ProjectSource,
 }
 
 /// A project's directory, and how a reference to it found it.

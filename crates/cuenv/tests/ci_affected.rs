@@ -458,12 +458,100 @@ tasks: pull: {
     Ok(())
 }
 
+/// `app` consuming `content`, with the project spelled as given.
+fn app_consuming(project: &str) -> String {
+    APP_CONSUMING_CONTENT.replace("project: \"content\"", &format!("project: \"{project}\""))
+}
+
+#[test]
+fn a_project_spelled_as_a_path_is_selected_and_run_like_one_spelled_by_name() -> TestResult {
+    // By name, from the project that depends on it, and from the root of
+    // the checkout. Selection and execution find the same project by each.
+    for spelling in ["content", "../content", "/content"] {
+        let app = app_consuming(spelling);
+
+        // A file of `content` changed: `app` is selected, and `content`
+        // runs first.
+        let repository = Monorepo::new(&app)?;
+        let output = repository.ci(&["--path", "app"])?;
+        assert_success(&output);
+        let printed = text(&output);
+        assert!(!printed.contains("warning:"), "{spelling}: {printed}");
+        assert_eq!(
+            repository.read("content/out/one.md")?,
+            "two\n",
+            "{spelling}"
+        );
+        assert_eq!(repository.read("app/seen.md")?, "two\n", "{spelling}");
+
+        // Nothing either project reads changed. The dependency was found,
+        // so it is shown to be unaffected and nothing runs.
+        let unaffected = Monorepo::changing(&app, &[], &[("docs/readme.md", "changed\n")])?;
+        let output = unaffected.ci(&["--path", "app"])?;
+        assert_success(&output);
+        let printed = text(&output);
+        assert!(
+            printed.contains("No affected tasks"),
+            "{spelling}: {printed}"
+        );
+        assert!(!printed.contains("warning:"), "{spelling}: {printed}");
+        assert!(
+            !unaffected.root().join("app/seen.md").exists(),
+            "{spelling}: {printed}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn a_dependency_in_a_module_nested_in_the_repository_is_staged_from_the_module() -> TestResult {
+    // The module is `<repository>/mono`; the checkout root is its parent.
+    // A mapped input names files from the module root, and the repository
+    // holds a file where the same path leads from its own root.
+    for spelling in ["content", "../content", "/mono/content"] {
+        let directory = tempfile::tempdir()?;
+        let root = directory.path();
+        let module = root.join("mono");
+        write(&module, "cue.mod/module.cue", MODULE)?;
+        write(&module, "app/env.cue", &app_consuming(spelling))?;
+        write(&module, "app/src/main.ts", "export {}\n")?;
+        write(&module, "content/env.cue", CONTENT)?;
+        write(&module, "content/articles/one.md", "one\n")?;
+        write(root, "content/out/one.md", "the wrong file\n")?;
+        test_git::init_repository(root)?;
+        let base = test_git::commit_all(root, "base")?;
+        write(&module, "content/articles/one.md", "two\n")?;
+        test_git::commit_all(root, "an article changes")?;
+
+        let output = Command::new(env!("CARGO_BIN_EXE_cuenv"))
+            .current_dir(&module)
+            .env_remove("GITHUB_ACTIONS")
+            .env_remove("BUILDKITE")
+            .env("CUENV_STATE_DIR", root.join("state"))
+            .args(["ci", "--from", &base, "--path", "app"])
+            .output()?;
+
+        assert_success(&output);
+        let printed = text(&output);
+        assert!(!printed.contains("warning:"), "{spelling}: {printed}");
+        assert_eq!(
+            fs::read_to_string(module.join("content/out/one.md"))?,
+            "two\n",
+            "{spelling}"
+        );
+        assert_eq!(
+            fs::read_to_string(module.join("app/seen.md"))?,
+            "two\n",
+            "{spelling}"
+        );
+    }
+    Ok(())
+}
+
 #[test]
 fn a_dependency_that_cannot_be_loaded_fails_the_run() -> TestResult {
     // The dependency is neither skipped nor run in the consumer's project.
-    let repository = Monorepo::new(
-        &APP_CONSUMING_CONTENT.replace("project: \"content\"", "project: \"no-such-project\""),
-    )?;
+    let repository = Monorepo::new(&app_consuming("no-such-project"))?;
 
     let output = repository.ci(&["--path", "app"])?;
 

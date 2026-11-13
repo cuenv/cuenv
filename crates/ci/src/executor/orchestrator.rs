@@ -24,7 +24,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use super::projects::{CiProjects, HookProject};
+use super::projects::{CiModule, CiProjects, HookProject};
 use super::task_env;
 use super::task_execution::{PipelineScope, PipelineTaskResults, PipelineTasksRequest};
 
@@ -166,9 +166,17 @@ fn load_ci_projects(path_filter: Option<&str>) -> Result<Option<DiscoveredCiProj
     // Dependencies are resolved against every project of the module, before
     // `--path` narrows what runs.
     let frame = CheckoutFrame::around(&module.root);
-    let project_map = place_projects(build_project_map(&projects), &frame);
+    let named_projects = build_project_map(&projects);
+    // A dependency runs in the project it is selected by: one name rule and
+    // one checkout root serve both.
+    let all_projects = Arc::new(CiProjects::new(CiModule {
+        module_root: &module.root,
+        checkout_root: frame.root(),
+        projects: &projects,
+        named: &named_projects,
+    }));
+    let project_map = place_projects(named_projects, &frame);
     let project_directories = projects.iter().map(|(path, _)| path.clone()).collect();
-    let all_projects = Arc::new(CiProjects::new(&module.root, &projects));
 
     // Filter projects by path if specified (and not the default ".")
     let named_path = path_filter

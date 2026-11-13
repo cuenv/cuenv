@@ -303,10 +303,11 @@ tasks: pull: {
     assert_success(&output);
     assert_eq!(workspace.read("app/seen.md")?, "one\nraw\n");
     // `content` spells `sources` as a path and `app` spells `content` by
-    // name: each project is one set of nodes however it is spelled.
+    // name: each project is one set of nodes however it is spelled, named
+    // by its name once the module's names are known.
     assert_eq!(
         execution_order(&workspace.task("app", &["build", "--dry-run"])?)?,
-        ["#/sources:pull", "#content:articles", "build"]
+        ["#sources:pull", "#content:articles", "build"]
     );
     Ok(())
 }
