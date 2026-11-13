@@ -6,13 +6,17 @@ use super::{infrastructure, matrix};
 use cuenv_core::Result;
 use cuenv_github::GitHubConfigExt;
 use std::collections::{BTreeMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use tracing::instrument;
 
 pub(in crate::commands::sync::functions) struct GithubSyncRequest<'request> {
     pub(in crate::commands::sync::functions) repo_root: &'request Path,
     pub(in crate::commands::sync::functions) options: CiSyncOptions<'request>,
     pub(in crate::commands::sync::functions) projects: &'request [ProjectInfo],
+    /// The module's other projects, which no workflow is generated for but a
+    /// dependency on one of their tasks is followed into.
+    pub(in crate::commands::sync::functions) other_projects: &'request [ProjectInfo],
     /// CUE package the projects were evaluated from.
     pub(in crate::commands::sync::functions) package: &'request str,
 }
@@ -34,6 +38,7 @@ pub(in crate::commands::sync::functions) async fn execute_sync_github(
         repo_root,
         options,
         projects,
+        other_projects,
         package,
     } = request;
     if projects.is_empty() {
@@ -46,6 +51,18 @@ pub(in crate::commands::sync::functions) async fn execute_sync_github(
     // Each project with CI config gets its own workflow files
     let mut all_workflows: Vec<(String, String)> = Vec::new();
     let mut hestia_enabled = false;
+    let module_projects: Arc<BTreeMap<PathBuf, cuenv_core::manifest::Project>> = Arc::new(
+        projects
+            .iter()
+            .chain(other_projects)
+            .map(|project| {
+                (
+                    module_relative(&project.relative_path),
+                    project.config.clone(),
+                )
+            })
+            .collect(),
+    );
     for project in projects {
         let Some(ci) = &project.config.ci else {
             continue;
@@ -55,7 +72,12 @@ pub(in crate::commands::sync::functions) async fn execute_sync_github(
                 .github_config_for_pipeline(pipeline_name)
                 .hestia
                 .is_some();
-            let workflows = generate_github_workflow_for_project(project, pipeline_name, pipeline)?;
+            let workflows = generate_github_workflow_for_project(WorkflowRequest {
+                project,
+                pipeline_name,
+                pipeline,
+                module_projects: &module_projects,
+            })?;
             all_workflows.extend(workflows);
         }
     }
@@ -90,6 +112,15 @@ pub(in crate::commands::sync::functions) async fn execute_sync_github(
         stale_workflows: &stale_workflows,
         options,
     })
+}
+
+/// A project's directory relative to the module root as the binding of
+/// project names spells it: empty for the root.
+fn module_relative(relative_path: &Path) -> PathBuf {
+    relative_path
+        .components()
+        .filter(|component| !matches!(component, std::path::Component::CurDir))
+        .collect()
 }
 
 fn sync_github_workflow_files(request: GithubWorkflowFilesSyncRequest<'_>) -> Result<String> {
@@ -265,15 +296,25 @@ pub(in crate::commands::sync::functions) fn has_matrix_tasks(
         .any(cuenv_core::ci::PipelineTask::has_matrix_dimensions)
 }
 
+/// One pipeline of one project to generate workflows for.
+#[derive(Clone, Copy)]
+struct WorkflowRequest<'request> {
+    project: &'request ProjectInfo,
+    pipeline_name: &'request str,
+    pipeline: &'request cuenv_core::ci::Pipeline,
+    /// Every project of the module by its directory relative to the module
+    /// root, which a dependency on another project's task is followed into.
+    module_projects: &'request Arc<BTreeMap<PathBuf, cuenv_core::manifest::Project>>,
+}
+
 /// Generate GitHub workflow files for a single project and pipeline.
 fn generate_github_workflow_for_project(
-    project: &ProjectInfo,
-    pipeline_name: &str,
-    pipeline: &cuenv_core::ci::Pipeline,
+    request: WorkflowRequest<'_>,
 ) -> Result<Vec<(String, String)>> {
     use cuenv_core::ci::PipelineMode;
 
-    let ctx = build_project_pipeline_context(project, pipeline_name, pipeline)?;
+    let pipeline_name = request.pipeline_name;
+    let ctx = build_project_pipeline_context(request)?;
 
     // Dispatch based on pipeline mode
     // Note: Matrix tasks ALWAYS require multi-job workflow regardless of mode,
@@ -282,6 +323,7 @@ fn generate_github_workflow_for_project(
         PipelineMode::Thin => {
             // Thin mode with matrix tasks still needs multi-job workflow
             if has_matrix_tasks(&ctx.pipeline_tasks) {
+                reject_external_dependencies(pipeline_name, &ctx)?;
                 matrix::emit_matrix_workflow(pipeline_name, &ctx)
             } else {
                 // Pure thin mode: single job with cuenv ci orchestration
@@ -290,12 +332,14 @@ fn generate_github_workflow_for_project(
         }
         PipelineMode::Expanded => {
             // Expanded mode: all tasks as individual jobs with dependencies
+            if ctx.tasks.is_empty() && !has_matrix_tasks(&ctx.pipeline_tasks) && !ctx.is_release {
+                return Ok(Vec::new());
+            }
+            reject_external_dependencies(pipeline_name, &ctx)?;
             if has_matrix_tasks(&ctx.pipeline_tasks) {
                 matrix::emit_matrix_workflow(pipeline_name, &ctx)
             } else if ctx.is_release {
                 emit_release_workflow(pipeline_name, &ctx)
-            } else if ctx.tasks.is_empty() {
-                Ok(Vec::new())
             } else {
                 emit_standard_workflow(pipeline_name, &ctx)
             }
@@ -303,13 +347,40 @@ fn generate_github_workflow_for_project(
     }
 }
 
+/// Refuse a workflow that runs each task in a job of its own
+/// (`--skip-dependencies`) when one of its tasks depends on a task of
+/// another project: no job of the workflow would run that task. A thin
+/// workflow runs `cuenv ci`, which runs it in the same job.
+fn reject_external_dependencies(pipeline_name: &str, ctx: &PipelineContext) -> Result<()> {
+    let Some((task, dependency)) = ctx.tasks.iter().find_map(|task| {
+        task.external_dependencies
+            .first()
+            .map(|dependency| (task.id.as_str(), dependency.as_str()))
+    }) else {
+        return Ok(());
+    };
+    let thin = if has_matrix_tasks(&ctx.pipeline_tasks) {
+        "remove the matrix task, whose jobs each run one task"
+    } else {
+        "set `mode: \"thin\"` on the pipeline, so one job runs `cuenv ci`"
+    };
+    Err(cuenv_core::Error::configuration(format!(
+        "pipeline '{pipeline_name}': task '{task}' depends on '{dependency}', a task of another \
+         project. This workflow runs each task in a job of its own, which cannot run a task of \
+         another project; {thin}"
+    )))
+}
+
 /// Build pipeline context for a single project and pipeline.
-fn build_project_pipeline_context(
-    project: &ProjectInfo,
-    pipeline_name: &str,
-    pipeline: &cuenv_core::ci::Pipeline,
-) -> Result<PipelineContext> {
+fn build_project_pipeline_context(request: WorkflowRequest<'_>) -> Result<PipelineContext> {
     use cuenv_ci::compiler::{Compiler, CompilerOptions};
+
+    let WorkflowRequest {
+        project,
+        pipeline_name,
+        pipeline,
+        module_projects,
+    } = request;
 
     let ci = project
         .config
@@ -342,6 +413,7 @@ fn build_project_pipeline_context(
         ci_mode: true,
         module_root: Some(project.module_root.clone()),
         project_path: project_path_for_compiler.clone(),
+        module_projects: Some(Arc::clone(module_projects)),
         ..Default::default()
     };
     let compiler = Compiler::with_options(project.config.clone(), options);
@@ -815,6 +887,7 @@ mod tests {
             github_permissions: std::collections::BTreeMap::new(),
             github_execution: None,
             provider_hints: None,
+            external_dependencies: Vec::new(),
         }
     }
 
@@ -873,6 +946,7 @@ mod tests {
             github_permissions: std::collections::BTreeMap::new(),
             github_execution: None,
             provider_hints: None,
+            external_dependencies: Vec::new(),
         }
     }
 

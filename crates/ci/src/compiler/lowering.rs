@@ -335,7 +335,15 @@ impl Compiler {
             depends_on: task
                 .depends_on
                 .iter()
+                .filter(|dependency| !is_external(dependency.task_name()))
                 .flat_map(|d| self.expand_dependency_to_leaf_tasks(d.task_name(), id))
+                .collect(),
+            external_dependencies: task
+                .depends_on
+                .iter()
+                .map(cuenv_core::tasks::TaskDependency::task_name)
+                .filter(|dependency| is_external(dependency))
+                .map(str::to_string)
                 .collect(),
             cache_policy,
             deployment,
@@ -397,4 +405,9 @@ impl Compiler {
 /// Name of the artifact that carries a task's outputs between CI jobs.
 fn artifact_name_for_task(task_id: &str) -> String {
     format!("{}-artifacts", task_id.replace('.', "-"))
+}
+
+/// Whether a dependency names a task of another project (`#project:task`).
+fn is_external(dependency: &str) -> bool {
+    dependency.starts_with('#')
 }

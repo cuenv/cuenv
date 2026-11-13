@@ -470,6 +470,7 @@ mod tests {
             github_permissions: std::collections::BTreeMap::new(),
             github_execution: None,
             provider_hints: None,
+            external_dependencies: Vec::new(),
         }
     }
 
@@ -667,6 +668,7 @@ mod tests {
             github_permissions: std::collections::BTreeMap::new(),
             github_execution: None,
             provider_hints: None,
+            external_dependencies: Vec::new(),
         }
     }
 

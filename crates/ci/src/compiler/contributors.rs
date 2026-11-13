@@ -581,6 +581,7 @@ impl Compiler {
                 .unwrap_or_default(),
             github_execution: None,
             provider_hints,
+            external_dependencies: Vec::new(),
         }
     }
 

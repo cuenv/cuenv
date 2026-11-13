@@ -502,6 +502,7 @@ mod tests {
                     "inputs": {}
                 }
             })),
+            external_dependencies: Vec::new(),
         }
     }
 
