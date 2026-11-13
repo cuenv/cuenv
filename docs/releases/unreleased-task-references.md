@@ -121,6 +121,8 @@ build: `cuenv build` and `cuenv up` refuse the image.
   schemas without stamps is not part of this release: on such a schema, upgrade
   it before depending on imported tasks, or an imported task can bind a
   same-named task of the consumer.
-- Deep chains of `dependsOn` across imported projects evaluate in linear time
-  under cuenv; stock `cue export` of such a chain can take minutes.
+- cuenv evaluates chains of `dependsOn` across imported projects in linear
+  time. Plain `cue export` is slower: a project that depends on an imported
+  task with a dependency of its own takes a few seconds on CUE v0.18, and
+  longer chains take longer.
 - The CUE bridge evaluates an imported project once per importer.
