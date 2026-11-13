@@ -101,6 +101,10 @@ pub struct WorkspaceTask {
 #[derive(Debug, Clone, Default)]
 pub struct TaskIndex {
     entries: BTreeMap<String, IndexedTask>,
+    /// The steps of sequences, by `name[index]`, as `cuenv task` and
+    /// task-output inputs name them. Kept apart so that listings show only
+    /// the sequences themselves.
+    steps: BTreeMap<String, IndexedTask>,
 }
 
 impl TaskIndex {
@@ -133,13 +137,17 @@ impl TaskIndex {
             let _ = canonicalize_node(node, &mut entries, origin)?;
         }
 
-        Ok(Self { entries })
+        let steps = sequence_steps(entries.values());
+        Ok(Self { entries, steps })
     }
 
     /// Resolve a raw task name (dot or colon separated) to an indexed task
     pub fn resolve(&self, raw: &str) -> Result<&IndexedTask> {
         let path = TaskPath::parse(raw)?;
         let canonical = path.canonical();
+        if let Some(step) = self.steps.get(&canonical) {
+            return Ok(step);
+        }
         self.entries.get(&canonical).ok_or_else(|| {
             let available: Vec<&str> = self.entries.keys().map(String::as_str).collect();
 
@@ -200,6 +208,38 @@ fn extract_source_file(node: &TaskNode) -> Option<String> {
             steps.first().and_then(extract_source_file)
         }
     }
+}
+
+/// Every step of the indexed sequences, named `name[index]`, nested
+/// sequences included.
+fn sequence_steps<'entry>(
+    entries: impl Iterator<Item = &'entry IndexedTask>,
+) -> BTreeMap<String, IndexedTask> {
+    let mut steps = BTreeMap::new();
+    let mut pending: Vec<IndexedTask> = entries
+        .filter(|entry| matches!(entry.node, TaskNode::Sequence(_)))
+        .cloned()
+        .collect();
+    while let Some(sequence) = pending.pop() {
+        let TaskNode::Sequence(children) = &sequence.node else {
+            continue;
+        };
+        for (position, child) in children.iter().enumerate() {
+            let name = format!("{}[{position}]", sequence.name);
+            let step = IndexedTask {
+                name: name.clone(),
+                original_name: format!("{}[{position}]", sequence.original_name),
+                node: child.clone(),
+                is_group: !matches!(child, TaskNode::Task(_)),
+                source_file: extract_source_file(child).or_else(|| sequence.source_file.clone()),
+            };
+            if matches!(child, TaskNode::Sequence(_)) {
+                pending.push(step.clone());
+            }
+            steps.insert(name, step);
+        }
+    }
+    steps
 }
 
 struct NodeOrigin<'origin> {

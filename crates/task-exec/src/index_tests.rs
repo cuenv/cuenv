@@ -677,3 +677,33 @@ fn test_task_index_preserves_invalid_references() {
         _ => panic!("Expected Task"),
     }
 }
+
+#[test]
+fn a_step_of_a_sequence_resolves_by_its_position() {
+    let step = |command: &str| {
+        TaskNode::Task(Box::new(Task {
+            command: command.to_string(),
+            ..Default::default()
+        }))
+    };
+    let mut tasks = HashMap::new();
+    tasks.insert(
+        "release".to_string(),
+        TaskNode::Sequence(vec![
+            step("build"),
+            TaskNode::Sequence(vec![step("sign"), step("upload")]),
+        ]),
+    );
+
+    let index = TaskIndex::build(&tasks).unwrap();
+
+    let first = index.resolve("release[0]").unwrap();
+    assert_eq!(first.name, "release[0]");
+    assert!(matches!(&first.node, TaskNode::Task(task) if task.command == "build"));
+    let nested = index.resolve("release[1][1]").unwrap();
+    assert!(matches!(&nested.node, TaskNode::Task(task) if task.command == "upload"));
+    assert!(index.resolve("release[2]").is_err());
+    // Listings show the sequence, not its steps.
+    let listed: Vec<&str> = index.list().iter().map(|task| task.name.as_str()).collect();
+    assert_eq!(listed, ["release"]);
+}

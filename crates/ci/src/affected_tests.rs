@@ -1302,3 +1302,32 @@ fn an_absolute_input_selects_its_task_whenever_anything_changed() {
         ["build"]
     );
 }
+
+#[test]
+fn a_dependency_on_a_step_of_a_sequence_resolves_to_that_step() {
+    // `{task: "release[0]"}` as an input makes `deploy` depend on the first
+    // step of `release`, by the name `cuenv task` gives it.
+    let mut project = make_project(vec![(
+        "deploy",
+        make_task(vec!["deploy/**"], vec!["release[0]"]),
+    )]);
+    project.tasks.insert(
+        "release".to_string(),
+        TaskNode::Sequence(vec![TaskNode::Task(Box::new(make_task(
+            vec!["release/**"],
+            vec![],
+        )))]),
+    );
+    let all_projects = HashMap::new();
+
+    let affected = affected_in(
+        &Change {
+            project: &project,
+            all_projects: &all_projects,
+            files: &[PathBuf::from("docs/readme.md")],
+        },
+        &["deploy"],
+    );
+
+    assert!(affected.is_empty(), "{affected:?}");
+}
