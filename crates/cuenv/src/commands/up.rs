@@ -754,14 +754,15 @@ mod tests {
     }
 
     /// `app`: a task that consumes an output of `content` and records the
-    /// variables it could see.
+    /// variables it could see. Commands use shell builtins only: a task's
+    /// `PATH` holds nothing else in the Nix build sandbox.
     const APP: &str = r#"package cuenv
 name: "app"
 env: APP_VALUE: "app-own"
 tasks: prepare: {
 	command: "sh"
-	args: ["-c", "cp vendor/one.md seen.md && printf '%s|%s' \"${APP_VALUE:-unset}\" \"${CONTENT_VALUE:-unset}\" > env.txt"]
-	inputs: [{project: "content", task: "articles", map: [{from: "out/one.md", to: "vendor/one.md"}]}]
+	args: ["-c", "IFS= read -r line < vendor/one.md && printf '%s\\n' \"$line\" > seen.md && printf '%s|%s' \"${APP_VALUE:-unset}\" \"${CONTENT_VALUE:-unset}\" > env.txt"]
+	inputs: [{project: "content", task: "articles", map: [{from: "rendered.md", to: "vendor/one.md"}]}]
 	outputs: ["seen.md", "env.txt"]
 }
 "#;
@@ -772,9 +773,9 @@ name: "content"
 env: CONTENT_VALUE: "content-own"
 tasks: articles: {
 	command: "sh"
-	args: ["-c", "mkdir -p out && cp articles/one.md out/one.md && printf '%s|%s' \"${CONTENT_VALUE:-unset}\" \"${APP_VALUE:-unset}\" > out/env.txt"]
+	args: ["-c", "IFS= read -r line < articles/one.md && printf '%s\\n' \"$line\" > rendered.md && printf '%s|%s' \"${CONTENT_VALUE:-unset}\" \"${APP_VALUE:-unset}\" > rendered-env.txt"]
 	inputs: ["articles/**"]
-	outputs: ["out/one.md", "out/env.txt"]
+	outputs: ["rendered.md", "rendered-env.txt"]
 }
 "#;
 
@@ -832,7 +833,7 @@ tasks: articles: {
         // The dependency ran first, in its own project, with its own
         // variables and none of the service project's.
         assert_eq!(
-            std::fs::read_to_string(root.join("content/out/env.txt"))?,
+            std::fs::read_to_string(root.join("content/rendered-env.txt"))?,
             "content-own|unset"
         );
         // The service project's task read what it produced.

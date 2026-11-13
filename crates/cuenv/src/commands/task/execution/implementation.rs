@@ -1,8 +1,7 @@
 //! Task execution orchestration.
 
 use super::super::cache::TaskCacheContext;
-use super::super::dag_export;
-use super::super::projects;
+use super::super::{dag_export, projects};
 
 use super::super::runner::StrategyInput;
 use super::super::types::TaskExecutionRequest;
