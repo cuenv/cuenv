@@ -288,6 +288,7 @@ for work that never ran.
 | GitHub Actions | A pull request (its base), when the checkout holds the pull request or the changed-files API lists it. A push (the event's `before` commit). A merge queue run (`merge_group.base_sha`). | `schedule`, `workflow_dispatch`, `release` and every other event. A tag push. The first push of a branch. A run whose base commit cannot be compared. |
 | Buildkite | A pull request build (its base branch). | Every other build: a branch or a tag, whether a webhook, the UI, the API, a trigger step or a schedule started it. Buildkite reports no previous commit for a branch build, and the default branch is not one: it says how a branch differs from `main`, not what the branch gained since its last build. |
 | A CI system cuenv does not recognise | A run given `--from <ref>`. | A run without `--from`. |
+| A local run (no `CI` set) | A run inside a git repository: its uncommitted changes, plus what `HEAD` has that `--from <ref>` does not. | A run in a directory that is not inside a git repository. `--from` there is an error. |
 
 A run without a base runs **every task of the pipeline**, inline and matrix
 entries included, and says why:

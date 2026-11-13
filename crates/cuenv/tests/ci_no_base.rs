@@ -604,3 +604,14 @@ fn a_local_run_still_compares_with_head() -> TestResult {
     }
     Ok(())
 }
+
+#[test]
+fn a_local_run_outside_any_repository_runs_the_whole_pipeline() -> TestResult {
+    let checkout = Checkout::new()?;
+    fs::remove_dir_all(checkout.root().join(".git"))?;
+
+    let run = checkout.ci(&[], &[])?;
+
+    run.assert_ran_the_whole_pipeline_for("this directory is not inside a git repository");
+    Ok(())
+}

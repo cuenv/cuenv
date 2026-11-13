@@ -101,7 +101,9 @@ impl CIProvider for LocalProvider {
                     "--from {base_ref}: this directory is not inside a git repository, so \
                      there is nothing to compare with"
                 ))),
-                None => Ok(ChangedFiles::Compared(Vec::new())),
+                None => Ok(ChangedFiles::NoBase(NoBase::new(
+                    "this directory is not inside a git repository",
+                ))),
             };
         };
 
@@ -282,16 +284,14 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn a_local_run_is_compared_with_head() {
+    #[test]
+    fn a_local_run_is_compared_with_head() {
+        // Whether it then has a base depends on the directory it runs in,
+        // which `ci_no_base.rs` covers end to end.
         for value in [None, Some(""), Some("false"), Some("0")] {
             let provider = temp_env::with_var("CI", value, LocalProvider::detect).unwrap();
 
             assert_eq!(provider.base, LocalBase::Head, "CI={value:?}");
-            assert!(matches!(
-                provider.changed_files().await.unwrap(),
-                ChangedFiles::Compared(_)
-            ));
         }
     }
 
