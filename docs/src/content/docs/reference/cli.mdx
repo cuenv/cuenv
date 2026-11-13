@@ -1039,7 +1039,7 @@ cuenv ci [OPTIONS]
 - `--export <FORMAT>`: Export pipeline YAML instead of running (`buildkite`, `gitlab`, `github-actions`, `circleci`).
 - `-o, --output <PATH>`: Write exported YAML to a file instead of stdout.
 - `-j, --jobs <N>`: Maximum parallel task DAG jobs. `0` uses host parallelism.
-- `--from <REF>`: Base ref to compare against (branch name or commit SHA) for affected detection.
+- `--from <REF>`: Base ref to compare against (branch name or commit SHA) for affected detection. `HEAD` is compared with its merge base with the ref. Ignored when GitHub Actions or Buildkite is detected, where the provider supplies the base; a run with no comparable base runs the whole pipeline (see [Runs with nothing to compare](/how-to/ci/#runs-with-nothing-to-compare)).
 - `--all`: Run every named task in the selected project/pipeline scope, regardless of changed inputs. Keeps the real provider event, environment, hooks, dependencies and CI executor. Rejects empty/missing scope, unresolved task references, inline/matrix pipeline entries, and combination with `--export`.
 - `--dry-run`: Show what would be executed without running it.
 - `-e, --environment <NAME>`: Environment for secrets resolution.

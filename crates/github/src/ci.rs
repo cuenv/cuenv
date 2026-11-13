@@ -1,17 +1,24 @@
 //! GitHub Actions CI provider.
 //!
 //! This provider integrates with GitHub Actions to:
-//! - Detect changed files in PRs and pushes
+//! - Compare a run with the base GitHub supplies for it: a pull request's
+//!   base, the commit a push came after, or the commit a merge group is
+//!   built on
 //! - Create and update check runs
 //! - Post PR comments with pipeline reports
+//!
+//! A run GitHub supplies no base for (a schedule, a manual dispatch, a tag,
+//! the first push of a branch, a release) is compared with nothing: the
+//! parent of `HEAD` is not what such a run came after.
 
 use async_trait::async_trait;
 use cuenv_ci::context::CIContext;
-use cuenv_ci::provider::CIProvider;
 use cuenv_ci::provider::git::{Fetch, RunCheckout, Since};
+use cuenv_ci::provider::{CIProvider, ChangedFiles, NoBase};
 use cuenv_ci::report::{CheckHandle, PipelineReport, PipelineStatus, markdown};
 use cuenv_core::Result;
 use octocrab::Octocrab;
+use octocrab::models::repos::DiffEntry;
 use std::path::PathBuf;
 use tracing::{debug, info, warn};
 
@@ -23,12 +30,79 @@ pub struct GitHubCIProvider {
     token: String,
     owner: String,
     repo: String,
+    /// `GITHUB_REF`: the full ref the run is for.
+    git_ref: String,
     pr_number: Option<u64>,
-    is_pr_merge_ref: bool,
     checkout: RunCheckout,
 }
 
 const NULL_SHA: &str = "0000000000000000000000000000000000000000";
+
+/// A GitHub API that lists changed files, and the most files it lists
+/// however many changed. A listing that long may have been cut short, and a
+/// list that may be incomplete is not a comparison.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FileListing {
+    api: &'static str,
+    limit: usize,
+}
+
+/// `GET /repos/{owner}/{repo}/compare/{base}...{head}`.
+const COMPARE_API: FileListing = FileListing {
+    api: "Compare API",
+    limit: 300,
+};
+
+/// `GET /repos/{owner}/{repo}/pulls/{number}/files`, over all of its pages.
+const PULL_REQUEST_FILES_API: FileListing = FileListing {
+    api: "pull request files API",
+    limit: 3000,
+};
+
+impl FileListing {
+    /// The entries of a listing, unless the listing may have been cut short.
+    fn complete<Entry>(self, entries: Vec<Entry>) -> Result<Vec<Entry>> {
+        if entries.len() >= self.limit {
+            return Err(cuenv_core::Error::configuration(format!(
+                "GitHub's {} lists at most {} changed files and returned {}, so the listing \
+                 may be incomplete",
+                self.api,
+                self.limit,
+                entries.len()
+            )));
+        }
+        Ok(entries)
+    }
+}
+
+/// What GitHub supplies for a run to compare itself with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SuppliedBase {
+    /// The run is for a pull request, whose base is the branch it targets.
+    PullRequest,
+    /// A push: the commit the ref was at before.
+    PushBefore(String),
+    /// A merge queue run: the commit the merge group is built on.
+    MergeGroupBase(String),
+    /// Nothing: the event names no commit this run came after.
+    Nothing(NoBase),
+}
+
+/// A commit hash short enough to read in a message.
+fn short_sha(sha: &str) -> &str {
+    sha.get(..7).unwrap_or(sha)
+}
+
+/// The paths an entry of an API listing stands for. A renamed file is under
+/// both of its names, as the checkout's own comparison reports it: the
+/// project it left has changed as much as the one it joined.
+fn listed_paths(entry: &DiffEntry) -> impl Iterator<Item = PathBuf> + '_ {
+    entry
+        .previous_filename
+        .iter()
+        .chain(std::iter::once(&entry.filename))
+        .map(PathBuf::from)
+}
 
 impl GitHubCIProvider {
     fn parse_repo(repo_str: &str) -> (String, String) {
@@ -54,48 +128,105 @@ impl GitHubCIProvider {
         }
     }
 
+    /// Whether the run is for `refs/pull/<number>/merge`, GitHub's merge of
+    /// a pull request into its base.
+    fn is_pr_merge_ref(&self) -> bool {
+        self.git_ref.starts_with("refs/pull/") && self.git_ref.ends_with("/merge")
+    }
+
+    /// Whether the checkout holds the pull request: its head, or GitHub's
+    /// merge of it into its base. Only then does comparing the checkout with
+    /// the base say what the pull request changes. Any other checkout says
+    /// nothing about it: `pull_request_target` checks out the base branch,
+    /// which differs from itself in nothing.
+    fn checkout_holds_pull_request(&self, event: &serde_json::Value) -> bool {
+        let holds_merge = self.is_pr_merge_ref() && self.is_synthetic_merge_checkout();
+        let holds_head = Self::commit_at(event, "/pull_request/head/sha")
+            .is_some_and(|head| self.checkout.head_is(&head));
+        holds_merge || holds_head
+    }
+
+    /// The pull request's number: from the ref the run is for, or from the
+    /// event when the run is for the base branch's ref, as a
+    /// `pull_request_target` run is.
+    fn pull_request_number(&self, event: &serde_json::Value) -> Option<u64> {
+        self.pr_number.or_else(|| {
+            event
+                .pointer("/pull_request/number")
+                .and_then(serde_json::Value::as_u64)
+        })
+    }
+
     fn is_synthetic_merge_checkout(&self) -> bool {
         !self.context.sha.is_empty() && self.checkout.head_is(&self.context.sha)
     }
 
-    fn get_before_sha() -> Option<String> {
-        let explicit = std::env::var("GITHUB_BEFORE").ok();
-        let from_event = || {
-            let event_path = std::env::var("GITHUB_EVENT_PATH").ok()?;
-            let event: serde_json::Value =
-                serde_json::from_str(&std::fs::read_to_string(event_path).ok()?).ok()?;
-            Self::parse_push_before_sha(&event)
-        };
-        match explicit {
-            Some(sha) => Some(sha).filter(|sha| sha != NULL_SHA && !sha.is_empty()),
-            None => from_event(),
+    /// The payload of the event that started the run; `Null` when it cannot
+    /// be read.
+    fn event_payload() -> serde_json::Value {
+        std::env::var("GITHUB_EVENT_PATH")
+            .ok()
+            .and_then(|path| std::fs::read_to_string(path).ok())
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or(serde_json::Value::Null)
+    }
+
+    /// What GitHub supplies for this run to compare itself with.
+    ///
+    /// `explicit_before` is `GITHUB_BEFORE`, with which a workflow names the
+    /// previous commit itself; it stands in for the payload's `before`.
+    fn supplied_base(
+        &self,
+        event: &serde_json::Value,
+        explicit_before: Option<&str>,
+    ) -> SuppliedBase {
+        let targets_a_branch = self
+            .context
+            .base_ref
+            .as_deref()
+            .is_some_and(|base| !base.is_empty());
+        if self.pr_number.is_some() || targets_a_branch {
+            return SuppliedBase::PullRequest;
+        }
+
+        if let Some(base_sha) = Self::parse_merge_group_base_sha(event) {
+            return SuppliedBase::MergeGroupBase(base_sha);
+        }
+
+        let before =
+            explicit_before.or_else(|| event.get("before").and_then(serde_json::Value::as_str));
+        match before {
+            // GitHub names the null commit when the ref did not exist.
+            Some(NULL_SHA) => {
+                SuppliedBase::Nothing(NoBase::new(if self.git_ref.starts_with("refs/tags/") {
+                    "GitHub tag push"
+                } else {
+                    "first push of a GitHub branch"
+                }))
+            }
+            Some(sha) if !sha.is_empty() => SuppliedBase::PushBefore(sha.to_string()),
+            _ => SuppliedBase::Nothing(NoBase::new(format!("GitHub {} event", self.context.event))),
         }
     }
 
-    fn parse_push_before_sha(event: &serde_json::Value) -> Option<String> {
-        event
-            .get("before")?
-            .as_str()
-            .filter(|sha| *sha != NULL_SHA && !sha.is_empty())
-            .map(str::to_string)
+    /// The commit a merge group is built on. GitHub puts it in the event
+    /// payload and in no environment variable.
+    fn parse_merge_group_base_sha(event: &serde_json::Value) -> Option<String> {
+        Self::commit_at(event, "/merge_group/base_sha")
     }
 
     fn parse_pr_base_sha(event: &serde_json::Value) -> Option<String> {
-        let sha = event
-            .pointer("/pull_request/base/sha")?
-            .as_str()?
-            .to_string();
-        if sha.is_empty() || sha == NULL_SHA {
-            None
-        } else {
-            Some(sha)
-        }
+        Self::commit_at(event, "/pull_request/base/sha")
     }
 
-    fn get_pr_base_sha() -> Option<String> {
-        let event_path = std::env::var("GITHUB_EVENT_PATH").ok()?;
-        let event = serde_json::from_str(&std::fs::read_to_string(event_path).ok()?).ok()?;
-        Self::parse_pr_base_sha(&event)
+    /// The commit an event payload names at a JSON pointer, unless it is
+    /// missing, empty or the null commit.
+    fn commit_at(event: &serde_json::Value, pointer: &str) -> Option<String> {
+        event
+            .pointer(pointer)?
+            .as_str()
+            .filter(|sha| !sha.is_empty() && *sha != NULL_SHA)
+            .map(str::to_string)
     }
 
     /// Create an octocrab instance authenticated with the GitHub token.
@@ -117,7 +248,9 @@ impl GitHubCIProvider {
     ///
     /// This is a fallback for checkouts where the local merge diff is not
     /// available. The API returns paginated results, so every page must be
-    /// followed or large PRs will be silently truncated.
+    /// followed or large PRs will be silently truncated. It lists no more
+    /// than [`PULL_REQUEST_FILES_API`]'s limit over all of its pages, so a
+    /// listing that long is refused.
     async fn get_pr_files_from_api(&self, pr_number: u64) -> Result<Vec<PathBuf>> {
         debug!("Fetching PR files from GitHub API for PR #{pr_number}");
         let octocrab = self.octocrab()?;
@@ -130,12 +263,12 @@ impl GitHubCIProvider {
                 cuenv_core::Error::configuration(format!("Failed to get PR files from API: {e}"))
             })?;
 
-        let mut files = Vec::new();
+        let mut entries = Vec::new();
         loop {
-            files.extend(page.items.iter().map(|file| PathBuf::from(&file.filename)));
+            entries.append(&mut page.items);
 
             let next_page = octocrab
-                .get_page::<octocrab::models::repos::DiffEntry>(&page.next)
+                .get_page::<DiffEntry>(&page.next)
                 .await
                 .map_err(|e| {
                     cuenv_core::Error::configuration(format!(
@@ -148,31 +281,36 @@ impl GitHubCIProvider {
             };
             page = next_page;
         }
+        let files: Vec<PathBuf> = PULL_REQUEST_FILES_API
+            .complete(entries)?
+            .iter()
+            .flat_map(listed_paths)
+            .collect();
 
         info!("Got {} changed files from GitHub API", files.len());
         Ok(files)
     }
 
-    /// Get changed files for a push event using the GitHub Compare API.
+    /// Get the files changed since a commit using the GitHub Compare API.
     ///
     /// Uses `GET /repos/{owner}/{repo}/compare/{base}...{head}` to determine
-    /// which files changed between the before and after SHAs of the push.
+    /// which files changed between a commit GitHub named and this run's.
     /// This works regardless of clone depth and handles multi-commit pushes.
-    async fn get_push_files_from_api(&self, before_sha: &str) -> Result<Vec<PathBuf>> {
+    async fn get_compare_files_from_api(&self, base_sha: &str) -> Result<Vec<PathBuf>> {
         debug!(
-            "Fetching push changed files from GitHub Compare API: {before_sha}...{}",
+            "Fetching changed files from GitHub Compare API: {base_sha}...{}",
             &self.context.sha
         );
         let octocrab = self.octocrab()?;
 
         let comparison = octocrab
             .commits(&self.owner, &self.repo)
-            .compare(before_sha, &self.context.sha)
+            .compare(base_sha, &self.context.sha)
             .send()
             .await
             .map_err(|e| {
                 cuenv_core::Error::configuration(format!(
-                    "Failed to get push files from Compare API: {e}"
+                    "Failed to get changed files from Compare API: {e}"
                 ))
             })?;
 
@@ -181,13 +319,140 @@ impl GitHubCIProvider {
                 "GitHub Compare API response missing 'files' field".to_string(),
             )
         })?;
-        let files: Vec<PathBuf> = comparison_files
-            .into_iter()
-            .map(|f| PathBuf::from(f.filename))
+        let files: Vec<PathBuf> = COMPARE_API
+            .complete(comparison_files)?
+            .iter()
+            .flat_map(listed_paths)
             .collect();
 
         info!("Got {} changed files from GitHub Compare API", files.len());
         Ok(files)
+    }
+
+    /// Compare a pull request with its base.
+    ///
+    /// The checkout is compared only when it holds the pull request. When it
+    /// holds something else, only GitHub can say what the pull request
+    /// changes.
+    async fn pull_request_changes(&self, event: &serde_json::Value) -> ChangedFiles {
+        let holds_pull_request = self.checkout_holds_pull_request(event);
+
+        if holds_pull_request && let Some(files) = self.pull_request_changes_in_checkout(event) {
+            return ChangedFiles::Compared(files);
+        }
+
+        // Strategy 3: the paginated API listing, which is the same whatever
+        // is checked out.
+        if let Some(pr_number) = self.pull_request_number(event) {
+            debug!("PR #{pr_number} detected, using GitHub API fallback for changed files");
+            match self.get_pr_files_from_api(pr_number).await {
+                Ok(files) => return ChangedFiles::Compared(files),
+                Err(e) => warn!("Failed to get PR files from API: {e}"),
+            }
+        }
+
+        if holds_pull_request && let Some(files) = self.changes_since_base_branch() {
+            return ChangedFiles::Compared(files);
+        }
+
+        ChangedFiles::NoBase(NoBase::new(if holds_pull_request {
+            "GitHub pull request whose base cannot be compared"
+        } else {
+            "GitHub pull request that is not checked out and whose files could not be listed"
+        }))
+    }
+
+    /// What a pull request changes, read from a checkout that holds it;
+    /// `None` when the checkout does not have the history to say.
+    fn pull_request_changes_in_checkout(&self, event: &serde_json::Value) -> Option<Vec<PathBuf>> {
+        // Strategy 1: the checkout's synthetic merge commit. GitHub's
+        // default pull_request checkout is refs/pull/<number>/merge; HEAD^1
+        // is the base and HEAD includes the complete PR result, no matter
+        // how many commits the PR contains. That parent is the base GitHub
+        // merged the pull request into, not a guess.
+        if self.is_pr_merge_ref()
+            && self.is_synthetic_merge_checkout()
+            && self.checkout.head_is_merge()
+            && let Some(files) = self.checkout.changed(Since::Revision("HEAD^1"))
+        {
+            info!(
+                "Got {} changed files from the pull request merge diff",
+                files.len()
+            );
+            return Some(files);
+        }
+
+        // Strategy 2: a workflow may explicitly check out the PR head
+        // instead of the merge ref. Use the event's immutable base SHA in
+        // that case so a moving base branch cannot change the affected-task
+        // result.
+        let base_sha = Self::parse_pr_base_sha(event)?;
+        debug!("Pull request detected, using base SHA {base_sha}");
+        if !self.checkout.has_commit(&base_sha) {
+            self.checkout.fetch(Fetch::Commit(&base_sha));
+        }
+        let files = self.checkout.changed(Since::Revision(&base_sha))?;
+        info!(
+            "Got {} changed files from the pull request base SHA diff",
+            files.len()
+        );
+        Some(files)
+    }
+
+    /// Strategy 4: what a checkout that holds a pull request has that the
+    /// tip of its base branch does not, as a last resort.
+    fn changes_since_base_branch(&self) -> Option<Vec<PathBuf>> {
+        let base = self
+            .context
+            .base_ref
+            .as_deref()
+            .filter(|base| !base.is_empty())?;
+        debug!("PR detected, base_ref: {base}");
+
+        if self.checkout.is_shallow() {
+            self.checkout.fetch(Fetch::Branch(base));
+        }
+
+        self.checkout
+            .changed(Since::MergeBaseWith(&format!("origin/{base}")))
+    }
+
+    /// Compare the run with a commit GitHub named for it. `run` says what
+    /// that commit is to the run, for a run it gives no base after all.
+    async fn compared_with(&self, sha: &str, run: &str) -> ChangedFiles {
+        match self.changes_since(sha).await {
+            Some(files) => ChangedFiles::Compared(files),
+            None => ChangedFiles::NoBase(NoBase::new(format!(
+                "{run} {} cannot be compared",
+                short_sha(sha)
+            ))),
+        }
+    }
+
+    /// The files that differ between a commit and this run; `None` when the
+    /// two cannot be compared.
+    async fn changes_since(&self, sha: &str) -> Option<Vec<PathBuf>> {
+        // In the checkout, when it holds the commit.
+        if let Some(files) = self.checkout.changed(Since::Revision(sha)) {
+            info!(
+                "Got {} changed files by comparing {sha} with HEAD",
+                files.len()
+            );
+            return Some(files);
+        }
+
+        // Through the Compare API, which needs no history: a default
+        // checkout holds one commit, and two with `fetch-depth: 2`.
+        match self.get_compare_files_from_api(sha).await {
+            Ok(files) => return Some(files),
+            Err(e) => warn!("Failed to compare {sha} with this run through the GitHub API: {e}"),
+        }
+
+        // By fetching the commit into a shallow checkout.
+        if self.checkout.is_shallow() && self.checkout.fetch(Fetch::Commit(sha)) {
+            return self.checkout.changed(Since::Revision(sha));
+        }
+        None
     }
 }
 
@@ -203,7 +468,6 @@ impl CIProvider for GitHubCIProvider {
 
         let github_ref = std::env::var("GITHUB_REF").unwrap_or_default();
         let pr_number = Self::parse_pr_number(&github_ref);
-        let is_pr_merge_ref = github_ref.ends_with("/merge");
         let token = std::env::var("GITHUB_TOKEN").unwrap_or_default();
         let checkout = RunCheckout::with_token(&token);
 
@@ -218,8 +482,8 @@ impl CIProvider for GitHubCIProvider {
             token,
             owner,
             repo,
+            git_ref: github_ref,
             pr_number,
-            is_pr_merge_ref,
             checkout,
         })
     }
@@ -228,117 +492,24 @@ impl CIProvider for GitHubCIProvider {
         &self.context
     }
 
-    async fn changed_files(&self) -> Result<Vec<PathBuf>> {
-        // Strategy 1: Pull Request - use the checkout's synthetic merge commit.
-        // GitHub's default pull_request checkout is refs/pull/<number>/merge;
-        // HEAD^1 is the base and HEAD includes the complete PR result, no
-        // matter how many commits the PR contains.
-        if let Some(pr_number) = self.pr_number {
-            if self.is_pr_merge_ref
-                && self.is_synthetic_merge_checkout()
-                && self.checkout.head_is_merge()
-                && let Some(files) = self.checkout.changed(Since::Revision("HEAD^1"))
-            {
-                info!(
-                    "Got {} changed files from the pull request merge diff",
-                    files.len()
-                );
-                return Ok(files);
-            }
+    async fn changed_files(&self) -> Result<ChangedFiles> {
+        let event = Self::event_payload();
+        let explicit_before = std::env::var("GITHUB_BEFORE").ok();
 
-            // A workflow may explicitly check out the PR head instead of the
-            // merge ref. Use the event's immutable base SHA in that case so a
-            // moving base branch cannot change the affected-task result.
-            if let Some(base_sha) = Self::get_pr_base_sha() {
-                debug!("PR #{pr_number} detected, using base SHA {base_sha}");
-                if !self.checkout.has_commit(&base_sha) {
-                    self.checkout.fetch(Fetch::Commit(&base_sha));
+        Ok(
+            match self.supplied_base(&event, explicit_before.as_deref()) {
+                SuppliedBase::PullRequest => self.pull_request_changes(&event).await,
+                SuppliedBase::PushBefore(sha) => {
+                    self.compared_with(&sha, "GitHub push whose previous commit")
+                        .await
                 }
-
-                if let Some(files) = self.checkout.changed(Since::Revision(&base_sha)) {
-                    info!(
-                        "Got {} changed files from the pull request base SHA diff",
-                        files.len()
-                    );
-                    return Ok(files);
+                SuppliedBase::MergeGroupBase(sha) => {
+                    self.compared_with(&sha, "GitHub merge queue run whose base")
+                        .await
                 }
-            }
-
-            // Strategy 2: Pull Request - paginated API fallback.
-            debug!("PR #{pr_number} detected, using GitHub API fallback for changed files");
-            match self.get_pr_files_from_api(pr_number).await {
-                Ok(files) => return Ok(files),
-                Err(e) => {
-                    warn!("Failed to get PR files from API: {e}. Falling back to git diff.");
-                }
-            }
-        }
-
-        // Strategy 3: Push event - use GitHub Compare API (no git history needed)
-        if let Some(before_sha) = Self::get_before_sha() {
-            debug!(
-                "Push event detected, using Compare API: {before_sha}...{}",
-                &self.context.sha
-            );
-            match self.get_push_files_from_api(&before_sha).await {
-                Ok(files) => return Ok(files),
-                Err(e) => {
-                    warn!(
-                        "Failed to get push files from Compare API: {e}. Falling back to git diff."
-                    );
-                }
-            }
-        }
-
-        let is_shallow = self.checkout.is_shallow();
-        debug!("Shallow clone detected: {is_shallow}");
-
-        // Strategy 4: Pull Request - use git diff with base_ref (last-resort fallback)
-        if let Some(base) = &self.context.base_ref
-            && !base.is_empty()
-        {
-            debug!("PR detected, base_ref: {base}");
-
-            if is_shallow {
-                self.checkout.fetch(Fetch::Branch(base));
-            }
-
-            if let Some(files) = self
-                .checkout
-                .changed(Since::MergeBaseWith(&format!("origin/{base}")))
-            {
-                return Ok(files);
-            }
-        }
-
-        // Strategy 5: Push event with valid GITHUB_BEFORE - git diff fallback
-        if let Some(before_sha) = Self::get_before_sha() {
-            debug!("Push event git diff fallback, GITHUB_BEFORE: {before_sha}");
-
-            if is_shallow {
-                self.checkout.fetch(Fetch::Commit(&before_sha));
-            }
-
-            if let Some(files) = self.checkout.changed(Since::Revision(&before_sha)) {
-                return Ok(files);
-            }
-        }
-
-        // Strategy 6: Try comparing against parent commit
-        if let Some(files) = self.checkout.changed(Since::Revision("HEAD^")) {
-            debug!("Using HEAD^ comparison");
-            return Ok(files);
-        }
-
-        // Strategy 7: Fall back to all tracked files
-        warn!(
-            "Could not determine changed files (shallow clone: {is_shallow}). \
-             Running all tasks. For better performance, consider: \
-             1) Set 'fetch-depth: 2' for push events, or \
-             2) This may be a new branch with no history to compare."
-        );
-
-        Ok(self.checkout.tracked_files())
+                SuppliedBase::Nothing(why) => ChangedFiles::NoBase(why),
+            },
+        )
     }
 
     async fn create_check(&self, name: &str) -> Result<CheckHandle> {
@@ -559,57 +730,279 @@ mod tests {
         assert_eq!(GitHubCIProvider::parse_pr_number("refs/tags/v1.0.0"), None);
     }
 
-    #[test]
-    fn test_get_before_sha_filters_null_sha() {
-        // The NULL_SHA should be filtered out
-        temp_env::with_var("GITHUB_BEFORE", Some(NULL_SHA), || {
-            assert!(GitHubCIProvider::get_before_sha().is_none());
-        });
-    }
+    const BEFORE: &str = "1111111111111111111111111111111111111111";
+    const BASE: &str = "2222222222222222222222222222222222222222";
 
-    #[test]
-    fn test_get_before_sha_filters_empty() {
-        // Empty string should be filtered out
-        temp_env::with_var("GITHUB_BEFORE", Some(""), || {
-            assert!(GitHubCIProvider::get_before_sha().is_none());
-        });
-    }
-
-    #[test]
-    fn test_get_before_sha_valid() {
-        // A valid SHA should be returned
-        let valid_sha = "abc123def456";
-        temp_env::with_var("GITHUB_BEFORE", Some(valid_sha), || {
-            assert_eq!(
-                GitHubCIProvider::get_before_sha(),
-                Some(valid_sha.to_string())
-            );
-        });
-    }
-
-    #[test]
-    fn test_get_before_sha_reads_push_event_payload() {
-        let dir = tempfile::tempdir().unwrap();
-        let event_path = dir.path().join("event.json");
-        std::fs::write(&event_path, r#"{"before": "abc123def456"}"#).unwrap();
-        temp_env::with_vars(
-            [
-                ("GITHUB_BEFORE", None),
-                ("GITHUB_EVENT_PATH", Some(event_path.to_str().unwrap())),
-            ],
-            || {
-                assert_eq!(
-                    GitHubCIProvider::get_before_sha(),
-                    Some("abc123def456".to_string())
-                );
+    /// A provider for a run of `event` on `git_ref`, as `detect` builds it.
+    fn provider(event: &str, git_ref: &str) -> GitHubCIProvider {
+        GitHubCIProvider {
+            context: CIContext {
+                provider: "github".to_string(),
+                event: event.to_string(),
+                ref_name: git_ref.rsplit('/').next().unwrap_or_default().to_string(),
+                base_ref: Some(String::new()),
+                sha: "3333333333333333333333333333333333333333".to_string(),
             },
+            token: String::new(),
+            owner: "example".to_string(),
+            repo: "fixture".to_string(),
+            git_ref: git_ref.to_string(),
+            pr_number: GitHubCIProvider::parse_pr_number(git_ref),
+            checkout: RunCheckout::default(),
+        }
+    }
+
+    fn nothing(reason: &str) -> SuppliedBase {
+        SuppliedBase::Nothing(NoBase::new(reason))
+    }
+
+    #[test]
+    fn events_that_name_no_previous_commit_have_no_base() {
+        let payloads = [
+            ("schedule", serde_json::json!({"schedule": "0 4 * * *"})),
+            ("workflow_dispatch", serde_json::json!({"inputs": {}})),
+            ("release", serde_json::json!({"action": "published"})),
+            (
+                "deployment",
+                serde_json::json!({"deployment": {"sha": BASE}}),
+            ),
+        ];
+        for (event, payload) in payloads {
+            assert_eq!(
+                provider(event, "refs/heads/main").supplied_base(&payload, None),
+                nothing(&format!("GitHub {event} event")),
+            );
+        }
+    }
+
+    #[test]
+    fn a_tag_push_has_no_base() {
+        let payload = serde_json::json!({"before": NULL_SHA, "ref": "refs/tags/1.2.3"});
+        assert_eq!(
+            provider("push", "refs/tags/1.2.3").supplied_base(&payload, None),
+            nothing("GitHub tag push"),
         );
     }
 
     #[test]
-    fn test_parse_push_before_sha_filters_null_sha() {
-        let event = serde_json::json!({ "before": NULL_SHA });
-        assert!(GitHubCIProvider::parse_push_before_sha(&event).is_none());
+    fn the_first_push_of_a_branch_has_no_base() {
+        let payload = serde_json::json!({"before": NULL_SHA, "created": true});
+        assert_eq!(
+            provider("push", "refs/heads/feature").supplied_base(&payload, None),
+            nothing("first push of a GitHub branch"),
+        );
+    }
+
+    #[test]
+    fn a_push_is_compared_with_the_commit_before_it() {
+        let payload = serde_json::json!({"before": BEFORE});
+        assert_eq!(
+            provider("push", "refs/heads/main").supplied_base(&payload, None),
+            SuppliedBase::PushBefore(BEFORE.to_string()),
+        );
+    }
+
+    #[test]
+    fn a_push_whose_payload_cannot_be_read_has_no_base() {
+        assert_eq!(
+            provider("push", "refs/heads/main").supplied_base(&serde_json::Value::Null, None),
+            nothing("GitHub push event"),
+        );
+    }
+
+    #[test]
+    fn a_merge_queue_run_is_compared_with_the_base_of_its_merge_group() {
+        let payload = serde_json::json!({
+            "merge_group": {"base_sha": BASE, "head_sha": "head", "base_ref": "refs/heads/main"}
+        });
+        let queue = "refs/heads/gh-readonly-queue/main/pr-7-abc";
+        assert_eq!(
+            provider("merge_group", queue).supplied_base(&payload, None),
+            SuppliedBase::MergeGroupBase(BASE.to_string()),
+        );
+
+        let without_base = serde_json::json!({"merge_group": {"base_sha": NULL_SHA}});
+        assert_eq!(
+            provider("merge_group", queue).supplied_base(&without_base, None),
+            nothing("GitHub merge_group event"),
+        );
+    }
+
+    #[test]
+    fn a_pull_request_is_compared_with_its_base() {
+        // A synchronize payload also carries the head `before` the push:
+        // that is not the pull request's base.
+        let payload = serde_json::json!({
+            "before": BEFORE,
+            "pull_request": {"base": {"sha": BASE}}
+        });
+        assert_eq!(
+            provider("pull_request", "refs/pull/7/merge").supplied_base(&payload, None),
+            SuppliedBase::PullRequest,
+        );
+
+        // `pull_request_target` runs on the base branch's ref and names the
+        // branch the pull request targets.
+        let mut targeting = provider("pull_request_target", "refs/heads/main");
+        targeting.context.base_ref = Some("main".to_string());
+        assert_eq!(
+            targeting.supplied_base(&payload, None),
+            SuppliedBase::PullRequest,
+        );
+    }
+
+    #[test]
+    fn github_before_stands_in_for_the_payload() {
+        let payload = serde_json::json!({"before": BEFORE});
+        let run = provider("push", "refs/heads/main");
+
+        assert_eq!(
+            run.supplied_base(&payload, Some(BASE)),
+            SuppliedBase::PushBefore(BASE.to_string()),
+        );
+        assert_eq!(
+            run.supplied_base(&payload, Some(NULL_SHA)),
+            nothing("first push of a GitHub branch"),
+        );
+        assert_eq!(
+            run.supplied_base(&payload, Some("")),
+            nothing("GitHub push event"),
+        );
+    }
+
+    #[test]
+    fn a_listing_that_may_be_cut_short_is_not_a_comparison() {
+        let listing = |count: usize| -> Vec<usize> { (0..count).collect() };
+
+        for api in [COMPARE_API, PULL_REQUEST_FILES_API] {
+            assert_eq!(
+                api.complete(listing(api.limit - 1)).unwrap().len(),
+                api.limit - 1
+            );
+            let error = api.complete(listing(api.limit)).unwrap_err().to_string();
+            assert!(error.contains(api.api), "{error}");
+            assert!(error.contains("may be incomplete"), "{error}");
+        }
+        assert_eq!(COMPARE_API.limit, 300);
+        assert_eq!(PULL_REQUEST_FILES_API.limit, 3000);
+    }
+
+    #[test]
+    fn a_pull_request_is_numbered_by_its_ref_or_by_its_event() {
+        let payload = serde_json::json!({"pull_request": {"number": 12}});
+
+        // `pull_request` runs on the pull request's own ref.
+        assert_eq!(
+            provider("pull_request", "refs/pull/7/merge").pull_request_number(&payload),
+            Some(7)
+        );
+        // `pull_request_target` runs on the base branch's ref.
+        let targeting = provider("pull_request_target", "refs/heads/main");
+        assert_eq!(targeting.pull_request_number(&payload), Some(12));
+        assert_eq!(
+            targeting.pull_request_number(&serde_json::Value::Null),
+            None
+        );
+    }
+
+    #[test]
+    fn only_a_pull_request_ref_is_a_merge_ref() {
+        assert!(provider("pull_request", "refs/pull/7/merge").is_pr_merge_ref());
+        assert!(!provider("pull_request", "refs/pull/7/head").is_pr_merge_ref());
+        // A base branch may be named like one.
+        assert!(!provider("pull_request_target", "refs/heads/feature/merge").is_pr_merge_ref());
+    }
+
+    #[test]
+    fn a_checkout_of_something_else_does_not_hold_the_pull_request() {
+        // Whatever this test runs in, it is not a checkout of these commits.
+        let payload = serde_json::json!({
+            "pull_request": {"number": 12, "head": {"sha": BEFORE}, "base": {"sha": BASE}}
+        });
+
+        let targeting = provider("pull_request_target", "refs/heads/main");
+        assert!(!targeting.checkout_holds_pull_request(&payload));
+        assert!(!targeting.checkout_holds_pull_request(&serde_json::Value::Null));
+        // The merge ref counts only when its commit is what is checked out.
+        assert!(
+            !provider("pull_request", "refs/pull/7/merge").checkout_holds_pull_request(&payload)
+        );
+    }
+
+    #[test]
+    fn a_renamed_file_is_listed_under_both_of_its_names() {
+        let entry = |extra: serde_json::Value| -> DiffEntry {
+            let mut entry = serde_json::json!({
+                "sha": BASE,
+                "filename": "app/new.txt",
+                "status": "modified",
+                "additions": 1,
+                "deletions": 1,
+                "changes": 2,
+                "blob_url": null,
+                "raw_url": null,
+                "contents_url": "https://api.github.com/repos/example/fixture/contents/app/new.txt",
+            });
+            for (key, value) in extra.as_object().into_iter().flatten() {
+                entry[key] = value.clone();
+            }
+            serde_json::from_value(entry).unwrap()
+        };
+
+        let modified = entry(serde_json::json!({}));
+        let renamed = entry(serde_json::json!({
+            "status": "renamed",
+            "previous_filename": "content/old.txt",
+        }));
+
+        assert_eq!(
+            listed_paths(&modified).collect::<Vec<_>>(),
+            [PathBuf::from("app/new.txt")]
+        );
+        assert_eq!(
+            listed_paths(&renamed).collect::<Vec<_>>(),
+            [
+                PathBuf::from("content/old.txt"),
+                PathBuf::from("app/new.txt")
+            ]
+        );
+    }
+
+    #[test]
+    fn a_short_sha_is_the_first_seven_characters() {
+        assert_eq!(short_sha(BEFORE), "1111111");
+        assert_eq!(short_sha("abc"), "abc");
+    }
+
+    #[test]
+    fn the_event_payload_is_read_from_the_path_github_gives() {
+        let dir = tempfile::tempdir().unwrap();
+        let event_path = dir.path().join("event.json");
+        std::fs::write(&event_path, r#"{"before": "abc123def456"}"#).unwrap();
+
+        temp_env::with_var(
+            "GITHUB_EVENT_PATH",
+            Some(event_path.to_str().unwrap()),
+            || {
+                assert_eq!(GitHubCIProvider::event_payload()["before"], "abc123def456");
+            },
+        );
+        temp_env::with_var_unset("GITHUB_EVENT_PATH", || {
+            assert!(GitHubCIProvider::event_payload().is_null());
+        });
+    }
+
+    #[test]
+    fn test_parse_merge_group_base_sha() {
+        let event = serde_json::json!({"merge_group": {"base_sha": BASE}});
+        assert_eq!(
+            GitHubCIProvider::parse_merge_group_base_sha(&event),
+            Some(BASE.to_string())
+        );
+        assert_eq!(
+            GitHubCIProvider::parse_merge_group_base_sha(&serde_json::json!({"before": BEFORE})),
+            None
+        );
     }
 
     #[test]

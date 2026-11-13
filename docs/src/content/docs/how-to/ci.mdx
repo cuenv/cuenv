@@ -159,8 +159,9 @@ pipeline in `env.cue` does this.
 ## Affected-task detection
 
 `cuenv ci` runs the **same DAG locally** that CI runs — there is no separate code
-path. On a pull request it can skip tasks whose inputs did not change, using
-`--from <ref>` to pick the base to compare against:
+path. It skips tasks whose inputs did not change since the run's base. Under
+GitHub Actions and Buildkite the provider supplies the base; anywhere else
+`--from <ref>` picks it:
 
 ```bash
 # Only run tasks whose inputs changed versus origin/main.
@@ -184,8 +185,8 @@ all pipeline tasks and cannot be combined with `--all`.
 
 Detection is **inputs-driven**: cuenv compares the files matched by each task's
 `inputs` globs against the diff from the base ref. A task with **no `inputs`
-always runs** (cuenv cannot prove it is unaffected). If `--from` is omitted,
-cuenv uses the provider's default base (for example, a PR's base branch). Declare
+always runs** (cuenv cannot prove it is unaffected). A local run without
+`--from` compares with `HEAD`, so it sees the changes not yet committed. Declare
 tight `inputs` on every task to get the most out of affected detection.
 
 Detection **fails closed**: whatever cuenv cannot show to be unaffected runs, and
@@ -266,6 +267,65 @@ base SHA from the event payload; that same path handles depth-1 checkouts where
 the merge parents are unavailable. The GitHub changed-files API is only a
 fallback, and cuenv follows all of its pagination links when it is needed.
 
+The checkout is compared only when it holds the pull request: its head, or
+GitHub's merge of it. `pull_request_target` checks out the base branch by
+default, and the base branch differs from itself in nothing, so there cuenv
+asks the changed-files API what the pull request changes, which needs
+`GITHUB_TOKEN`. That API lists at most 3,000 files, so a listing that long is
+not trusted. When neither the checkout nor the API can say what a pull request
+changes, the run has no base (see below).
+
+### Runs with nothing to compare
+
+Detection needs a base: the commit the run came after. cuenv uses one only when
+the CI provider supplies it and it can actually be compared. It never guesses
+`HEAD^`: the parent of `HEAD` is not what a scheduled run, a tag, or a push of
+several commits came after, and comparing with it reports "No affected tasks"
+for work that never ran.
+
+| Where the run is | Runs with a base | Runs without one |
+| --- | --- | --- |
+| GitHub Actions | A pull request (its base), when the checkout holds the pull request or the changed-files API lists it. A push (the event's `before` commit). A merge queue run (`merge_group.base_sha`). | `schedule`, `workflow_dispatch`, `release` and every other event. A tag push. The first push of a branch. A run whose base commit cannot be compared. |
+| Buildkite | A pull request build (its base branch). | Every other build: a branch or a tag, whether a webhook, the UI, the API, a trigger step or a schedule started it. Buildkite reports no previous commit for a branch build, and the default branch is not one: it says how a branch differs from `main`, not what the branch gained since its last build. |
+| A CI system cuenv does not recognise | A run given `--from <ref>`. | A run without `--from`. |
+
+A run without a base runs **every task of the pipeline**, inline and matrix
+entries included, and says why:
+
+```text
+No comparable base (Buildkite branch build): running the whole pipeline
+```
+
+The pipeline report records the reason as `context.no_base`, and the job
+summary shows it in place of a count of changed files.
+
+On GitHub, a push or a merge queue run is compared in the checkout when it
+holds the base commit (`fetch-depth: 2` covers a push of one commit), and
+otherwise through the compare API, which needs `GITHUB_TOKEN`. That API lists
+at most 300 changed files, so a listing that long is not trusted; cuenv then
+fetches the commit into the shallow checkout, and runs the whole pipeline if
+that fails too.
+
+cuenv takes a run to be on an unrecognised CI system when `CI` is set to
+anything but an empty string, `false` or `0`, and neither GitHub Actions nor
+Buildkite is detected. A clean checkout there has no uncommitted changes, so
+without `--from` there is nothing to compare. `--from` is ignored when GitHub
+Actions or Buildkite is detected.
+
+`--from <ref>` compares `HEAD` with the **merge base** of `HEAD` and the ref,
+not with the ref itself. On a build of the default branch's tip, of a tag, or
+of a promotion branch (`git push origin main:production`), `HEAD` is already
+contained in `origin/main`, so `--from origin/main` finds nothing changed. Pass
+the branch's previous tip instead:
+
+```bash
+# The commit this branch was at before the push, as your CI system reports it.
+cuenv ci --from "$PREVIOUS_COMMIT"
+
+# Or, for a push of a single commit:
+cuenv ci --from HEAD~1
+```
+
 See the contributor-driven setup that wraps these runs in
 [CI Contributors](/reference/ci-contributors/), which injects the Nix/cuenv/cache
 bootstrap around the affected DAG.
@@ -336,7 +396,7 @@ provider. The full flag set (verified against
 | `-p, --pipeline <NAME>` | Pipeline to run or export (defaults to `default`). |
 | `--export <FORMAT>` | Export pipeline YAML to stdout instead of running. `FORMAT` is `buildkite`, `gitlab`, `github-actions`, or `circleci`. |
 | `-o, --output <PATH>` | Write exported YAML to a file instead of stdout. |
-| `--from <REF>` | Base ref for affected-task detection. |
+| `--from <REF>` | Base ref for affected-task detection, compared through its merge base with `HEAD`. Ignored when GitHub Actions or Buildkite is detected. |
 | `--all` | Run every named task in the selected scope without changing provider context; cannot combine with export. |
 | `-j, --jobs <N>` | Max parallel DAG jobs (`0` = host parallelism, the default). |
 | `--dry-run` | Show what would run without executing. |

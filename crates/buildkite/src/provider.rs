@@ -1,44 +1,108 @@
 //! Buildkite CI Provider
 //!
-//! Detects Buildkite CI environment and provides changed files detection
-//! using Buildkite environment variables.
+//! Detects the Buildkite CI environment and compares a pull request build
+//! with the branch it targets.
+//!
+//! No other build has a base. Buildkite reports no previous commit for a
+//! branch build, so a build of a branch, of a tag, or one started from the
+//! UI, the API, a trigger step or a schedule is compared with nothing and
+//! runs its whole pipeline. The parent of `HEAD` is not a base: one push can
+//! hold several commits. Nor is the default branch: comparing with it says
+//! how a branch differs from the default branch, not what the branch gained
+//! since its last build.
 
 use async_trait::async_trait;
 use cuenv_ci::context::CIContext;
-use cuenv_ci::provider::CIProvider;
 use cuenv_ci::provider::git::{Fetch, RunCheckout, Since};
+use cuenv_ci::provider::{CIProvider, ChangedFiles, NoBase};
 use cuenv_ci::report::{CheckHandle, PipelineReport, PipelineStatus};
 use cuenv_core::Result;
-use std::path::PathBuf;
 use std::process::Command;
-use tracing::{info, warn};
+use tracing::info;
 
 /// Buildkite CI provider.
 ///
 /// Provides CI integration for pipelines running on Buildkite.
-/// Detects context from Buildkite environment variables and uses
-/// git to determine changed files.
+/// Detects context from Buildkite environment variables and compares a
+/// pull request build with the branch it targets.
 pub struct BuildkiteCIProvider {
     context: CIContext,
+    build: Build,
     checkout: RunCheckout,
 }
 
+/// What Buildkite is building, which decides what the build is compared
+/// with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Build {
+    /// A pull request, compared with the branch it targets.
+    PullRequest {
+        /// `BUILDKITE_PULL_REQUEST_BASE_BRANCH`.
+        base_branch: String,
+    },
+    /// A tag.
+    Tag,
+    /// A branch, whatever started the build.
+    Branch,
+}
+
 impl BuildkiteCIProvider {
-    /// Get the base ref for comparison.
-    ///
-    /// For pull requests, uses `BUILDKITE_PULL_REQUEST_BASE_BRANCH`.
-    /// For regular builds, attempts to use the default branch.
-    fn get_base_ref() -> Option<String> {
-        // For PRs, use the base branch
-        if let Ok(base) = std::env::var("BUILDKITE_PULL_REQUEST_BASE_BRANCH")
-            && !base.is_empty()
-            && base != "false"
-        {
-            return Some(base);
+    /// Compare the build with its base, when it is of a kind that has one.
+    fn compare_with_base(&self) -> ChangedFiles {
+        match &self.build {
+            Build::PullRequest { base_branch } => self.compare_with_branch(base_branch),
+            Build::Tag => ChangedFiles::NoBase(NoBase::new("Buildkite tag build")),
+            Build::Branch => ChangedFiles::NoBase(NoBase::new("Buildkite branch build")),
+        }
+    }
+
+    /// Compare a pull request build with the branch it targets: what the
+    /// build has that the branch does not.
+    fn compare_with_branch(&self, base: &str) -> ChangedFiles {
+        let is_shallow = self.checkout.is_shallow();
+        info!("Pull request build, comparing against {base} (shallow clone: {is_shallow})");
+
+        if is_shallow {
+            self.checkout.fetch(Fetch::Branch(base));
         }
 
-        // Fall back to pipeline default branch if available
-        std::env::var("BUILDKITE_PIPELINE_DEFAULT_BRANCH").ok()
+        match self
+            .checkout
+            .changed(Since::MergeBaseWith(&format!("origin/{base}")))
+        {
+            Some(files) => {
+                info!("Found {} changed files via PR comparison", files.len());
+                ChangedFiles::Compared(files)
+            }
+            None => ChangedFiles::NoBase(NoBase::new(format!(
+                "Buildkite pull request build whose base branch '{base}' cannot be compared"
+            ))),
+        }
+    }
+}
+
+impl Build {
+    /// Read the build from Buildkite's environment variables. Buildkite
+    /// sets the pull request variables to `false` or leaves them empty for a
+    /// build that is not of a pull request.
+    fn from_variables(variable: impl Fn(&str) -> Option<String>) -> Self {
+        let set = |name: &str| variable(name).filter(|value| !value.is_empty() && value != "false");
+        if let Some(base_branch) = set("BUILDKITE_PULL_REQUEST_BASE_BRANCH") {
+            return Self::PullRequest { base_branch };
+        }
+        if set("BUILDKITE_TAG").is_some() {
+            Self::Tag
+        } else {
+            Self::Branch
+        }
+    }
+
+    /// The branch a pull request build targets.
+    fn base_branch(&self) -> Option<&str> {
+        match self {
+            Self::PullRequest { base_branch } => Some(base_branch),
+            Self::Tag | Self::Branch => None,
+        }
     }
 }
 
@@ -53,7 +117,8 @@ impl CIProvider for BuildkiteCIProvider {
         let event = std::env::var("BUILDKITE_SOURCE").unwrap_or_else(|_| "unknown".to_string());
         let ref_name = std::env::var("BUILDKITE_BRANCH").unwrap_or_default();
         let sha = std::env::var("BUILDKITE_COMMIT").unwrap_or_else(|_| "HEAD".to_string());
-        let base_ref = Self::get_base_ref();
+        let build = Build::from_variables(|name| std::env::var(name).ok());
+        let base_ref = build.base_branch().map(str::to_string);
 
         info!(
             "Detected Buildkite CI: branch={}, sha={}, base_ref={:?}",
@@ -68,6 +133,7 @@ impl CIProvider for BuildkiteCIProvider {
                 base_ref,
                 sha,
             },
+            build,
             checkout: RunCheckout::default(),
         })
     }
@@ -76,54 +142,8 @@ impl CIProvider for BuildkiteCIProvider {
         &self.context
     }
 
-    async fn changed_files(&self) -> Result<Vec<PathBuf>> {
-        let is_shallow = self.checkout.is_shallow();
-        info!(
-            "Shallow clone: {is_shallow}, base_ref: {:?}",
-            self.context.base_ref
-        );
-
-        // Strategy 1: Pull Request - use base_ref (but not if same as current branch)
-        if let Some(base) = &self.context.base_ref
-            && !base.is_empty()
-            && base != &self.context.ref_name
-        {
-            info!("PR detected, comparing against base_ref: {base}");
-
-            if is_shallow {
-                self.checkout.fetch(Fetch::Branch(base));
-            }
-
-            if let Some(files) = self
-                .checkout
-                .changed(Since::MergeBaseWith(&format!("origin/{base}")))
-            {
-                info!("Found {} changed files via PR comparison", files.len());
-                return Ok(files);
-            }
-        }
-
-        // Strategy 2: For shallow clones, fetch one more commit to enable HEAD^ comparison
-        if is_shallow {
-            info!("Shallow clone detected, fetching additional history for HEAD^ comparison");
-            self.checkout.fetch(Fetch::OneMoreCommit);
-        }
-
-        // Strategy 3: Compare against parent commit
-        if let Some(files) = self.checkout.changed(Since::Revision("HEAD^")) {
-            info!("Found {} changed files via HEAD^ comparison", files.len());
-            return Ok(files);
-        }
-
-        // Strategy 4: Fall back to all tracked files
-        warn!(
-            "Could not determine changed files (shallow clone: {is_shallow}). \
-             Running all tasks. For better performance, ensure fetch-depth > 1."
-        );
-
-        let files = self.checkout.tracked_files();
-        info!("Falling back to all {} tracked files", files.len());
-        Ok(files)
+    async fn changed_files(&self) -> Result<ChangedFiles> {
+        Ok(self.compare_with_base())
     }
 
     async fn create_check(&self, name: &str) -> Result<CheckHandle> {
@@ -258,6 +278,106 @@ mod tests {
             || {
                 let provider = BuildkiteCIProvider::detect().unwrap();
                 assert_eq!(provider.context.base_ref, Some("main".to_string()));
+                assert_eq!(
+                    provider.build,
+                    Build::PullRequest {
+                        base_branch: "main".to_string()
+                    }
+                );
+            },
+        );
+    }
+
+    /// The build Buildkite's variables describe.
+    fn build(variables: &[(&str, &str)]) -> Build {
+        Build::from_variables(|name| {
+            variables
+                .iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| (*value).to_string())
+        })
+    }
+
+    #[test]
+    fn only_a_pull_request_build_has_a_base() {
+        assert_eq!(
+            build(&[
+                ("BUILDKITE_PULL_REQUEST", "7"),
+                ("BUILDKITE_PULL_REQUEST_BASE_BRANCH", "main"),
+                ("BUILDKITE_PIPELINE_DEFAULT_BRANCH", "main"),
+            ]),
+            Build::PullRequest {
+                base_branch: "main".to_string()
+            }
+        );
+
+        // What Buildkite sets for a build that is not of a pull request.
+        for base_branch in ["", "false"] {
+            assert_eq!(
+                build(&[
+                    ("BUILDKITE_PULL_REQUEST", "false"),
+                    ("BUILDKITE_PULL_REQUEST_BASE_BRANCH", base_branch),
+                    ("BUILDKITE_PIPELINE_DEFAULT_BRANCH", "main"),
+                ]),
+                Build::Branch
+            );
+        }
+        assert_eq!(build(&[]), Build::Branch);
+    }
+
+    #[test]
+    fn a_tag_build_is_told_from_a_branch_build() {
+        assert_eq!(build(&[("BUILDKITE_TAG", "1.2.3")]), Build::Tag);
+        assert_eq!(build(&[("BUILDKITE_TAG", "")]), Build::Branch);
+    }
+
+    #[test]
+    fn the_default_branch_is_not_a_base() {
+        // A branch build names no base, whatever started it: the default
+        // branch says how the branch differs from it, not what the branch
+        // gained since its last build.
+        for source in ["webhook", "ui", "api", "trigger_job", "schedule"] {
+            temp_env::with_vars(
+                [
+                    ("BUILDKITE", Some("true")),
+                    ("BUILDKITE_BRANCH", Some("staging")),
+                    ("BUILDKITE_COMMIT", Some("abc123")),
+                    ("BUILDKITE_SOURCE", Some(source)),
+                    ("BUILDKITE_PIPELINE_DEFAULT_BRANCH", Some("main")),
+                    ("BUILDKITE_PULL_REQUEST", Some("false")),
+                    ("BUILDKITE_PULL_REQUEST_BASE_BRANCH", Some("")),
+                    ("BUILDKITE_TAG", Some("")),
+                ],
+                || {
+                    let provider = BuildkiteCIProvider::detect().unwrap();
+                    assert_eq!(provider.context.event, source);
+                    assert_eq!(provider.context.base_ref, None);
+                    assert_eq!(
+                        provider.compare_with_base(),
+                        ChangedFiles::NoBase(NoBase::new("Buildkite branch build"))
+                    );
+                },
+            );
+        }
+    }
+
+    #[test]
+    fn a_tag_build_has_no_base() {
+        temp_env::with_vars(
+            [
+                ("BUILDKITE", Some("true")),
+                ("BUILDKITE_BRANCH", Some("1.2.3")),
+                ("BUILDKITE_TAG", Some("1.2.3")),
+                ("BUILDKITE_PIPELINE_DEFAULT_BRANCH", Some("main")),
+                ("BUILDKITE_PULL_REQUEST", Some("false")),
+                ("BUILDKITE_PULL_REQUEST_BASE_BRANCH", Some("")),
+            ],
+            || {
+                let provider = BuildkiteCIProvider::detect().unwrap();
+                assert_eq!(
+                    provider.compare_with_base(),
+                    ChangedFiles::NoBase(NoBase::new("Buildkite tag build"))
+                );
             },
         );
     }

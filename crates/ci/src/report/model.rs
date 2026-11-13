@@ -54,8 +54,12 @@ pub struct ContextReport {
     pub base_ref: Option<String>,
     /// Git commit SHA.
     pub sha: String,
-    /// List of changed files.
+    /// List of changed files. Empty when the run had no base.
     pub changed_files: Vec<String>,
+    /// Why the run was compared with nothing, when it had no base. Every
+    /// task of the pipeline ran then, whatever `changed_files` holds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub no_base: Option<String>,
 }
 
 /// Individual task execution report.

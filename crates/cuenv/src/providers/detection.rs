@@ -68,6 +68,11 @@ pub fn detect_code_owners_provider(repo_root: &Path) -> Box<dyn CodeOwnersProvid
 /// 2. GitHub Actions (if github feature is enabled)
 /// 3. Falls back to `LocalProvider` (always available in cuenv-ci)
 ///
+/// A detected provider decides what the run is compared with and ignores
+/// `from_ref`. Without one, `from_ref` is the base. Without either, a run
+/// with `CI` set is on a CI system cuenv does not recognise and has no base,
+/// so it runs its whole pipeline; a local run compares with `HEAD`.
+///
 /// # Arguments
 ///
 /// * `from_ref` - Optional base ref for local provider (e.g., "main" to compare against)

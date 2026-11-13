@@ -1,5 +1,5 @@
-use super::CIProvider;
 use super::git::{Checkout, Since};
+use super::{CIProvider, ChangedFiles, NoBase};
 use crate::context::CIContext;
 use crate::report::{CheckHandle, PipelineReport};
 use async_trait::async_trait;
@@ -7,10 +7,24 @@ use cuenv_core::Result;
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-/// CI provider for local runs, optionally comparing against a Git base ref.
+/// CI provider for runs no other provider recognises: a run on a developer's
+/// machine, or a run on a CI system cuenv has no provider for.
 pub struct LocalProvider {
     context: CIContext,
-    base_ref: Option<String>,
+    base: LocalBase,
+}
+
+/// What a run without a CI provider is compared with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum LocalBase {
+    /// `HEAD`: a local run, which sees the changes not yet committed.
+    Head,
+    /// The commit `HEAD` and a ref both descend from, given with `--from`.
+    MergeBaseWith(String),
+    /// Nothing. `CI` is set, so this is a clean checkout on a CI system
+    /// cuenv does not recognise: nothing is uncommitted there, and nothing
+    /// says which commit the run came after.
+    UnrecognisedCi,
 }
 
 impl LocalProvider {
@@ -19,31 +33,51 @@ impl LocalProvider {
     #[must_use]
     pub fn with_base_ref(base_ref: String) -> Self {
         Self {
-            context: CIContext {
-                provider: "local".to_string(),
-                event: "manual".to_string(),
-                ref_name: "current".to_string(),
-                base_ref: Some(base_ref.clone()),
-                sha: "current".to_string(),
-            },
-            base_ref: Some(base_ref),
+            context: local_context(Some(base_ref.clone())),
+            base: LocalBase::MergeBaseWith(base_ref),
+        }
+    }
+
+    /// The `--from` ref this run compares with, when one was given.
+    fn base_ref(&self) -> Option<&str> {
+        match &self.base {
+            LocalBase::MergeBaseWith(base_ref) => Some(base_ref),
+            LocalBase::Head | LocalBase::UnrecognisedCi => None,
         }
     }
 }
 
+fn local_context(base_ref: Option<String>) -> CIContext {
+    CIContext {
+        provider: "local".to_string(),
+        event: "manual".to_string(),
+        ref_name: "current".to_string(),
+        base_ref,
+        sha: "current".to_string(),
+    }
+}
+
+/// Whether `CI` says the run is on a CI system: set, and neither empty nor a
+/// spelling of "no".
+fn ci_is_set(value: Option<&str>) -> bool {
+    value.map(str::trim).is_some_and(|value| {
+        !value.is_empty() && value != "0" && !value.eq_ignore_ascii_case("false")
+    })
+}
+
 #[async_trait]
 impl CIProvider for LocalProvider {
+    /// Always available as the fallback. With `CI` set, the run is on a CI
+    /// system that no provider recognised, and such a run has no base.
     fn detect() -> Option<Self> {
-        // Always available as fallback
+        let base = if ci_is_set(std::env::var("CI").ok().as_deref()) {
+            LocalBase::UnrecognisedCi
+        } else {
+            LocalBase::Head
+        };
         Some(Self {
-            context: CIContext {
-                provider: "local".to_string(),
-                event: "manual".to_string(),
-                ref_name: "current".to_string(),
-                base_ref: None,
-                sha: "current".to_string(),
-            },
-            base_ref: None,
+            context: local_context(None),
+            base,
         })
     }
 
@@ -51,16 +85,23 @@ impl CIProvider for LocalProvider {
         &self.context
     }
 
-    async fn changed_files(&self) -> Result<Vec<PathBuf>> {
+    async fn changed_files(&self) -> Result<ChangedFiles> {
+        if self.base == LocalBase::UnrecognisedCi {
+            return Ok(ChangedFiles::NoBase(
+                NoBase::new("`CI` is set and cuenv does not recognise this CI system")
+                    .with_remedy("Pass --from <ref> to compare with that ref instead"),
+            ));
+        }
+
         let Some(checkout) = Checkout::discover() else {
             // Without a repository there is nothing to compare with. Saying
             // "nothing changed" would skip every task with inputs.
-            return match self.base_ref.as_deref() {
+            return match self.base_ref() {
                 Some(base_ref) => Err(cuenv_core::Error::configuration(format!(
                     "--from {base_ref}: this directory is not inside a git repository, so \
                      there is nothing to compare with"
                 ))),
-                None => Ok(Vec::new()),
+                None => Ok(ChangedFiles::Compared(Vec::new())),
             };
         };
 
@@ -69,8 +110,7 @@ impl CIProvider for LocalProvider {
         // error: without the comparison only uncommitted changes would be
         // seen, and a clean checkout would report that nothing is affected.
         let committed = self
-            .base_ref
-            .as_deref()
+            .base_ref()
             .map(|base_ref| {
                 checkout
                     .compare(Since::MergeBaseWith(base_ref))
@@ -89,7 +129,7 @@ impl CIProvider for LocalProvider {
         let changed: HashSet<PathBuf> =
             committed.into_iter().flatten().chain(uncommitted).collect();
 
-        Ok(changed.into_iter().collect())
+        Ok(ChangedFiles::Compared(changed.into_iter().collect()))
     }
 
     async fn create_check(&self, _name: &str) -> Result<CheckHandle> {
@@ -129,6 +169,7 @@ mod tests {
                 base_ref: None,
                 sha: "abc123".to_string(),
                 changed_files: vec![],
+                no_base: None,
             },
             started_at: chrono::Utc::now(),
             completed_at: Some(chrono::Utc::now()),
@@ -212,6 +253,55 @@ mod tests {
         let result = provider.changed_files().await;
         // Should succeed even if there are no changes
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn ci_counts_as_set_unless_it_is_empty_false_or_zero() {
+        for value in ["true", "1", "yes", "TRUE", "woodpecker"] {
+            assert!(ci_is_set(Some(value)), "{value:?}");
+        }
+        for value in ["", " ", "false", "FALSE", "False", "0"] {
+            assert!(!ci_is_set(Some(value)), "{value:?}");
+        }
+        assert!(!ci_is_set(None));
+    }
+
+    #[tokio::test]
+    async fn a_ci_system_no_provider_recognises_has_no_base() {
+        let provider = temp_env::with_var("CI", Some("true"), LocalProvider::detect).unwrap();
+
+        let changes = provider.changed_files().await.unwrap();
+
+        let ChangedFiles::NoBase(why) = changes else {
+            panic!("expected no base, got {changes:?}");
+        };
+        assert_eq!(
+            why.to_string(),
+            "No comparable base (`CI` is set and cuenv does not recognise this CI system): \
+             running the whole pipeline. Pass --from <ref> to compare with that ref instead"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_local_run_is_compared_with_head() {
+        for value in [None, Some(""), Some("false"), Some("0")] {
+            let provider = temp_env::with_var("CI", value, LocalProvider::detect).unwrap();
+
+            assert_eq!(provider.base, LocalBase::Head, "CI={value:?}");
+            assert!(matches!(
+                provider.changed_files().await.unwrap(),
+                ChangedFiles::Compared(_)
+            ));
+        }
+    }
+
+    #[test]
+    fn from_gives_a_run_its_base_whatever_ci_says() {
+        let provider = temp_env::with_var("CI", Some("true"), || {
+            LocalProvider::with_base_ref("main".to_string())
+        });
+
+        assert_eq!(provider.base, LocalBase::MergeBaseWith("main".to_string()));
     }
 
     #[tokio::test]
