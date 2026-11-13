@@ -411,12 +411,6 @@ impl Task {
         self.inputs.iter().flat_map(Input::patterns)
     }
 
-    /// Whether any input is a file reference.
-    #[must_use]
-    pub fn has_file_references(&self) -> bool {
-        self.inputs.iter().any(|input| input.as_files().is_some())
-    }
-
     /// Returns an iterator over project references.
     pub fn iter_project_refs(&self) -> impl Iterator<Item = &ProjectReference> {
         self.inputs.iter().filter_map(Input::as_project)

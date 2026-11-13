@@ -238,10 +238,6 @@ struct ServiceDependencyPlan {
     image_roots: Vec<String>,
 }
 
-/// Walks selected services' `dependsOn` edges to classify each dependency as a
-/// task root (executed before startup) or an image root, recursing into image
-/// task dependencies. The task index is built once and reused for existence
-/// probes instead of re-cloning per dependency.
 /// Fail when a service about to start, or an image it depends on, has a
 /// problem recorded when the project's value was read: a dependency on
 /// another project's task or image, which is not supported yet. The tasks
@@ -271,6 +267,10 @@ fn reject_reached_problems(
     )))
 }
 
+/// Walks selected services' `dependsOn` edges to classify each dependency as a
+/// task root (executed before startup) or an image root, recursing into image
+/// task dependencies. The task index is built once and reused for existence
+/// probes instead of re-cloning per dependency.
 struct DependencyPlanner<'dependency_planner> {
     tasks: &'dependency_planner HashMap<String, TaskNode>,
     images: &'dependency_planner HashMap<String, ContainerImage>,

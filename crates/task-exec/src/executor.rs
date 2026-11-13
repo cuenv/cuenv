@@ -1268,12 +1268,6 @@ fn resolve_task_directory(
     }
 }
 
-/// Refuse a task that maps an input to a path nothing will put it at.
-///
-/// A mapping is honoured by staging the file in the task's execution root.
-/// A task that runs directly in the workspace (`hermetic: false` or
-/// `hermetic.sandbox: "none"`) has none, so it would run without the file
-/// while its declaration, and its cache key, say it read it.
 /// A file reference is bound to the directory it names when a graph is
 /// built. One that reaches the executor unbound names files nothing can
 /// find, whatever the task's isolation: hashing it would leave inputs out,
@@ -1290,6 +1284,12 @@ fn reject_unbound_file_references(name: &str, task: &Task) -> Result<()> {
     )))
 }
 
+/// Refuse a task that maps an input to a path nothing will put it at.
+///
+/// A mapping is honoured by staging the file in the task's execution root.
+/// A task that runs directly in the workspace (`hermetic: false` or
+/// `hermetic.sandbox: "none"`) has none, so it would run without the file
+/// while its declaration, and its cache key, say it read it.
 fn reject_unmaterialized_mapping(name: &str, task: &Task) -> Result<()> {
     if task.sandbox().uses_exec_root() {
         return Ok(());
@@ -1308,7 +1308,10 @@ fn reject_unmaterialized_mapping(name: &str, task: &Task) -> Result<()> {
         return Ok(());
     };
     Err(Error::configuration(format!(
-        "Task '{name}' maps the input '{from}' to '{to}', but it runs directly in the workspace          (hermetic: false or hermetic.sandbox: \"none\"), where nothing is staged. Read the          file where its task produces it and drop the mapping, or run the task under          hermetic.sandbox: \"dir\""
+        "Task '{name}' maps the input '{from}' to '{to}', but it runs directly in the workspace \
+         (hermetic: false or hermetic.sandbox: \"none\"), where nothing is staged. Read the \
+         file where its task produces it and drop the mapping, or run the task under \
+         hermetic.sandbox: \"dir\""
     )))
 }
 

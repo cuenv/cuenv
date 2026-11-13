@@ -86,15 +86,6 @@ impl<'changes> ChangedInputs<'changes> {
             anchors: self.anchors,
         }
     }
-
-    /// The same changes compared with the project in `project_root`.
-    #[must_use]
-    pub fn for_project(&self, project_root: &'changes Path) -> Self {
-        Self {
-            project_root,
-            ..*self
-        }
-    }
 }
 
 /// Where the anchors of file references lie in a checkout: each project
