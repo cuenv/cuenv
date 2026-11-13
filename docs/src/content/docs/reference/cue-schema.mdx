@@ -2317,9 +2317,14 @@ the project's tasks rather than the pipeline's own field.
 
 **`continueOnError`:** When `false` (default), the first failing task in a pipeline's dependency graph aborts the rest of the run. When `true`, the orchestrator finishes every independent chain it can; tasks whose dependencies failed are reported as `Skipped` with a `DependencyFailed { dep }` reason rather than silently dropped. The pipeline still exits non-zero overall if any task failed — `continueOnError` controls scheduling, not success. Surfaces as `task.skipped` events for renderers (CLI spinner, TUI, JSON).
 
-When `derivePaths` is enabled, or left at its default for branch and pull request triggers, cuenv derives provider path filters from each pipeline task's path inputs. For GitHub Actions, nested project inputs are emitted as normalized repo-relative paths, so an input such as `../flake.nix` in `server/env.cue` becomes `flake.nix` in the generated workflow instead of `server/../flake.nix`.
+When `derivePaths` is enabled, or left at its default for branch and pull request triggers, cuenv derives provider path filters from the path inputs of every task the pipeline reaches, dependencies included. For GitHub Actions, nested project inputs are emitted as normalized repo-relative paths, so an input such as `../flake.nix` in `server/env.cue` becomes `flake.nix` in the generated workflow instead of `server/../flake.nix`.
 
-Task inputs without glob metacharacters (no `*`, `?`, or `[`) are also expanded into a `path/**` companion entry, since GitHub Actions path filters are glob-only and would otherwise only match the literal path. This keeps derived CI triggers consistent with cuenv's own affected-task detection, which treats non-glob inputs as prefixes. Inputs that resolve outside the repository root are skipped and logged at `warn` level.
+The derived filters are a superset of what `cuenv ci` treats as affecting a task, so a workflow can start more often than it has work and never less. GitHub's filter syntax is not the glob dialect inputs are matched with (`*` stops at `/` there, and `?`, `+`, `[]` and a leading `!` have their own meaning), so cuenv does not translate globs. Every input becomes one of two shapes:
+
+- An input that is not a glob (no `*`, `?`, `[` or `{`) is emitted as itself and as `path/**`, since it stands for that file or for everything beneath that directory.
+- A glob is emitted as the directory it is rooted in: `src/*.txt` and `src/**/*.{ts,tsx}` both become `src/**`. A glob with no literal directory, such as `**/*.md`, becomes the whole project.
+
+A path segment that GitHub would read as a pattern (`+page.svelte`, `c++`) cuts the filter at its parent directory. When any task the pipeline reaches has no path inputs, the whole project is a trigger, because that task always runs. Inputs that resolve outside the repository root are skipped and logged at `warn` level. `cuenv ci` does the precise selection once the workflow has started.
 
 ### #PipelineCondition
 

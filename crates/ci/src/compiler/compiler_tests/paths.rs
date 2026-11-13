@@ -328,25 +328,254 @@ fn test_derive_paths_emits_recursive_glob_for_simple_directory_inputs() {
 }
 
 #[test]
-fn test_derive_paths_does_not_expand_existing_globs() {
-    // Inputs that already contain glob metacharacters must not get a
-    // duplicate `/**` appended; their meaning is left to GitHub Actions.
-    let paths = super::trigger_paths_for_project("server", &["src/**/*.rs", "data/?.json"]);
+fn a_glob_contributes_the_directory_it_is_rooted_in() {
+    // GitHub's filter syntax is not the glob dialect inputs are matched with
+    // at runtime: `*` stops at `/` there, and `?`, `+`, `[]` and a leading `!`
+    // mean something else. No glob is translated; the workflow starts for the
+    // glob's literal directory and `cuenv ci` selects precisely.
+    let paths = super::trigger_paths_for_project(
+        "server",
+        &["src/**/*.rs", "data/?.json", "gen/*.txt", "conf/{a,b}.yaml"],
+    );
 
+    for expected in [
+        "server/src/**",
+        "server/data/**",
+        "server/gen/**",
+        "server/conf/**",
+    ] {
+        assert!(
+            paths.contains(&expected.to_string()),
+            "{expected}: {paths:?}"
+        );
+    }
     assert!(
-        paths.contains(&"server/src/**/*.rs".to_string()),
-        "glob input should be emitted as-is: {paths:?}"
+        !paths
+            .iter()
+            .any(|path| path.contains(['?', '{', '[']) || path.contains("*.")),
+        "no glob is emitted: {paths:?}"
     );
+}
+
+#[test]
+fn a_glob_with_no_literal_directory_falls_back_to_the_project() {
     assert!(
-        !paths.iter().any(|p| p == "server/src/**/*.rs/**"),
-        "glob input should not have /** appended: {paths:?}"
+        super::trigger_paths_for_project("server", &["**/*.proto"])
+            .contains(&"server/**".to_string())
     );
+    assert!(super::trigger_paths_for_project(".", &["*.md"]).contains(&"**".to_string()));
+    for whole_project in ["", ".", "./"] {
+        assert!(
+            super::trigger_paths_for_project("server", &[whole_project])
+                .contains(&"server/**".to_string()),
+            "{whole_project:?}"
+        );
+    }
+}
+
+#[test]
+fn an_input_is_read_the_same_however_it_is_spelled() {
+    let plain = super::trigger_paths_for_project("server", &["src/lib", "bun.lock", "gen/**"]);
+    let spelled =
+        super::trigger_paths_for_project("server", &["./src//lib/", " bun.lock ", "./gen/./**"]);
+    assert_eq!(plain, spelled);
+    assert!(plain.contains(&"server/bun.lock".to_string()), "{plain:?}");
+}
+
+#[test]
+fn a_segment_github_would_read_as_a_pattern_cuts_the_path_at_its_parent() {
+    let paths = super::trigger_paths_for_project(
+        "web",
+        &[
+            "src/routes/+page.svelte",
+            "native/c++/main.cc",
+            "notes/!important.md",
+        ],
+    );
+
+    for expected in ["web/src/routes/**", "web/native/**", "web/notes/**"] {
+        assert!(
+            paths.contains(&expected.to_string()),
+            "{expected}: {paths:?}"
+        );
+    }
     assert!(
-        paths.contains(&"server/data/?.json".to_string()),
-        "wildcard input should be emitted as-is: {paths:?}"
+        !paths.iter().any(|path| path.contains(['+', '!'])),
+        "{paths:?}"
     );
-    assert!(
-        !paths.iter().any(|p| p == "server/data/?.json/**"),
-        "wildcard input should not have /** appended: {paths:?}"
+
+    // The project's own directory is cut the same way.
+    let paths = super::trigger_paths_for_project("apps/c++", &["src/**"]);
+    assert!(paths.contains(&"apps/**".to_string()), "{paths:?}");
+}
+
+/// Whether one of GitHub's `paths` filters starts a workflow for `file`,
+/// for the two shapes derivation emits: an exact path and `<dir>/**`.
+fn starts_a_workflow(paths: &[String], file: &str) -> bool {
+    paths.iter().any(|path| {
+        path == "**"
+            || path == file
+            || path
+                .strip_suffix("/**")
+                .is_some_and(|directory| file.starts_with(&format!("{directory}/")))
+    })
+}
+
+#[test]
+fn every_file_that_affects_a_task_at_runtime_starts_its_workflow() {
+    // Parity between `cuenv ci`, which matches inputs as globs, and the
+    // derived filters. A file the runtime treats as affecting and that no
+    // filter covers is a pipeline that silently never runs.
+    let files = [
+        "app/bun.lock",
+        "app/src/a.txt",
+        "app/src/b.txt",
+        "app/src/deep/x.txt",
+        "app/src/deep/deeper/y.ts",
+        "app/gen/one.json",
+        "app/conf/a.yaml",
+        "app/README.md",
+        "app/src/routes/+page.svelte",
+    ];
+    let inputs = [
+        "bun.lock",
+        "./bun.lock",
+        "src",
+        "src/",
+        "src/*.txt",
+        "src/**",
+        "src/**/*.ts",
+        "src/{a,b}.txt",
+        "src/deep/?.txt",
+        "src/[ab].txt",
+        "gen/*.json",
+        "conf/{a,b}.yaml",
+        "*.md",
+        "**/*.md",
+        "",
+        ".",
+        " src/a.txt ",
+        "src/./deep",
+        "src//deep/x.txt",
+        "src/routes/+page.svelte",
+    ];
+
+    for input in inputs {
+        let paths = super::trigger_paths_for_project("app", &[input]);
+        for file in files {
+            let affects = cuenv_core::matches_pattern(
+                &[std::path::PathBuf::from(file)],
+                std::path::Path::new("app"),
+                input,
+            );
+            assert!(
+                !affects || starts_a_workflow(&paths, file),
+                "input {input:?} is affected by {file} at runtime, and no derived path \
+                 starts the workflow: {paths:?}"
+            );
+        }
+    }
+}
+
+fn pipeline_paths(project: Project, pipeline_tasks: &[&str]) -> Vec<String> {
+    let pipeline = Pipeline {
+        tasks: pipeline_tasks
+            .iter()
+            .map(|name| PipelineTask::Simple(TaskRef::from_name(*name)))
+            .collect(),
+        when: Some(PipelineCondition {
+            branch: Some(StringOrVec::String("main".to_string())),
+            pull_request: None,
+            tag: None,
+            default_branch: None,
+            scheduled: None,
+            manual: None,
+            release: None,
+        }),
+        ..Default::default()
+    };
+    let mut project = project;
+    project.ci = Some(CI {
+        pipelines: BTreeMap::from([("default".to_string(), pipeline.clone())]),
+        ..Default::default()
+    });
+    let options = CompilerOptions {
+        pipeline_name: Some("default".to_string()),
+        pipeline: Some(pipeline),
+        project_path: Some("app".to_string()),
+        ..Default::default()
+    };
+    let ir = Compiler::with_options(project, options).compile().unwrap();
+    ir.pipeline.trigger.expect("should have trigger").paths
+}
+
+fn task_with(inputs: &[&str], depends_on: &[&str]) -> TaskNode {
+    TaskNode::Task(Box::new(Task {
+        command: "true".to_string(),
+        inputs: inputs
+            .iter()
+            .map(|input| Input::Path((*input).to_string()))
+            .collect(),
+        depends_on: depends_on
+            .iter()
+            .map(|name| cuenv_core::tasks::TaskDependency::from_name(*name))
+            .collect(),
+        ..Default::default()
+    }))
+}
+
+#[test]
+fn a_reached_task_without_inputs_makes_the_whole_project_a_trigger() {
+    // `build` has inputs and depends on `gen`, which has none. `gen` always
+    // runs, so `cuenv ci` runs `build` for any change: a README change has
+    // to start the workflow.
+    let mut project = Project::new("app");
+    project
+        .tasks
+        .insert("build".to_string(), task_with(&["src/**"], &["gen"]));
+    project.tasks.insert("gen".to_string(), task_with(&[], &[]));
+
+    let paths = pipeline_paths(project, &["build"]);
+
+    assert!(paths.contains(&"app/**".to_string()), "{paths:?}");
+    assert!(starts_a_workflow(&paths, "app/README.md"));
+}
+
+#[test]
+fn a_pipeline_whose_tasks_all_have_inputs_does_not_trigger_on_the_whole_project() {
+    let mut project = Project::new("app");
+    project
+        .tasks
+        .insert("build".to_string(), task_with(&["src/**"], &["gen"]));
+    project
+        .tasks
+        .insert("gen".to_string(), task_with(&["schema/**"], &[]));
+
+    let paths = pipeline_paths(project, &["build"]);
+
+    assert!(!paths.contains(&"app/**".to_string()), "{paths:?}");
+    assert!(paths.contains(&"app/src/**".to_string()), "{paths:?}");
+    assert!(paths.contains(&"app/schema/**".to_string()), "{paths:?}");
+}
+
+#[test]
+fn a_dependency_declared_on_a_group_is_followed() {
+    let mut project = Project::new("app");
+    project.tasks.insert(
+        "check".to_string(),
+        TaskNode::Group(TaskGroup {
+            type_: "group".to_string(),
+            children: HashMap::from([("lint".to_string(), task_with(&["src/**"], &[]))]),
+            depends_on: vec![cuenv_core::tasks::TaskDependency::from_name("gen")],
+            description: None,
+            max_concurrency: None,
+        }),
     );
+    project
+        .tasks
+        .insert("gen".to_string(), task_with(&["schema/**"], &[]));
+
+    let paths = pipeline_paths(project, &["check"]);
+
+    assert!(paths.contains(&"app/schema/**".to_string()), "{paths:?}");
 }

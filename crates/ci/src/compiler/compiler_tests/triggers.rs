@@ -51,12 +51,10 @@ fn test_derive_trigger_paths_with_project_path() {
 
     let trigger = ir.pipeline.trigger.expect("should have trigger");
 
-    // Task inputs should be prefixed with project_path
-    assert!(
-        trigger
-            .paths
-            .contains(&"projects/api/src/**/*.rs".to_string())
-    );
+    // Task inputs should be prefixed with project_path. A glob contributes
+    // the directory it is rooted in, never the glob itself.
+    assert!(trigger.paths.contains(&"projects/api/src/**".to_string()));
+    assert!(!trigger.paths.iter().any(|path| path.contains("*.rs")));
     assert!(
         trigger
             .paths

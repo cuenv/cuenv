@@ -96,14 +96,21 @@ async fn execute_pipeline_task(request: PipelineTaskRequest<'_>) -> PipelineTask
         task_name,
         pipeline,
     } = request;
-    let inputs_matched = affected::matched_inputs_for_task(
-        task_name,
-        pipeline.config,
-        ChangedInputs {
-            files: pipeline.changed_files,
-            project_root: pipeline.project_path,
-        },
-    );
+    // Changed files are relative to the root of the checkout, so the project
+    // is placed there before its inputs are compared with them.
+    let inputs_matched = affected::CheckoutFrame::around(pipeline.project_path)
+        .place(pipeline.project_path)
+        .map(|project_root| {
+            affected::matched_inputs_for_task(
+                task_name,
+                pipeline.config,
+                ChangedInputs {
+                    files: pipeline.changed_files,
+                    project_root: &project_root,
+                },
+            )
+        })
+        .unwrap_or_default();
     let outputs = task_outputs(pipeline.task_index, task_name);
 
     cuenv_events::emit_ci_task_executing!(pipeline.project_display, task_name);

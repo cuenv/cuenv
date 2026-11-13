@@ -48,31 +48,78 @@ tasks: lint: {command: "true", inputs: ["**/*.md"]}
 
 /// A module of three projects in a repository of two commits. The second
 /// commit changes only `content/articles/one.md`.
+/// How a [`Monorepo`] is laid out.
+#[derive(Clone, Copy)]
+struct Layout<'layout> {
+    /// Where the checkout is beneath the temporary directory.
+    checkout: &'layout Path,
+    /// The `env.cue` of the project `app`.
+    app: &'layout str,
+    /// More files of the first commit.
+    files: &'layout [(&'layout str, &'layout str)],
+    /// What the second commit writes.
+    changes: &'layout [(&'layout str, &'layout str)],
+}
+
 struct Monorepo {
     directory: TempDir,
+    /// Where the checkout is beneath the temporary directory.
+    checkout: std::path::PathBuf,
     base: String,
 }
 
 impl Monorepo {
     fn new(app: &str) -> TestResult<Self> {
-        let directory = tempfile::tempdir()?;
-        let root = directory.path();
-        write(root, "cue.mod/module.cue", MODULE)?;
-        write(root, "app/env.cue", app)?;
-        write(root, "app/src/main.ts", "export {}\n")?;
-        write(root, "content/env.cue", CONTENT)?;
-        write(root, "content/articles/one.md", "one\n")?;
-        write(root, "docs/env.cue", DOCS_WITHOUT_CI)?;
-        write(root, "docs/readme.md", "docs\n")?;
-        test_git::init_repository(root)?;
-        let base = test_git::commit_all(root, "base")?;
-        write(root, "content/articles/one.md", "two\n")?;
-        test_git::commit_all(root, "an article changes")?;
-        Ok(Self { directory, base })
+        Self::changing(app, &[], &[("content/articles/one.md", "two\n")])
     }
 
-    fn root(&self) -> &Path {
-        self.directory.path()
+    /// A monorepo with some more files in its first commit, whose second
+    /// commit writes `changes`.
+    fn changing(app: &str, files: &[(&str, &str)], changes: &[(&str, &str)]) -> TestResult<Self> {
+        Self::laid_out(&Layout {
+            checkout: Path::new(""),
+            app,
+            files,
+            changes,
+        })
+    }
+
+    /// A monorepo laid out as described, in a new temporary directory.
+    fn laid_out(layout: &Layout<'_>) -> TestResult<Self> {
+        let Layout {
+            checkout,
+            app,
+            files,
+            changes,
+        } = *layout;
+        let directory = tempfile::tempdir()?;
+        let root = directory.path().join(checkout);
+        fs::create_dir_all(&root)?;
+        write(&root, "cue.mod/module.cue", MODULE)?;
+        write(&root, "app/env.cue", app)?;
+        write(&root, "app/src/main.ts", "export {}\n")?;
+        write(&root, "content/env.cue", CONTENT)?;
+        write(&root, "content/articles/one.md", "one\n")?;
+        write(&root, "docs/env.cue", DOCS_WITHOUT_CI)?;
+        write(&root, "docs/readme.md", "docs\n")?;
+        for (path, content) in files {
+            write(&root, path, content)?;
+        }
+        test_git::init_repository(&root)?;
+        let base = test_git::commit_all(&root, "base")?;
+        for (path, content) in changes {
+            write(&root, path, content)?;
+        }
+        test_git::commit_all(&root, "a change")?;
+        Ok(Self {
+            directory,
+            checkout: checkout.to_path_buf(),
+            base,
+        })
+    }
+
+    fn root(&self) -> std::path::PathBuf {
+        self.directory.path().join(&self.checkout)
     }
 
     fn ci(&self, arguments: &[&str]) -> TestResult<Output> {
@@ -237,7 +284,7 @@ tasks: build: {
 "#,
     )?;
     write(
-        repository.root(),
+        &repository.root(),
         "content/drafts/env.cue",
         "package cuenv\ntasks: articles: inputs: [\"articles/**\"]\n",
     )?;
@@ -270,5 +317,110 @@ fn a_base_that_cannot_be_compared_is_an_error() -> TestResult {
     assert!(!output.status.success(), "{printed}");
     assert!(printed.contains("--from no-such-branch"), "{printed}");
     assert!(printed.contains("was not found"), "{printed}");
+    Ok(())
+}
+
+/// An `app` whose `build` task writes `ran` and declares these inputs.
+fn app_reading(inputs: &str) -> String {
+    format!(
+        r#"package cuenv
+name: "app"
+let _tasks = tasks
+ci: pipelines: default: tasks: [_tasks.build]
+tasks: build: {{
+	command: "sh"
+	args: ["-c", "printf ran > ran"]
+	inputs: {inputs}
+	hermetic: sandbox: "dir"
+}}
+"#
+    )
+}
+
+#[test]
+fn an_input_is_matched_however_it_is_spelled() -> TestResult {
+    // Each of these was hashed as an input and never matched a change.
+    for (inputs, changed) in [
+        (r#"["./lock.txt"]"#, "app/lock.txt"),
+        (r#"["src/{a,b}.txt"]"#, "app/src/a.txt"),
+        (r#"["src/** "]"#, "app/src/a.txt"),
+        (r#"["src/./"]"#, "app/src/a.txt"),
+        (r#"["."]"#, "app/anything.txt"),
+    ] {
+        let repository = Monorepo::changing(
+            &app_reading(inputs),
+            &[("app/lock.txt", "1"), ("app/src/a.txt", "1")],
+            &[(changed, "2")],
+        )?;
+
+        let output = repository.ci(&["--path", "app"])?;
+
+        assert_success(&output);
+        assert!(
+            repository.root().join("app/ran").exists(),
+            "inputs {inputs}, changed {changed}: {}",
+            text(&output)
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn a_checkout_named_like_its_project_still_selects_the_project() -> TestResult {
+    // The checkout is `<tmp>/app` and the project is `app`.
+    let repository = Monorepo::laid_out(&Layout {
+        checkout: Path::new("app"),
+        app: &app_reading(r#"["src/**"]"#),
+        files: &[],
+        changes: &[("app/src/main.ts", "export const changed = true\n")],
+    })?;
+
+    let output = repository.ci(&["--path", "app"])?;
+
+    assert_success(&output);
+    assert!(
+        repository.root().join("app/ran").exists(),
+        "{}",
+        text(&output)
+    );
+    Ok(())
+}
+
+#[test]
+fn an_input_that_only_matches_from_the_repository_root_still_runs_and_says_so() -> TestResult {
+    // `app` reads `shared/**`, and the only `shared/` is at the root.
+    let repository = Monorepo::changing(
+        &app_reading(r#"["src/**", "shared/**"]"#),
+        &[("shared/x.txt", "1")],
+        &[("shared/x.txt", "2")],
+    )?;
+
+    let output = repository.ci(&["--path", "app"])?;
+
+    assert_success(&output);
+    assert!(repository.root().join("app/ran").exists());
+    let printed = text(&output);
+    assert!(
+        printed.contains("has input 'shared/**', which selects nothing under app"),
+        "{printed}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_correct_project_is_not_warned_about_files_of_the_same_name_at_the_root() -> TestResult {
+    let repository = Monorepo::changing(
+        &app_reading(r#"["package.json", "src/**"]"#),
+        &[("app/package.json", "{}"), ("package.json", "{}")],
+        &[("package.json", "{ }")],
+    )?;
+
+    let output = repository.ci(&["--path", "app"])?;
+
+    // The root file still selects the task for now, and nothing is said:
+    // the configuration is correct.
+    assert_success(&output);
+    assert!(repository.root().join("app/ran").exists());
+    assert!(!text(&output).contains("warning:"), "{}", text(&output));
     Ok(())
 }

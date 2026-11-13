@@ -135,6 +135,7 @@ fn test_compute_affected_tasks_direct_match() {
         &AffectedProjects {
             project: &project,
             all_projects: &all_projects,
+            checkout_root: None,
         },
     );
 
@@ -159,6 +160,7 @@ fn test_compute_affected_tasks_no_match() {
         &AffectedProjects {
             project: &project,
             all_projects: &all_projects,
+            checkout_root: None,
         },
     );
 
@@ -185,6 +187,7 @@ fn test_compute_affected_tasks_transitive_internal_deps() {
         &AffectedProjects {
             project: &project,
             all_projects: &all_projects,
+            checkout_root: None,
         },
     );
 
@@ -221,6 +224,7 @@ fn test_compute_affected_tasks_preserves_pipeline_order() {
         &AffectedProjects {
             project: &project,
             all_projects: &all_projects,
+            checkout_root: None,
         },
     );
 
@@ -249,6 +253,7 @@ fn test_compute_affected_tasks_only_affected_in_pipeline() {
         &AffectedProjects {
             project: &project,
             all_projects: &all_projects,
+            checkout_root: None,
         },
     );
 
@@ -288,7 +293,7 @@ fn test_compute_affected_tasks_deploy_pipeline_with_absolute_project_root() {
         ("deploy", deploy),
     ]);
     let changed_files = vec![PathBuf::from("chat/src/components/chat/ChatEditor.vue")];
-    let root = Path::new("/repo/chat");
+    let root = Path::new("chat");
     let pipeline_tasks = vec!["deploy".to_string()];
     let all_projects: HashMap<String, (PathBuf, Project)> = HashMap::new();
 
@@ -301,6 +306,7 @@ fn test_compute_affected_tasks_deploy_pipeline_with_absolute_project_root() {
         &AffectedProjects {
             project: &project,
             all_projects: &all_projects,
+            checkout_root: None,
         },
     );
 
@@ -312,7 +318,7 @@ fn test_matched_inputs_for_task_with_absolute_project_root() {
     let task = make_task(vec!["src/**", "public/**"], vec![]);
     let project = make_project(vec![("build", task)]);
     let changed_files = vec![PathBuf::from("chat/src/components/chat/ChatEditor.vue")];
-    let root = Path::new("/repo/chat");
+    let root = Path::new("chat");
 
     let matched = super::matched_inputs_for_task(
         "build",
@@ -344,6 +350,7 @@ fn test_compute_affected_tasks_empty_pipeline() {
         &AffectedProjects {
             project: &project,
             all_projects: &all_projects,
+            checkout_root: None,
         },
     );
 
@@ -371,6 +378,7 @@ fn test_compute_affected_tasks_external_dep_not_found() {
         &AffectedProjects {
             project: &project,
             all_projects: &all_projects,
+            checkout_root: None,
         },
     );
 
@@ -397,7 +405,7 @@ fn test_compute_affected_tasks_external_dep_affected() {
     let mut all_projects = HashMap::new();
     all_projects.insert(
         "external".to_string(),
-        (PathBuf::from("/repo/external"), external_project),
+        (PathBuf::from("external"), external_project),
     );
 
     let affected = super::compute_affected_tasks(
@@ -409,6 +417,7 @@ fn test_compute_affected_tasks_external_dep_affected() {
         &AffectedProjects {
             project: &project,
             all_projects: &all_projects,
+            checkout_root: None,
         },
     );
 
@@ -430,7 +439,7 @@ fn test_compute_affected_tasks_external_nested_dep_affected() {
     let mut all_projects = HashMap::new();
     all_projects.insert(
         "external".to_string(),
-        (PathBuf::from("/repo/external"), external_project),
+        (PathBuf::from("external"), external_project),
     );
 
     let affected = super::compute_affected_tasks(
@@ -442,6 +451,7 @@ fn test_compute_affected_tasks_external_nested_dep_affected() {
         &AffectedProjects {
             project: &project,
             all_projects: &all_projects,
+            checkout_root: None,
         },
     );
 
@@ -469,6 +479,7 @@ fn test_compute_affected_tasks_malformed_external_dep() {
         &AffectedProjects {
             project: &project,
             all_projects: &all_projects,
+            checkout_root: None,
         },
     );
 
@@ -567,6 +578,7 @@ fn test_task_with_no_inputs_always_affected_even_with_no_changes() {
         &AffectedProjects {
             project: &project,
             all_projects: &all_projects,
+            checkout_root: None,
         },
     );
 
@@ -719,6 +731,7 @@ fn test_compute_affected_tasks_with_group() {
         &AffectedProjects {
             project: &project,
             all_projects: &all_projects,
+            checkout_root: None,
         },
     );
 
@@ -746,6 +759,7 @@ where
         dep,
         &mut ExternalDependencyContext {
             projects: inputs.projects,
+            checkout_root: None,
             changed_files: inputs.changed_files,
             cache: inputs.cache,
             visiting: &mut visiting,
@@ -823,7 +837,7 @@ fn test_check_external_dependency_directly_affected() {
     let mut all_projects = HashMap::new();
     all_projects.insert(
         "external".to_string(),
-        (PathBuf::from("/repo/external"), external_project),
+        (PathBuf::from("external"), external_project),
     );
 
     let changed_files = vec![PathBuf::from("src/lib.rs")];
@@ -860,7 +874,7 @@ fn test_check_external_dependency_transitive_internal() {
     let mut all_projects = HashMap::new();
     all_projects.insert(
         "external".to_string(),
-        (PathBuf::from("/repo/external"), external_project),
+        (PathBuf::from("external"), external_project),
     );
 
     let changed_files = vec![PathBuf::from("src/lib.rs")];
@@ -890,7 +904,7 @@ fn test_check_external_dependency_circular_prevention() {
         .insert("taskA".to_string(), TaskNode::Task(Box::new(circular_task)));
 
     let mut all_projects = HashMap::new();
-    all_projects.insert("proj".to_string(), (PathBuf::from("/repo/proj"), project));
+    all_projects.insert("proj".to_string(), (PathBuf::from("proj"), project));
 
     let changed_files: Vec<PathBuf> = vec![]; // No changes matching taskA/**
     let mut cache = HashMap::new();
@@ -932,6 +946,7 @@ fn test_compute_affected_tasks_non_pipeline_dep() {
         &AffectedProjects {
             project: &project,
             all_projects: &all_projects,
+            checkout_root: None,
         },
     );
 
@@ -968,6 +983,7 @@ fn test_compute_affected_tasks_deep_non_pipeline_chain() {
         &AffectedProjects {
             project: &project,
             all_projects: &all_projects,
+            checkout_root: None,
         },
     );
 
@@ -999,6 +1015,7 @@ fn test_compute_affected_tasks_non_pipeline_dep_no_match() {
         &AffectedProjects {
             project: &project,
             all_projects: &all_projects,
+            checkout_root: None,
         },
     );
 
@@ -1024,12 +1041,13 @@ fn affected_in(change: &Change<'_>, pipeline_tasks: &[&str]) -> Vec<String> {
     super::compute_affected_tasks(
         ChangedInputs {
             files: change.files,
-            project_root: Path::new("/repo/app"),
+            project_root: Path::new("app"),
         },
         &pipeline_tasks,
         &AffectedProjects {
             project: change.project,
             all_projects: change.all_projects,
+            checkout_root: None,
         },
     )
 }
@@ -1040,7 +1058,7 @@ fn content_project() -> HashMap<String, (PathBuf, Project)> {
     all_projects.insert(
         "content".to_string(),
         (
-            PathBuf::from("/repo/content"),
+            PathBuf::from("content"),
             make_project(vec![("articles", articles)]),
         ),
     );
@@ -1162,10 +1180,7 @@ fn an_external_producer_that_is_a_group_is_expanded_to_its_tasks() {
         group_of(vec![("site", TaskNode::Task(Box::new(inner)))]),
     );
     let mut all_projects = HashMap::new();
-    all_projects.insert(
-        "content".to_string(),
-        (PathBuf::from("/repo/content"), content),
-    );
+    all_projects.insert("content".to_string(), (PathBuf::from("content"), content));
     let changed = vec![PathBuf::from("content/articles/one.md")];
 
     assert_eq!(
@@ -1254,7 +1269,7 @@ fn a_parent_directory_input_selects_its_task_whenever_anything_changed() {
             &project,
             ChangedInputs {
                 files: &changed,
-                project_root: Path::new("/repo/app"),
+                project_root: Path::new("app"),
             },
         ),
         ["../content/articles/**"]
@@ -1301,6 +1316,136 @@ fn an_absolute_input_selects_its_task_whenever_anything_changed() {
         ),
         ["build"]
     );
+}
+
+// ==========================================================================
+// One path frame (issue 611, A.8)
+// ==========================================================================
+
+fn checkout_with(files: &[&str]) -> tempfile::TempDir {
+    let checkout = tempfile::tempdir().unwrap();
+    for file in files {
+        let path = checkout.path().join(file);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, "content").unwrap();
+    }
+    checkout
+}
+
+#[test]
+fn a_checkout_frame_places_a_project_by_an_exact_prefix() {
+    let checkout = checkout_with(&["docs/index.md", "apps/web/src/main.ts"]);
+    let frame = super::CheckoutFrame::at(checkout.path());
+
+    assert_eq!(
+        frame.place(&checkout.path().join("apps/web")),
+        Some(PathBuf::from("apps/web"))
+    );
+    assert_eq!(frame.place(checkout.path()), Some(PathBuf::new()));
+    assert_eq!(frame.place(Path::new("/somewhere/else")), None);
+    assert_eq!(
+        frame.place(&checkout.path().join("apps/web/../../docs")),
+        Some(PathBuf::from("docs"))
+    );
+}
+
+#[test]
+fn an_input_read_only_from_the_checkout_root_keeps_its_task_affected_and_is_reported() {
+    // `app` reads `shared/**`, and the only `shared/` is at the root.
+    let checkout = checkout_with(&["app/src/main.ts", "shared/x.txt"]);
+    let build = make_task(vec!["src/**", "shared/**"], vec![]);
+    let project = make_project(vec![("build", build)]);
+    let changed = vec![PathBuf::from("shared/x.txt")];
+    let inputs = ChangedInputs {
+        files: &changed,
+        project_root: Path::new("app"),
+    };
+
+    let affected = super::compute_affected_tasks(
+        inputs,
+        &["build".to_string()],
+        &AffectedProjects {
+            project: &project,
+            all_projects: &HashMap::new(),
+            checkout_root: Some(checkout.path()),
+        },
+    );
+
+    assert_eq!(affected, ["build"]);
+    assert_eq!(
+        super::root_relative_inputs(inputs, checkout.path(), &project.tasks["build"]),
+        ["shared/**"]
+    );
+}
+
+#[test]
+fn a_correct_project_whose_root_has_files_of_the_same_name_is_not_reported() {
+    // The ordinary monorepo: `app` has its own `package.json` and `src/`,
+    // and so does the root. A root change still selects the task for now,
+    // and the configuration is not at fault.
+    let checkout = checkout_with(&[
+        "app/package.json",
+        "app/src/main.ts",
+        "package.json",
+        "src/root.ts",
+    ]);
+    let build = make_task(vec!["package.json", "src/**"], vec![]);
+    let project = make_project(vec![("build", build)]);
+
+    for changed in [
+        vec![PathBuf::from("package.json")],
+        vec![PathBuf::from("src/root.ts")],
+    ] {
+        let inputs = ChangedInputs {
+            files: &changed,
+            project_root: Path::new("app"),
+        };
+        let affected = super::compute_affected_tasks(
+            inputs,
+            &["build".to_string()],
+            &AffectedProjects {
+                project: &project,
+                all_projects: &HashMap::new(),
+                checkout_root: Some(checkout.path()),
+            },
+        );
+
+        assert_eq!(affected, ["build"]);
+        assert!(
+            super::root_relative_inputs(inputs, checkout.path(), &project.tasks["build"])
+                .is_empty()
+        );
+    }
+}
+
+#[test]
+fn a_checkout_named_like_one_of_its_projects_still_matches() {
+    // `.../docs/docs`: the project `docs` in a checkout directory `docs`.
+    let outer = tempfile::tempdir().unwrap();
+    let checkout = outer.path().join("docs");
+    std::fs::create_dir_all(checkout.join("docs")).unwrap();
+    std::fs::write(checkout.join("docs/index.md"), "content").unwrap();
+    let frame = super::CheckoutFrame::at(&checkout);
+    let project_root = frame.place(&checkout.join("docs")).unwrap();
+    let lint = make_task(vec!["**/*.md"], vec![]);
+    let project = make_project(vec![("lint", lint)]);
+    let changed = vec![PathBuf::from("docs/index.md")];
+
+    let affected = super::compute_affected_tasks(
+        ChangedInputs {
+            files: &changed,
+            project_root: &project_root,
+        },
+        &["lint".to_string()],
+        &AffectedProjects {
+            project: &project,
+            all_projects: &HashMap::new(),
+            checkout_root: Some(frame.root()),
+        },
+    );
+
+    assert_eq!(project_root, PathBuf::from("docs"));
+    assert_eq!(affected, ["lint"]);
 }
 
 #[test]

@@ -1576,8 +1576,9 @@ fn reject_output_symlink_ancestors(workdir: &Path, relative: &Path) -> Result<()
     Ok(())
 }
 
+/// Whether a pattern is a glob, as every reader of patterns decides it.
 fn looks_like_glob(pattern: &str) -> bool {
-    pattern.contains('*') || pattern.contains('{') || pattern.contains('?') || pattern.contains('[')
+    cuenv_vcs::pattern::is_glob(pattern)
 }
 
 /// The leading literal path a pattern's matches are guaranteed to live under.
@@ -1585,16 +1586,7 @@ fn looks_like_glob(pattern: &str) -> bool {
 /// `dist/**/*.js` yields `dist`; `dist/app.js` yields itself; `**/*.js`
 /// yields an empty path, meaning the pattern is unbounded.
 fn literal_prefix(pattern: &str) -> PathBuf {
-    let mut base = PathBuf::new();
-    for segment in pattern.split('/') {
-        if looks_like_glob(segment) {
-            break;
-        }
-        if !segment.is_empty() && segment != "." {
-            base.push(segment);
-        }
-    }
-    base
+    PathBuf::from(cuenv_vcs::pattern::literal_prefix(pattern))
 }
 
 /// The directories that have to be walked to satisfy `patterns`.

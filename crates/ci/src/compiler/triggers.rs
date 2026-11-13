@@ -7,6 +7,18 @@ use cuenv_core::tasks::TaskNode;
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 
+/// What the tasks a pipeline reaches read, as trigger derivation sees it.
+#[derive(Default)]
+struct PipelineInputs {
+    /// Every path input of every reached task.
+    patterns: HashSet<String>,
+    /// A reached task has no path inputs, or does not resolve. Such a task
+    /// always runs, so any file of the project can affect the pipeline.
+    whole_project: bool,
+    /// Tasks already walked, so a dependency cycle ends.
+    visited: HashSet<String>,
+}
+
 impl Compiler {
     /// Build trigger condition for a pipeline from its configuration.
     pub(super) fn build_trigger_condition(
@@ -81,18 +93,41 @@ impl Compiler {
         }
     }
 
+    /// The path filters under which a workflow for `pipeline` must start.
+    ///
+    /// They are a superset of what `cuenv ci` treats as affecting a task of
+    /// the pipeline, by construction. GitHub's filter syntax is not the
+    /// glob dialect inputs are matched with at runtime (`*` stops at `/`
+    /// there, and `?`, `+`, `[]` and a leading `!` mean something else), so
+    /// no glob is translated: an input contributes its literal directory
+    /// prefix, and `cuenv ci` does the precise selection once the workflow
+    /// has started. A workflow that starts too often costs a run that
+    /// selects nothing; one that does not start skips work silently.
     fn derive_trigger_paths(&self, pipeline: &Pipeline) -> Vec<String> {
-        let mut task_inputs = HashSet::new();
+        let mut inputs = PipelineInputs::default();
 
         for task in &pipeline.tasks {
-            self.collect_task_inputs(task.task_name(), &mut task_inputs);
+            self.collect_task_inputs(task.task_name(), &mut inputs);
         }
 
+        let project_path = self.options.project_path.as_deref();
         let mut paths = HashSet::new();
-        self.add_task_input_trigger_paths(&task_inputs, &mut paths);
+        for input in &inputs.patterns {
+            match trigger_paths_for_input(project_path, input) {
+                Some(derived) => paths.extend(derived),
+                None => {
+                    tracing::warn!(
+                        project_path = project_path.unwrap_or("."),
+                        input = input.as_str(),
+                        "Skipping task input that escapes the repository root or is absolute; \
+                         it will not contribute to derived GitHub path filters",
+                    );
+                }
+            }
+        }
 
-        if task_inputs.is_empty() {
-            add_project_fallback_path(self.options.project_path.as_deref(), &mut paths);
+        if inputs.whole_project || inputs.patterns.is_empty() {
+            add_project_fallback_path(project_path, &mut paths);
         }
 
         self.add_implicit_cue_trigger_paths(&mut paths);
@@ -101,31 +136,6 @@ impl Compiler {
         let mut result: Vec<_> = paths.into_iter().collect();
         result.sort();
         result
-    }
-
-    fn add_task_input_trigger_paths(
-        &self,
-        task_inputs: &HashSet<String>,
-        paths: &mut HashSet<String>,
-    ) {
-        for input in task_inputs {
-            match repo_relative_trigger_path(self.options.project_path.as_deref(), input) {
-                Some(path) => {
-                    if is_simple_path_pattern(input) {
-                        paths.insert(format!("{path}/**"));
-                    }
-                    paths.insert(path);
-                }
-                None => {
-                    tracing::warn!(
-                        project_path = self.options.project_path.as_deref().unwrap_or("."),
-                        input = input.as_str(),
-                        "Skipping task input that escapes the repository root or is absolute; \
-                         it will not contribute to derived GitHub path filters",
-                    );
-                }
-            }
-        }
     }
 
     fn add_implicit_cue_trigger_paths(&self, paths: &mut HashSet<String>) {
@@ -201,28 +211,43 @@ impl Compiler {
         }
     }
 
-    fn collect_task_inputs(&self, task_name: &str, paths: &mut HashSet<String>) {
-        if let Some(node) = self.find_task_node(task_name) {
-            self.collect_inputs_from_node(node, paths);
+    fn collect_task_inputs(&self, task_name: &str, inputs: &mut PipelineInputs) {
+        if !inputs.visited.insert(task_name.to_string()) {
+            return;
+        }
+        match self.find_task_node(task_name) {
+            Some(node) => self.collect_inputs_from_node(node, inputs),
+            // Nothing is known about what an unresolved task reads.
+            None => inputs.whole_project = true,
         }
     }
 
-    fn collect_inputs_from_node(&self, node: &TaskNode, paths: &mut HashSet<String>) {
+    fn collect_inputs_from_node(&self, node: &TaskNode, inputs: &mut PipelineInputs) {
+        for dep in node.depends_on() {
+            self.collect_task_inputs(dep.task_name(), inputs);
+        }
         match node {
             TaskNode::Task(task) => {
-                paths.extend(task.iter_path_inputs().map(str::to_owned));
-                for dep in &task.depends_on {
-                    self.collect_task_inputs(dep.task_name(), paths);
+                let before = inputs.patterns.len();
+                let mut declared = 0_usize;
+                for input in task.iter_path_inputs() {
+                    declared += 1;
+                    inputs.patterns.insert(input.to_owned());
                 }
+                // A task without path inputs always runs.
+                if declared == 0 {
+                    inputs.whole_project = true;
+                }
+                debug_assert!(inputs.patterns.len() >= before);
             }
             TaskNode::Group(group) => {
                 for child_node in group.children.values() {
-                    self.collect_inputs_from_node(child_node, paths);
+                    self.collect_inputs_from_node(child_node, inputs);
                 }
             }
             TaskNode::Sequence(steps) => {
                 for child_node in steps {
-                    self.collect_inputs_from_node(child_node, paths);
+                    self.collect_inputs_from_node(child_node, inputs);
                 }
             }
         }
@@ -274,12 +299,72 @@ fn repo_relative_trigger_path(project_path: Option<&str>, input: &str) -> Option
     }
 }
 
-/// True when `input` contains none of the glob metacharacters that
-/// `cuenv_core::affected::matches_pattern` uses to switch between glob
-/// matching and prefix matching. Kept in sync with that function so derived
-/// GitHub trigger paths stay aligned with local affected detection.
-fn is_simple_path_pattern(input: &str) -> bool {
-    !input.contains('*') && !input.contains('?') && !input.contains('[')
+/// The path filters one input of a project contributes; `None` when the
+/// input is absolute or leaves the repository.
+///
+/// Only two shapes are ever emitted:
+///
+/// - a path that is not a glob, as itself and as `<path>/**`, since at
+///   runtime it stands for that file or for everything beneath that
+///   directory;
+/// - a glob as the directory it is rooted in, `<literal prefix>/**`.
+///
+/// A segment that holds a character GitHub's filter syntax gives a meaning
+/// to cannot be emitted literally, so the path is cut at its parent, which
+/// becomes a `/**` filter. The same goes for the project's own directory.
+fn trigger_paths_for_input(project_path: Option<&str>, input: &str) -> Option<Vec<String>> {
+    let input = cuenv_vcs::pattern::normalize(input);
+    let project = project_path.filter(|path| !path.is_empty() && *path != ".");
+
+    // Module-relative segments of the input. `..` is resolved lexically
+    // until such inputs are rejected.
+    let mut joined = PathBuf::new();
+    if let Some(project) = project
+        && !push_relative_components(&mut joined, Path::new(project))
+    {
+        return None;
+    }
+    if !push_relative_components(&mut joined, Path::new(&input)) {
+        return None;
+    }
+    let segments: Vec<String> = joined
+        .components()
+        .filter_map(|component| match component {
+            Component::Normal(part) => Some(part.to_string_lossy().into_owned()),
+            _ => None,
+        })
+        .collect();
+
+    let literal: Vec<&str> = segments
+        .iter()
+        .map(String::as_str)
+        .take_while(|segment| {
+            !cuenv_vcs::pattern::is_glob(segment) && !is_special_in_github_filter(segment)
+        })
+        .collect();
+    let is_plain_path = literal.len() == segments.len() && !input.is_empty();
+
+    if is_plain_path {
+        let path = literal.join("/");
+        return Some(vec![format!("{path}/**"), path]);
+    }
+    Some(vec![directory_filter(&literal)])
+}
+
+/// The filter for everything beneath a directory given by its segments.
+fn directory_filter(segments: &[&str]) -> String {
+    if segments.is_empty() {
+        "**".to_string()
+    } else {
+        format!("{}/**", segments.join("/"))
+    }
+}
+
+/// Whether a literal path segment would be read as a pattern by GitHub's
+/// `paths` filters: `*`, `?`, `+` and `[]` are operators, `\` escapes, and a
+/// leading `!` negates.
+fn is_special_in_github_filter(segment: &str) -> bool {
+    segment.contains(['*', '?', '+', '[', ']', '\\']) || segment.starts_with('!')
 }
 
 fn push_relative_components(path: &mut PathBuf, input: &Path) -> bool {
