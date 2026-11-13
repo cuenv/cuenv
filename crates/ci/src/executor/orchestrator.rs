@@ -7,6 +7,7 @@
 //! execution lives in `task_execution`.
 
 use crate::affected::{AffectedProjects, ChangedInputs, CheckoutFrame};
+use crate::configuration::{ConfigurationSources, ProjectInstance};
 use crate::discovery;
 use crate::provider::CIProvider;
 use crate::report::{ContextReport, PipelineReport, PipelineStatus};
@@ -15,7 +16,7 @@ use cuenv_core::ci::PipelineTask;
 use cuenv_core::manifest::Project;
 use cuenv_core::{DryRun, Result};
 use cuenv_task_exec::TaskIndex;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -117,6 +118,10 @@ struct DiscoveredCiProjects {
     project_map: ProjectDependencyMap,
     /// Where the checkout's root is.
     frame: CheckoutFrame,
+    /// The root of the CUE module.
+    module_root: PathBuf,
+    /// Every project directory of the module, in or out of scope.
+    project_directories: Vec<PathBuf>,
     project_configs: ProjectConfigMap,
     /// The directory `--path` names, when it names one.
     named_path: Option<PathBuf>,
@@ -150,6 +155,7 @@ fn load_ci_projects(path_filter: Option<&str>) -> Result<Option<DiscoveredCiProj
     // `--path` narrows what runs.
     let frame = CheckoutFrame::around(&module.root);
     let project_map = place_projects(build_project_map(&projects), &frame);
+    let project_directories = projects.iter().map(|(path, _)| path.clone()).collect();
 
     // Filter projects by path if specified (and not the default ".")
     let named_path = path_filter
@@ -177,6 +183,8 @@ fn load_ci_projects(path_filter: Option<&str>) -> Result<Option<DiscoveredCiProj
         projects,
         project_map,
         frame,
+        module_root: module.root.clone(),
+        project_directories,
         project_configs,
         named_path,
     }))
@@ -271,6 +279,8 @@ async fn run_ci_projects(
 
     // Plan every project first, so secret providers can prepare for the
     // whole run before any task executes.
+    let changed_configuration = changed_configurations(discovered, changed_files);
+
     let mut plans = Vec::new();
     let mut pipeline_defined = false;
     for (project_path, config) in &discovered.projects {
@@ -290,6 +300,7 @@ async fn run_ci_projects(
             changed_files,
             project_map: &discovered.project_map,
             frame: &discovered.frame,
+            changed_configuration: &changed_configuration,
         })? {
             ProjectPlan::Run(plan) => {
                 pipeline_defined = true;
@@ -439,6 +450,51 @@ struct ProjectPipelinePlanRequest<'request> {
     changed_files: &'request [PathBuf],
     project_map: &'request ProjectDependencyMap,
     frame: &'request CheckoutFrame,
+    /// The checkout-relative directories of the projects whose CUE
+    /// configuration a changed file can change.
+    changed_configuration: &'request HashSet<PathBuf>,
+}
+
+/// The projects of the module whose CUE configuration a changed file can
+/// change, by their directory relative to the root of the checkout.
+///
+/// A project whose sources cannot be listed, or that is not inside the
+/// checkout, cannot be shown to be unchanged: the first is reported and
+/// counts as changed, the second is handled where the project is planned.
+fn changed_configurations(
+    discovered: &DiscoveredCiProjects,
+    changed_files: &[PathBuf],
+) -> HashSet<PathBuf> {
+    // Nothing changed, so no configuration did.
+    if changed_files.is_empty() {
+        return HashSet::new();
+    }
+    let Some(module_prefix) = discovered.frame.place(&discovered.module_root) else {
+        return HashSet::new();
+    };
+
+    discovered
+        .project_directories
+        .iter()
+        .filter_map(|directory| {
+            let placed = discovered.frame.place(directory)?;
+            let changed = match ConfigurationSources::load(ProjectInstance {
+                module_root: &discovered.module_root,
+                directory,
+                module_prefix: &module_prefix,
+            }) {
+                Ok(sources) => sources.changed_by(changed_files),
+                Err(error) => {
+                    cuenv_events::emit_stderr!(format!(
+                        "warning: {error}; its configuration cannot be shown to be unchanged, \
+                         so every task of the project is selected"
+                    ));
+                    true
+                }
+            };
+            changed.then_some(placed)
+        })
+        .collect()
 }
 
 #[derive(Debug)]
@@ -460,6 +516,7 @@ fn plan_project_pipeline(request: ProjectPipelinePlanRequest<'_>) -> Result<Proj
         changed_files,
         project_map,
         frame,
+        changed_configuration,
     } = request;
 
     // A project the caller named must have the pipeline. A discovered one
@@ -524,6 +581,7 @@ fn plan_project_pipeline(request: ProjectPipelinePlanRequest<'_>) -> Result<Proj
                 project: config,
                 all_projects: project_map,
                 checkout_root: Some(frame.root()),
+                changed_configuration: Some(changed_configuration),
             },
         )
     } else {
@@ -740,6 +798,7 @@ mod tests {
             changed_files: &[PathBuf::from("changed.txt")],
             project_map: &HashMap::new(),
             frame: &CheckoutFrame::at(Path::new("/workspace")),
+            changed_configuration: &HashSet::new(),
         });
         assert_eq!(context.event, "merge_group");
         assert_eq!(context.sha, "candidate");
@@ -772,6 +831,7 @@ mod tests {
             changed_files: &[PathBuf::from("changed.txt")],
             project_map: &HashMap::new(),
             frame: &CheckoutFrame::at(Path::new("/workspace")),
+            changed_configuration: &HashSet::new(),
         })
     }
 

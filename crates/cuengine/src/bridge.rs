@@ -476,6 +476,12 @@ pub struct InstanceSources {
     /// directories) and the files of every package it imports, transitively,
     /// that lives inside the module.
     pub files: Vec<String>,
+    /// What the `@embed` attributes of those files read, relative to the
+    /// module root and sorted: a path for `file=`, a glob for `glob=`. They
+    /// are read from the source, so a file a glob would match is covered
+    /// whether or not it exists.
+    #[serde(default)]
+    pub embeds: Vec<String>,
 }
 
 struct ModuleEvalWorker {

@@ -136,6 +136,7 @@ fn test_compute_affected_tasks_direct_match() {
             project: &project,
             all_projects: &all_projects,
             checkout_root: None,
+            changed_configuration: None,
         },
     );
 
@@ -161,6 +162,7 @@ fn test_compute_affected_tasks_no_match() {
             project: &project,
             all_projects: &all_projects,
             checkout_root: None,
+            changed_configuration: None,
         },
     );
 
@@ -188,6 +190,7 @@ fn test_compute_affected_tasks_transitive_internal_deps() {
             project: &project,
             all_projects: &all_projects,
             checkout_root: None,
+            changed_configuration: None,
         },
     );
 
@@ -225,6 +228,7 @@ fn test_compute_affected_tasks_preserves_pipeline_order() {
             project: &project,
             all_projects: &all_projects,
             checkout_root: None,
+            changed_configuration: None,
         },
     );
 
@@ -254,6 +258,7 @@ fn test_compute_affected_tasks_only_affected_in_pipeline() {
             project: &project,
             all_projects: &all_projects,
             checkout_root: None,
+            changed_configuration: None,
         },
     );
 
@@ -307,6 +312,7 @@ fn test_compute_affected_tasks_deploy_pipeline_with_absolute_project_root() {
             project: &project,
             all_projects: &all_projects,
             checkout_root: None,
+            changed_configuration: None,
         },
     );
 
@@ -351,6 +357,7 @@ fn test_compute_affected_tasks_empty_pipeline() {
             project: &project,
             all_projects: &all_projects,
             checkout_root: None,
+            changed_configuration: None,
         },
     );
 
@@ -379,6 +386,7 @@ fn test_compute_affected_tasks_external_dep_not_found() {
             project: &project,
             all_projects: &all_projects,
             checkout_root: None,
+            changed_configuration: None,
         },
     );
 
@@ -418,6 +426,7 @@ fn test_compute_affected_tasks_external_dep_affected() {
             project: &project,
             all_projects: &all_projects,
             checkout_root: None,
+            changed_configuration: None,
         },
     );
 
@@ -452,6 +461,7 @@ fn test_compute_affected_tasks_external_nested_dep_affected() {
             project: &project,
             all_projects: &all_projects,
             checkout_root: None,
+            changed_configuration: None,
         },
     );
 
@@ -480,6 +490,7 @@ fn test_compute_affected_tasks_malformed_external_dep() {
             project: &project,
             all_projects: &all_projects,
             checkout_root: None,
+            changed_configuration: None,
         },
     );
 
@@ -579,6 +590,7 @@ fn test_task_with_no_inputs_always_affected_even_with_no_changes() {
             project: &project,
             all_projects: &all_projects,
             checkout_root: None,
+            changed_configuration: None,
         },
     );
 
@@ -732,6 +744,7 @@ fn test_compute_affected_tasks_with_group() {
             project: &project,
             all_projects: &all_projects,
             checkout_root: None,
+            changed_configuration: None,
         },
     );
 
@@ -760,6 +773,7 @@ where
         &mut ExternalDependencyContext {
             projects: inputs.projects,
             checkout_root: None,
+            changed_configuration: None,
             changed_files: inputs.changed_files,
             cache: inputs.cache,
             visiting: &mut visiting,
@@ -947,6 +961,7 @@ fn test_compute_affected_tasks_non_pipeline_dep() {
             project: &project,
             all_projects: &all_projects,
             checkout_root: None,
+            changed_configuration: None,
         },
     );
 
@@ -984,6 +999,7 @@ fn test_compute_affected_tasks_deep_non_pipeline_chain() {
             project: &project,
             all_projects: &all_projects,
             checkout_root: None,
+            changed_configuration: None,
         },
     );
 
@@ -1016,6 +1032,7 @@ fn test_compute_affected_tasks_non_pipeline_dep_no_match() {
             project: &project,
             all_projects: &all_projects,
             checkout_root: None,
+            changed_configuration: None,
         },
     );
 
@@ -1048,6 +1065,7 @@ fn affected_in(change: &Change<'_>, pipeline_tasks: &[&str]) -> Vec<String> {
             project: change.project,
             all_projects: change.all_projects,
             checkout_root: None,
+            changed_configuration: None,
         },
     )
 }
@@ -1368,6 +1386,7 @@ fn an_input_read_only_from_the_checkout_root_keeps_its_task_affected_and_is_repo
             project: &project,
             all_projects: &HashMap::new(),
             checkout_root: Some(checkout.path()),
+            changed_configuration: None,
         },
     );
 
@@ -1407,6 +1426,7 @@ fn a_correct_project_whose_root_has_files_of_the_same_name_is_not_reported() {
                 project: &project,
                 all_projects: &HashMap::new(),
                 checkout_root: Some(checkout.path()),
+                changed_configuration: None,
             },
         );
 
@@ -1441,11 +1461,97 @@ fn a_checkout_named_like_one_of_its_projects_still_matches() {
             project: &project,
             all_projects: &HashMap::new(),
             checkout_root: Some(frame.root()),
+            changed_configuration: None,
         },
     );
 
     assert_eq!(project_root, PathBuf::from("docs"));
     assert_eq!(affected, ["lint"]);
+}
+
+// ==========================================================================
+// CUE-only changes (issue 611, PR-H)
+// ==========================================================================
+
+#[test]
+fn a_project_whose_configuration_changed_has_every_pipeline_task_selected() {
+    let build = make_task(vec!["src/**"], vec![]);
+    let test = make_task(vec!["tests/**"], vec![]);
+    let project = make_project(vec![("build", build), ("test", test)]);
+    let changed = vec![PathBuf::from("app/env.cue")];
+    let changed_configuration = std::collections::HashSet::from([PathBuf::from("app")]);
+    let pipeline = ["build".to_string(), "test".to_string()];
+
+    let select = |changed_configuration| {
+        super::compute_affected_tasks(
+            ChangedInputs {
+                files: &changed,
+                project_root: Path::new("app"),
+            },
+            &pipeline,
+            &AffectedProjects {
+                project: &project,
+                all_projects: &HashMap::new(),
+                checkout_root: None,
+                changed_configuration,
+            },
+        )
+    };
+
+    assert_eq!(select(Some(&changed_configuration)), ["build", "test"]);
+    // The `.cue` file is not a declared input of either task.
+    assert!(select(Some(&std::collections::HashSet::new())).is_empty());
+}
+
+#[test]
+fn a_root_project_whose_configuration_changed_is_found_under_either_spelling_of_its_root() {
+    let build = make_task(vec!["src/**"], vec![]);
+    let project = make_project(vec![("build", build)]);
+    let changed = vec![PathBuf::from("env.cue")];
+    let changed_configuration = std::collections::HashSet::from([PathBuf::new()]);
+
+    for root in [".", ""] {
+        let affected = super::compute_affected_tasks(
+            ChangedInputs {
+                files: &changed,
+                project_root: Path::new(root),
+            },
+            &["build".to_string()],
+            &AffectedProjects {
+                project: &project,
+                all_projects: &HashMap::new(),
+                checkout_root: None,
+                changed_configuration: Some(&changed_configuration),
+            },
+        );
+        assert_eq!(affected, ["build"], "{root:?}");
+    }
+}
+
+#[test]
+fn a_producer_whose_configuration_changed_affects_its_consumers() {
+    // `app` names `content` by `#content:articles`, so it does not import it
+    // and `content/env.cue` is not among `app`'s own sources.
+    let consumer = make_task(vec!["src/**"], vec!["#content:articles"]);
+    let project = make_project(vec![("build", consumer)]);
+    let changed = vec![PathBuf::from("content/env.cue")];
+    let changed_configuration = std::collections::HashSet::from([PathBuf::from("content")]);
+
+    let affected = super::compute_affected_tasks(
+        ChangedInputs {
+            files: &changed,
+            project_root: Path::new("app"),
+        },
+        &["build".to_string()],
+        &AffectedProjects {
+            project: &project,
+            all_projects: &content_project(),
+            checkout_root: None,
+            changed_configuration: Some(&changed_configuration),
+        },
+    );
+
+    assert_eq!(affected, ["build"]);
 }
 
 #[test]

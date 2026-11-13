@@ -223,6 +223,24 @@ always has been:
   and nothing is said: the configuration is correct. These extra runs stop when
   the root-relative reading is removed.
 
+A change to the CUE a project is built from selects **every** task of the
+project's pipeline. A task's command, inputs and dependencies are computed from
+that CUE, so no declared input can say which tasks a change to it reaches. The
+CUE a project is built from is:
+
+- the project's own `.cue` files, and those of the directories above it in the
+  same package (a root `env.cue` that every project inherits, for example);
+- every package it imports from the module, transitively;
+- any `.cue` file added to or deleted from one of those directories;
+- the files its `@embed` attributes read;
+- everything under `cue.mod/`, which holds the language version and the
+  module's dependencies.
+
+This is coarse on purpose. Editing a root file that every project inherits, or
+`cue.mod/module.cue`, runs every task of every project, deployment tasks
+included. A project that another project names as `#project:task` counts too:
+a change to the producer's CUE affects its consumers.
+
 A group or a sequence is selected as a whole: it is affected when any task
 beneath it is, or when anything beneath it depends on an affected task.
 Dependencies are resolved against every project of the module, so `--path app`

@@ -84,11 +84,16 @@ pub struct AffectedProjects<'projects, S> {
     /// at. It is only used to tell a root-relative input someone relies on
     /// from an accident of names (see [`PatternMatch::OnlyFromCheckoutRoot`]).
     pub checkout_root: Option<&'projects Path>,
+    /// The directories, relative to the root of the checkout, of the
+    /// projects whose CUE configuration a changed file can change (see
+    /// [`crate::configuration`]). Every task of such a project is affected.
+    pub changed_configuration: Option<&'projects HashSet<PathBuf>>,
 }
 
 struct ExternalDependencyContext<'context, S> {
     projects: &'context HashMap<String, (PathBuf, Project), S>,
     checkout_root: Option<&'context Path>,
+    changed_configuration: Option<&'context HashSet<PathBuf>>,
     changed_files: &'context [PathBuf],
     cache: &'context mut HashMap<String, bool>,
     /// Dependencies whose check has started and not finished. Meeting one
@@ -120,6 +125,7 @@ where
         project: config,
         all_projects,
         checkout_root,
+        changed_configuration,
     } = projects;
     tracing::trace!(
         project_root = %project_root.display(),
@@ -127,6 +133,16 @@ where
         changed_files = ?changed_files,
         "Computing affected tasks for CI pipeline"
     );
+
+    // A task's command, inputs and dependencies are computed from CUE. When
+    // that CUE changed, no declared input says which tasks changed with it.
+    if configuration_changed(*changed_configuration, project_root) {
+        tracing::info!(
+            project = %display_project(project_root),
+            "The project's CUE configuration changed; every pipeline task is selected"
+        );
+        return pipeline_tasks.to_vec();
+    }
 
     // A directory below a project inherits the project's name and is
     // planned on its own. Its inherited inputs are written for the
@@ -218,6 +234,7 @@ where
                                 &mut ExternalDependencyContext {
                                     projects: all_projects,
                                     checkout_root: *checkout_root,
+                                    changed_configuration: *changed_configuration,
                                     changed_files,
                                     cache: &mut visited_external_cache,
                                     visiting: &mut visiting_external,
@@ -416,6 +433,12 @@ where
         return true;
     };
 
+    // The producer's tasks are computed from its own CUE, which the consumer
+    // does not import when it names the producer by `#project:task`.
+    if configuration_changed(context.changed_configuration, project_path) {
+        return true;
+    }
+
     let dependency_names = {
         let Some(index) = cached_task_index(context.index_cache, project_name, project_config)
         else {
@@ -577,6 +600,23 @@ fn root_relative_inputs<'node>(
         // A pattern the walker cannot read selects nothing under the project.
         .filter(|pattern| !walker.selects_any(pattern).unwrap_or(false))
         .collect()
+}
+
+/// Whether a changed file can change the CUE configuration of the project
+/// in `project_root`.
+fn configuration_changed(
+    changed_configuration: Option<&HashSet<PathBuf>>,
+    project_root: &Path,
+) -> bool {
+    changed_configuration.is_some_and(|changed| {
+        // `.` and the empty path both name a project at the checkout root.
+        let project_root = if project_root == Path::new(".") {
+            Path::new("")
+        } else {
+            project_root
+        };
+        changed.contains(project_root)
+    })
 }
 
 /// A project's directory as a warning names it.

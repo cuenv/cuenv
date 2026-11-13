@@ -5,21 +5,25 @@ name: cuenv-docs-preview
 on:
   pull_request:
     paths:
+    - '*.cue'
     - .github/workflows/cuenv-docs-preview.yml
     - bun.lock
     - bun.lock/**
+    - contrib/codecov/*.cue
+    - contrib/contributors/*.cue
+    - contrib/nix/*.cue
     - cue.mod/**
     - docs/**
     - docs/package.json
     - docs/package.json/**
     - docs/wrangler.jsonc
     - docs/wrangler.jsonc/**
-    - env.cue
-    - env.cue/**
     - integrations/**
+    - nix/source-files.json
     - package.json
     - package.json/**
-    - schema/**
+    - schema/*.cue
+    - schema/codegen/*.cue
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
   cancel-in-progress: true
