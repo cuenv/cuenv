@@ -26,6 +26,7 @@ pub mod output_refs;
 mod process;
 pub mod process_registry;
 mod result;
+pub mod scope;
 mod shell;
 mod workspace;
 
@@ -47,4 +48,8 @@ pub use output_refs::{
     OutputRefResolver, TaskOutputField, TaskOutputRef, has_output_refs, process_output_refs,
 };
 pub use process_registry::global_registry;
+pub use scope::{
+    ExternalTaskName, ProjectSource, RootProject, ScopeProject, SourcedProject, TaskOwner,
+    TaskScope,
+};
 pub use shell::TaskCommandSpec;

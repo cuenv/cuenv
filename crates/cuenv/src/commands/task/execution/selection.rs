@@ -1,17 +1,64 @@
 use super::context::{TaskExecutionContext, TaskExecutionInput};
 
 use crate::commands::task::discovery;
+use crate::commands::task::projects::{self, ModuleProjects, WorkspaceContributors};
 use cuenv_core::Result;
 use cuenv_core::tasks::{Task, TaskNode, Tasks};
-use std::path::Path;
+use cuenv_task_exec::{RootProject, ScopeProject, TaskScope};
+use std::sync::Arc;
 
 /// Resolved task context from either named-task or label-based resolution.
 pub(super) struct TaskResolution {
     pub(super) display_name: String,
     pub(super) node: TaskNode,
-    pub(super) tasks: Tasks,
+    /// The project's own tasks, and, for the graph only, the tasks of the
+    /// projects the selected task depends on.
+    pub(super) scope: TaskScope,
     pub(super) graph_root_name: String,
-    pub(super) output_ref_deps: Vec<cuenv_core::tasks::output_refs::OutputRefDep>,
+}
+
+/// The scope of a run of the task called `root`: the project's `tasks`, and
+/// every project the task's dependencies lead to.
+///
+/// A project that cannot be loaded is not an error here: the graph reports
+/// it for the task that depends on it.
+fn task_scope(
+    input: &TaskExecutionInput<'_>,
+    context: &TaskExecutionContext,
+    selected: SelectedTasks<'_>,
+) -> Result<TaskScope> {
+    let SelectedTasks { tasks, root } = selected;
+    let mut scope = TaskScope::new(RootProject {
+        project: ScopeProject {
+            root: context.project_root.clone(),
+            module_root: context
+                .cue_module_root
+                .clone()
+                .unwrap_or_else(|| context.project_root.clone()),
+            manifest: Arc::new(context.manifest.clone()),
+        },
+        tasks,
+        output_ref_deps: projects::instance_output_ref_deps(input.executor, &context.project_root)?,
+    });
+    scope.reach(
+        [root],
+        &ModuleProjects::new(input.executor, WorkspaceContributors::Inject),
+    );
+    Ok(scope)
+}
+
+/// The tasks a run can select, and the one it was asked for.
+struct SelectedTasks<'selected> {
+    tasks: Tasks,
+    root: &'selected str,
+}
+
+/// The selected node as its scope holds it, with its references to other
+/// projects resolved.
+fn node_in_scope(scope: &TaskScope, name: &str) -> Result<TaskNode> {
+    scope.local().get(name).cloned().ok_or_else(|| {
+        cuenv_core::Error::execution(format!("Task '{name}' is missing from its own scope"))
+    })
 }
 
 pub(super) fn validate_task_selection(input: &TaskExecutionInput<'_>) -> Result<Vec<String>> {
@@ -66,14 +113,21 @@ fn resolve_named_task(
     tracing::debug!("Found task node: {:?}", original_task_node);
 
     let mut tasks_in_scope = context.local_tasks.clone();
-    let selected_task_node = selected_task_node(input, &mut tasks_in_scope, &display_task_name)?;
+    apply_task_arguments(input, &mut tasks_in_scope, &display_task_name)?;
+    let scope = task_scope(
+        input,
+        context,
+        SelectedTasks {
+            tasks: tasks_in_scope,
+            root: &display_task_name,
+        },
+    )?;
 
     Ok(TaskResolution {
         display_name: display_task_name.clone(),
-        node: selected_task_node,
-        tasks: tasks_in_scope,
+        node: node_in_scope(&scope, &display_task_name)?,
+        scope,
         graph_root_name: display_task_name,
-        output_ref_deps: current_instance_output_ref_deps(input.executor, &context.project_root)?,
     })
 }
 
@@ -98,11 +152,12 @@ fn log_task_resolution_context(context: &TaskExecutionContext, requested_task: &
     );
 }
 
-fn selected_task_node(
+/// Apply the command line's arguments to the selected task, in place.
+fn apply_task_arguments(
     input: &TaskExecutionInput<'_>,
     tasks_in_scope: &mut Tasks,
     display_task_name: &str,
-) -> Result<TaskNode> {
+) -> Result<()> {
     let node = tasks_in_scope
         .get(display_task_name)
         .cloned()
@@ -113,7 +168,7 @@ fn selected_task_node(
         })?;
 
     if input.task_args.is_empty() {
-        return Ok(node);
+        return Ok(());
     }
 
     let TaskNode::Task(task) = node else {
@@ -127,11 +182,11 @@ fn selected_task_node(
     tracing::debug!("Resolved task args: {:?}", resolved_args);
 
     let modified_task = crate::commands::task::arguments::apply_args_to_task(&task, &resolved_args);
-    let modified_node = TaskNode::Task(Box::new(modified_task.clone()));
-    tasks_in_scope
-        .tasks
-        .insert(display_task_name.to_string(), modified_node.clone());
-    Ok(modified_node)
+    tasks_in_scope.tasks.insert(
+        display_task_name.to_string(),
+        TaskNode::Task(Box::new(modified_task)),
+    );
+    Ok(())
 }
 
 fn resolve_label_tasks(
@@ -169,28 +224,19 @@ fn resolve_label_tasks(
         TaskNode::Task(Box::new(synthetic)),
     );
 
-    let resolved_node = tasks_in_scope
-        .get(&display_task_name)
-        .cloned()
-        .ok_or_else(|| cuenv_core::Error::execution("synthetic task missing after insertion"))?;
+    let scope = task_scope(
+        input,
+        context,
+        SelectedTasks {
+            tasks: tasks_in_scope,
+            root: &display_task_name,
+        },
+    )?;
 
     Ok(TaskResolution {
         display_name: display_task_name.clone(),
-        node: resolved_node,
-        tasks: tasks_in_scope,
+        node: node_in_scope(&scope, &display_task_name)?,
+        scope,
         graph_root_name: display_task_name,
-        output_ref_deps: current_instance_output_ref_deps(input.executor, &context.project_root)?,
     })
-}
-
-fn current_instance_output_ref_deps(
-    executor: &crate::commands::CommandExecutor,
-    project_root: &Path,
-) -> Result<Vec<cuenv_core::tasks::output_refs::OutputRefDep>> {
-    let module = executor.module(project_root)?;
-    let rel_path = crate::commands::relative_path_from_root(&module.root, project_root);
-
-    Ok(module
-        .get(&rel_path)
-        .map_or_else(Vec::new, |instance| instance.output_ref_deps.clone()))
 }

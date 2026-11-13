@@ -1,7 +1,7 @@
 use super::TaskGraph;
-use crate::{TaskGroup, TaskNode, Tasks};
+use crate::{Task, TaskGroup, TaskNode, Tasks};
 use cuenv_core::Result;
-use cuenv_task_graph::MutableTaskNodeData;
+use cuenv_task_graph::{MutableTaskNodeData, TaskResolver};
 use petgraph::graph::NodeIndex;
 use tracing::debug;
 
@@ -40,14 +40,16 @@ impl TaskGraph {
 
     /// Build graph for a specific task and all its transitive dependencies.
     ///
-    /// This uses the [`cuenv_task_graph::TaskResolver`] trait implementation for [`Tasks`] to handle
-    /// nested paths and group expansion in a unified way.
-    pub fn build_for_task(&mut self, task_name: &str, all_tasks: &Tasks) -> Result<()> {
-        debug!(
-            "Building graph for '{}' with tasks {:?}",
-            task_name,
-            all_tasks.list_tasks()
-        );
+    /// `all_tasks` says what each name means: [`Tasks`] for the tasks of one
+    /// project, or a [`TaskScope`](crate::TaskScope) when a dependency may
+    /// lead into another project. Either handles nested paths and group
+    /// expansion.
+    pub fn build_for_task(
+        &mut self,
+        task_name: &str,
+        all_tasks: &impl TaskResolver<Task>,
+    ) -> Result<()> {
+        debug!("Building graph for '{}'", task_name);
 
         self.inner
             .build_for_task_with_resolver(task_name, all_tasks)

@@ -1496,3 +1496,197 @@ fn test_task_result_clone() {
 fn test_task_failure_snippet_lines_constant() {
     assert_eq!(TASK_FAILURE_SNIPPET_LINES, 20);
 }
+
+// ---------------------------------------------------------------------------
+// Tasks of another project
+// ---------------------------------------------------------------------------
+
+/// A module with a consumer project `app` and a producer project `content`,
+/// and an executor for a run in `app` that has loaded `content`.
+fn executor_with_another_project(module_root: &Path) -> TaskExecutor {
+    let content = module_root.join("content");
+    std::fs::create_dir_all(module_root.join("app")).unwrap();
+    std::fs::create_dir_all(&content).unwrap();
+    TaskExecutor::new(ExecutorConfig {
+        project_root: module_root.join("app"),
+        cue_module_root: Some(module_root.to_path_buf()),
+        environment: host_path_environment(),
+        external_projects: BTreeMap::from([(
+            "content".to_string(),
+            crate::ProjectExecution {
+                project_root: content,
+                cue_module_root: Some(module_root.to_path_buf()),
+                cache: None,
+            },
+        )]),
+        ..ExecutorConfig::default()
+    })
+}
+
+#[tokio::test]
+async fn a_task_of_another_project_runs_in_that_projects_directory() {
+    let tmp = TempDir::new().unwrap();
+    let module_root = tmp.path().canonicalize().unwrap();
+    let executor = executor_with_another_project(&module_root);
+    fs_write(&module_root.join("content/articles/one.md"), "one\n");
+    let task = Task {
+        command: "sh".to_string(),
+        args: vec![
+            "-c".to_string(),
+            "mkdir -p out && cp articles/one.md out/one.md".to_string(),
+        ],
+        // Inputs and outputs are the other project's, relative to it.
+        inputs: vec![cuenv_manifest::tasks::Input::Path(
+            "articles/**".to_string(),
+        )],
+        outputs: vec!["out/one.md".to_string()],
+        project_root: Some(module_root.join("content")),
+        ..Default::default()
+    };
+
+    let result = executor
+        .execute_task("#content:articles", &task)
+        .await
+        .unwrap();
+
+    assert!(result.success, "{}", result.stderr);
+    assert_eq!(
+        std::fs::read_to_string(module_root.join("content/out/one.md")).unwrap(),
+        "one\n"
+    );
+    assert!(!module_root.join("app/out").exists());
+}
+
+#[tokio::test]
+async fn a_task_of_a_project_the_run_never_loaded_does_not_run() {
+    // Running it in the run's own project would give it that project's
+    // directory, environment and secrets.
+    let tmp = TempDir::new().unwrap();
+    let module_root = tmp.path().canonicalize().unwrap();
+    let executor = executor_with_another_project(&module_root);
+    let task = Task {
+        command: "sh".to_string(),
+        args: vec!["-c".to_string(), "printf ran > ran.txt".to_string()],
+        hermetic: Hermetic::Enabled(false),
+        ..Default::default()
+    };
+
+    let error = executor
+        .execute_task("#docs:build", &task)
+        .await
+        .unwrap_err()
+        .to_string();
+
+    assert!(error.contains("project 'docs'"), "{error}");
+    assert!(error.contains("has not loaded"), "{error}");
+    assert!(!module_root.join("app/ran.txt").exists());
+}
+
+#[test]
+fn a_task_runs_where_it_is_defined_whichever_project_asks_for_it() {
+    // `content` inherits the task from `shared/env.cue`. Run from `content`
+    // it runs in `shared/`; as a dependency of `app` it runs there too.
+    let tmp = TempDir::new().unwrap();
+    let module_root = tmp.path().canonicalize().unwrap();
+    let executor = executor_with_another_project(&module_root);
+    let task = Task {
+        command: "pwd".to_string(),
+        source: Some(source("shared/env.cue")),
+        project_root: Some(module_root.join("content")),
+        ..Default::default()
+    };
+
+    let frame = executor.frame_for("#content:inherited", &task).unwrap();
+
+    assert_eq!(frame.project_root, module_root.join("content"));
+    assert_eq!(
+        executor.workdir_in(frame, &task).unwrap(),
+        module_root.join("shared")
+    );
+    // Without source metadata it runs in its own project.
+    let unsourced = Task {
+        source: None,
+        ..task
+    };
+    let frame = executor
+        .frame_for("#content:inherited", &unsourced)
+        .unwrap();
+    assert_eq!(
+        executor.workdir_in(frame, &unsourced).unwrap(),
+        module_root.join("content")
+    );
+}
+
+#[tokio::test]
+async fn a_mapping_is_refused_where_nothing_would_stage_it() {
+    let tmp = TempDir::new().unwrap();
+    let module_root = tmp.path().canonicalize().unwrap();
+    let executor = executor_with_another_project(&module_root);
+    fs_write(&module_root.join("content/out/one.md"), "one\n");
+    let consuming = |hermetic: Hermetic, destination: &str| Task {
+        command: "sh".to_string(),
+        args: vec!["-c".to_string(), "printf ran > ran.txt".to_string()],
+        hermetic,
+        inputs: vec![cuenv_manifest::tasks::Input::Mapped(
+            cuenv_manifest::tasks::MappedInput {
+                source: "content/out/one.md".to_string(),
+                destination: destination.to_string(),
+                producer_task: Some("#content:articles".to_string()),
+            },
+        )],
+        ..Default::default()
+    };
+
+    for hermetic in [Hermetic::Enabled(false), unisolated_hermeticity()] {
+        let error = executor
+            .execute_task("build", &consuming(hermetic, "app/vendor/one.md"))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("nothing is staged"), "{error}");
+        assert!(error.contains("app/vendor/one.md"), "{error}");
+        assert!(!module_root.join("app/ran.txt").exists());
+    }
+
+    // An output read where it was produced needs no staging.
+    let in_place = executor
+        .execute_task(
+            "build",
+            &consuming(Hermetic::Enabled(false), "content/out/one.md"),
+        )
+        .await
+        .unwrap();
+    assert!(in_place.success, "{}", in_place.stderr);
+}
+
+#[tokio::test]
+async fn a_policy_on_a_task_variable_names_the_task_as_its_own_project_does() {
+    // `content` allows its task `articles` a variable. Run as a dependency
+    // of another project the task is called `#content:articles`, and is
+    // still the task the policy names.
+    let tmp = TempDir::new().unwrap();
+    let module_root = tmp.path().canonicalize().unwrap();
+    let executor = executor_with_another_project(&module_root);
+    let task: Task = serde_json::from_value(serde_json::json!({
+        "command": "sh",
+        "args": ["-c", "printf '%s' \"$TOKEN\""],
+        "hermetic": false,
+        "env": {
+            "TOKEN": {"value": "for-articles", "policies": [{"allowTasks": ["articles"]}]},
+        },
+        "project_root": module_root.join("content"),
+    }))
+    .unwrap();
+
+    let allowed = executor
+        .execute_task("#content:articles", &task)
+        .await
+        .unwrap();
+    assert_eq!(allowed.stdout, "for-articles");
+
+    let denied = executor
+        .execute_task("#content:publish", &task)
+        .await
+        .unwrap();
+    assert_eq!(denied.stdout, "");
+}

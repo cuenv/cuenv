@@ -333,41 +333,48 @@ tasks: {
     Ok(())
 }
 
+/// `projA` whose `consume` maps two files of `projB` to one destination.
+fn write_proj_a_mapping_twice(dir: &Path, sources: [&str; 2]) -> TestResult<std::path::PathBuf> {
+    let proja = dir.join("projA");
+    fs::create_dir_all(&proja)?;
+    init_cue_module(&proja, "projA")?;
+    let [first, second] = sources;
+    let cue_a = format!(
+        r#"package projA
+
+name: "projA"
+
+env: {{}}
+
+tasks: {{
+  consume: {{
+    command: "sh"
+    args: ["-c", "true"]
+    inputs: [{{
+      project: "../projB"
+      task: "build"
+      map: [
+        {{ from: "{first}", to: "vendor/app.txt" }},
+        {{ from: "{second}", to: "vendor/app.txt" }}
+      ]
+    }}]
+    outputs: []
+  }}
+}}
+"#
+    );
+    fs::write(proja.join("env.cue"), cue_a)?;
+    Ok(proja)
+}
+
 #[test]
 fn test_collision_duplicate_dest() -> TestResult {
     let tmp = create_test_root()?;
     let root = tmp.path();
-
-    // Write projB
     write_proj_b(root, "v1-coll")?;
-
-    // Write projA with two mappings to same 'to'
-    let proja = root.join("projA");
-    fs::create_dir_all(&proja)?;
-    init_cue_module(&proja, "projA")?;
-    let cue_a = r#"package projA
-
-name: "projA"
-
-env: {}
-
-tasks: {
-  consume: {
-    command: "sh"
-    args: ["-c", "true"]
-    inputs: [{
-      project: "../projB"
-      task: "build"
-      map: [
-        { from: "app.txt", to: "vendor/app.txt" },
-        { from: "app.txt", to: "vendor/app.txt" }
-      ]
-    }]
-    outputs: []
-  }
-}
-"#;
-    fs::write(proja.join("env.cue"), cue_a)?;
+    // Two different files claim one destination: which one the task would
+    // read would be an ordering accident.
+    let proja = write_proj_a_mapping_twice(root, ["app.txt", "src/version.txt"])?;
 
     let output = run_cuenv(&[
         "task",
@@ -381,6 +388,31 @@ tasks: {
     assert!(
         !output.success,
         "Should fail on destination collision. stdout: {}, stderr: {}",
+        output.stdout, output.stderr
+    );
+    Ok(())
+}
+
+#[test]
+fn the_same_file_mapped_twice_is_one_input() -> TestResult {
+    let tmp = create_test_root()?;
+    let root = tmp.path();
+    write_proj_b(root, "v1-same")?;
+    // Same place, same bytes, same mode: there is nothing to disambiguate.
+    let proja = write_proj_a_mapping_twice(root, ["app.txt", "app.txt"])?;
+
+    let output = run_cuenv(&[
+        "task",
+        "-p",
+        path_str(&proja)?,
+        "--package",
+        "projA",
+        "consume",
+    ])?;
+
+    assert!(
+        output.success,
+        "One file declared twice is one input. stdout: {}, stderr: {}",
         output.stdout, output.stderr
     );
     Ok(())

@@ -35,10 +35,8 @@ pub(super) fn resolve_cache_root(project_root: &Path) -> PathBuf {
 pub(super) struct TaskCacheContext<'context> {
     /// Root of the project whose task is running.
     pub(super) project_root: &'context Path,
-    /// Root of the VCS workspace, which bounds path-shaped project references.
+    /// Root of the VCS workspace, which every input is hashed below.
     pub(super) hasher_root: &'context Path,
-    /// Project roots by name and by module-relative path.
-    pub(super) project_roots: BTreeMap<String, PathBuf>,
     /// Runtime identity folded into every action key.
     pub(super) runtime_identity: RuntimeCacheIdentity,
 }
@@ -55,7 +53,6 @@ pub(super) async fn build_task_cache(
     let TaskCacheContext {
         project_root,
         hasher_root,
-        project_roots,
         runtime_identity,
     } = context;
     let cache_override = cache_override();
@@ -107,7 +104,9 @@ pub(super) async fn build_task_cache(
         vcs_hasher,
         vcs_hasher_root: hasher_root.to_path_buf(),
         cache_root: root,
-        project_roots,
+        // A reference to another project is resolved by the task scope into
+        // module-relative paths before a task reaches the cache.
+        project_roots: BTreeMap::new(),
         action_semantics_version: cuenv_cas::ACTION_SEMANTICS_VERSION,
         runtime_identity_properties: runtime_identity.properties,
         cache_disabled_reason: if cache_off {
@@ -178,6 +177,21 @@ pub(super) fn secret_cache_salt() -> Option<String> {
     std::env::var("CUENV_SECRET_SALT")
         .ok()
         .filter(|salt| !salt.is_empty())
+}
+
+/// The cache of a run, keyed with the runtime identity of another of its
+/// projects: a task run as a dependency keys its results as its own project
+/// does.
+pub(super) fn with_runtime_identity(
+    cache: &TaskCacheConfig,
+    identity: RuntimeCacheIdentity,
+) -> TaskCacheConfig {
+    let mut cache = cache.clone();
+    cache.runtime_identity_properties = identity.properties;
+    if cache_override() != CacheOverride::Off {
+        cache.cache_disabled_reason = identity.cache_disabled_reason;
+    }
+    cache
 }
 
 #[derive(Debug, Clone, Default)]

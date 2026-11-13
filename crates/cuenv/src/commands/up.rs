@@ -4,21 +4,27 @@
 //! task/service dependency graph, and delegates to the `ServiceController`
 //! for process supervision.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use tokio::sync::OnceCell;
 use tokio_util::sync::CancellationToken;
 
 use cuenv_core::OutputCapture;
 use cuenv_core::environment::{Env, EnvValue, Environment};
 use cuenv_core::manifest::{ContainerImage, Project, Service};
-use cuenv_core::tasks::{TaskNode, Tasks};
+use cuenv_core::tasks::output_refs::OutputRefDep;
+use cuenv_core::tasks::{Task, TaskNode, Tasks};
 use cuenv_events::emit_stdout;
 use cuenv_services::controller::{ControllerConfig, ServiceController};
 use cuenv_services::session::SessionManager;
-use cuenv_task_exec::{ExecutorConfig, TaskExecutor, TaskGraph};
+use cuenv_task_exec::{
+    ExecutorConfig, ExternalTaskName, ProjectExecution, RootProject, ScopeProject,
+    TaskEnvironmentFuture, TaskEnvironments, TaskExecutor, TaskGraph, TaskScope,
+};
 
+use super::task::projects::{self, ModuleProjects, WorkspaceContributors};
 use super::{CommandExecutor, env_file};
 
 /// Options for the `cuenv up` command.
@@ -67,7 +73,7 @@ pub async fn execute_up(options: &UpOptions, executor: &CommandExecutor) -> cuen
     //
     // The module guard holds a MutexGuard (not Send), so we must extract
     // everything we need and drop it before any .await point.
-    let (filtered_services, graph, session, dependency_plan, tasks, project_env, cue_module_root) = {
+    let (filtered_services, graph, session, dependency_plan, project, output_ref_deps) = {
         let module = executor.module(&target_path)?;
         let relative_path = super::relative_path_from_root(&module.root, &target_path);
 
@@ -79,7 +85,11 @@ pub async fn execute_up(options: &UpOptions, executor: &CommandExecutor) -> cuen
             ))
         })?;
 
-        let project: Project = instance.deserialize()?;
+        // Inputs are expanded here as they are for `cuenv task`: a task
+        // that consumes another task's output depends on it, in this
+        // project or another.
+        let project: Project = instance.to_project()?;
+        let output_ref_deps = instance.output_ref_deps.clone();
 
         if project.services.is_empty() {
             emit_stdout!("cuenv up: no services defined in configuration");
@@ -139,9 +149,8 @@ pub async fn execute_up(options: &UpOptions, executor: &CommandExecutor) -> cuen
             graph,
             session,
             dependency_plan,
-            project.tasks,
-            project.env,
-            env_file::find_cue_module_root(&target_path),
+            project,
+            output_ref_deps,
         )
     };
     // ModuleGuard is now dropped — safe to .await below
@@ -149,11 +158,12 @@ pub async fn execute_up(options: &UpOptions, executor: &CommandExecutor) -> cuen
     execute_service_dependencies(
         &dependency_plan,
         ServiceTaskContext {
-            tasks: &tasks,
-            project_env: project_env.as_ref(),
+            project,
+            output_ref_deps,
             environment: options.environment.as_deref(),
             project_root: &target_path,
-            cue_module_root,
+            cue_module_root: env_file::find_cue_module_root(&target_path),
+            executor,
         },
     )
     .await?;
@@ -341,11 +351,14 @@ impl<'dependency_planner> DependencyPlanner<'dependency_planner> {
 
 /// Shared context for executing a service's resolved dependency roots.
 struct ServiceTaskContext<'context> {
-    tasks: &'context HashMap<String, TaskNode>,
-    project_env: Option<&'context Env>,
+    /// The project whose services are brought up.
+    project: Project,
+    /// Dependencies inferred from its tasks' output references.
+    output_ref_deps: Vec<OutputRefDep>,
     environment: Option<&'context str>,
     project_root: &'context Path,
     cue_module_root: Option<PathBuf>,
+    executor: &'context CommandExecutor,
 }
 
 async fn execute_service_dependencies(
@@ -371,17 +384,42 @@ async fn execute_service_dependencies(
     Ok(())
 }
 
+/// The tasks services depend on, and the tasks of every project those
+/// depend on in turn, as one graph.
+fn service_task_graph(
+    task_roots: &[String],
+    context: &ServiceTaskContext<'_>,
+) -> cuenv_core::Result<(TaskScope, TaskGraph)> {
+    let mut scope = TaskScope::new(RootProject {
+        project: ScopeProject {
+            root: context.project_root.to_path_buf(),
+            module_root: context
+                .cue_module_root
+                .clone()
+                .unwrap_or_else(|| context.project_root.to_path_buf()),
+            manifest: Arc::new(context.project.clone()),
+        },
+        tasks: Tasks {
+            tasks: context.project.tasks.clone(),
+        },
+        output_ref_deps: context.output_ref_deps.clone(),
+    });
+    let roots = || task_roots.iter().map(String::as_str);
+    // `cuenv up` runs tasks as they are declared, in this project and in
+    // the ones it depends on.
+    scope.reach(
+        roots(),
+        &ModuleProjects::new(context.executor, WorkspaceContributors::Omit),
+    );
+    let graph = scope.graph(roots())?;
+    Ok((scope, graph))
+}
+
 async fn execute_service_task_dependencies(
     task_roots: &[String],
     context: ServiceTaskContext<'_>,
 ) -> cuenv_core::Result<()> {
-    let all_tasks = Tasks {
-        tasks: context.tasks.clone(),
-    };
-    let mut task_graph = TaskGraph::new();
-    for task_name in task_roots {
-        task_graph.build_for_task(task_name, &all_tasks)?;
-    }
+    let (scope, task_graph) = service_task_graph(task_roots, &context)?;
 
     if task_graph.task_count() == 0 {
         return Ok(());
@@ -392,22 +430,86 @@ async fn execute_service_task_dependencies(
         task_roots.join(", ")
     ));
 
+    let environments = DependencyEnvironments::new(&scope, context.environment);
     let executor = TaskExecutor::new(ExecutorConfig {
         capture_output: OutputCapture::Capture,
         max_parallel: 0,
         continue_on_error: false,
-        environment: task_dependency_environment(context.project_env, context.environment).await?,
-        task_environments: None,
+        environment: task_dependency_environment(context.project.env.as_ref(), context.environment)
+            .await?,
+        task_environments: (!environments.external.is_empty())
+            .then(|| Arc::new(environments) as Arc<dyn TaskEnvironments>),
         working_dir: None,
         project_root: context.project_root.to_path_buf(),
         cue_module_root: context.cue_module_root,
         cache: None,
-        sandbox_hasher_root: None,
-        sandbox_project_roots: std::collections::BTreeMap::new(),
+        // Inputs are hashed below the workspace, as `cuenv task` hashes
+        // them: a task may read what a task of another project wrote.
+        sandbox_hasher_root: Some(projects::workspace_root(context.project_root)),
+        sandbox_project_roots: BTreeMap::new(),
+        external_projects: scope
+            .external_projects()
+            .map(|(key, project)| {
+                (
+                    key.to_string(),
+                    ProjectExecution {
+                        project_root: project.root.clone(),
+                        cue_module_root: Some(project.module_root.clone()),
+                        cache: None,
+                    },
+                )
+            })
+            .collect(),
     });
 
     executor.execute_graph(&task_graph).await?;
     Ok(())
+}
+
+/// The environment of a dependency task that belongs to another project:
+/// that project's own variables, resolved the first time one of its tasks
+/// runs. A task of the project being brought up runs with the shared one.
+#[derive(Debug)]
+struct DependencyEnvironments {
+    environment: Option<String>,
+    external: BTreeMap<String, (ScopeProject, OnceCell<Environment>)>,
+}
+
+impl DependencyEnvironments {
+    fn new(scope: &TaskScope, environment: Option<&str>) -> Self {
+        Self {
+            environment: environment.map(str::to_string),
+            external: scope
+                .external_projects()
+                .map(|(key, project)| (key.to_string(), (project.clone(), OnceCell::new())))
+                .collect(),
+        }
+    }
+}
+
+impl TaskEnvironments for DependencyEnvironments {
+    fn environment_for<'a>(&'a self, name: &'a str, _task: &'a Task) -> TaskEnvironmentFuture<'a> {
+        Box::pin(async move {
+            let Some(external) = ExternalTaskName::parse(name) else {
+                return Ok(None);
+            };
+            let Some((project, environment)) = self.external.get(external.project) else {
+                return Err(cuenv_core::Error::configuration(format!(
+                    "Task '{name}' belongs to project '{}', which this run has not loaded",
+                    external.project
+                )));
+            };
+            let environment = environment
+                .get_or_try_init(|| {
+                    task_dependency_environment(
+                        project.manifest.env.as_ref(),
+                        self.environment.as_deref(),
+                    )
+                })
+                .await?;
+            Ok(Some(environment.clone()))
+        })
+    }
 }
 
 async fn task_dependency_environment(
@@ -649,5 +751,96 @@ mod tests {
         let result = filter_services(&services, &["db".to_string()], &[]);
         assert_eq!(result.len(), 1);
         assert!(result.contains_key("db"));
+    }
+
+    /// `app`: a task that consumes an output of `content` and records the
+    /// variables it could see.
+    const APP: &str = r#"package cuenv
+name: "app"
+env: APP_VALUE: "app-own"
+tasks: prepare: {
+	command: "sh"
+	args: ["-c", "cp vendor/one.md seen.md && printf '%s|%s' \"${APP_VALUE:-unset}\" \"${CONTENT_VALUE:-unset}\" > env.txt"]
+	inputs: [{project: "content", task: "articles", map: [{from: "out/one.md", to: "vendor/one.md"}]}]
+	outputs: ["seen.md", "env.txt"]
+}
+"#;
+
+    /// `content`: renders an article and records the variables it could see.
+    const CONTENT: &str = r#"package cuenv
+name: "content"
+env: CONTENT_VALUE: "content-own"
+tasks: articles: {
+	command: "sh"
+	args: ["-c", "mkdir -p out && cp articles/one.md out/one.md && printf '%s|%s' \"${CONTENT_VALUE:-unset}\" \"${APP_VALUE:-unset}\" > out/env.txt"]
+	inputs: ["articles/**"]
+	outputs: ["out/one.md", "out/env.txt"]
+}
+"#;
+
+    /// A module whose `app` has a task that consumes an output of `content`.
+    fn module_with_a_dependency_in_another_project()
+    -> Result<tempfile::TempDir, Box<dyn std::error::Error>> {
+        // CUE ignores directories whose name starts with a dot.
+        let directory = tempfile::Builder::new().prefix("cuenv_up_").tempdir()?;
+        let write = |relative: &str, content: &str| {
+            let path = directory.path().join(relative);
+            path.parent().map(std::fs::create_dir_all).transpose()?;
+            std::fs::write(path, content)
+        };
+        write(
+            "cue.mod/module.cue",
+            "module: \"test.example/up\"\nlanguage: version: \"v0.14.0\"\n",
+        )?;
+        write("app/env.cue", APP)?;
+        write("content/env.cue", CONTENT)?;
+        write("content/articles/one.md", "one\n")?;
+        Ok(directory)
+    }
+
+    #[tokio::test]
+    async fn a_service_dependency_in_another_project_runs_in_that_project()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = module_with_a_dependency_in_another_project()?;
+        let root = directory.path().canonicalize()?;
+        let app = root.join("app");
+        let executor = CommandExecutor::new("cuenv".to_string());
+        let (project, output_ref_deps) = {
+            let module = executor.module(&app)?;
+            let instance = module
+                .get(Path::new("app"))
+                .ok_or("the project evaluates")?;
+            (instance.to_project()?, instance.output_ref_deps.clone())
+        };
+
+        execute_service_dependencies(
+            &ServiceDependencyPlan {
+                task_roots: vec!["prepare".to_string()],
+                image_roots: Vec::new(),
+            },
+            ServiceTaskContext {
+                project,
+                output_ref_deps,
+                environment: None,
+                project_root: &app,
+                cue_module_root: Some(root.clone()),
+                executor: &executor,
+            },
+        )
+        .await?;
+
+        // The dependency ran first, in its own project, with its own
+        // variables and none of the service project's.
+        assert_eq!(
+            std::fs::read_to_string(root.join("content/out/env.txt"))?,
+            "content-own|unset"
+        );
+        // The service project's task read what it produced.
+        assert_eq!(std::fs::read_to_string(app.join("seen.md"))?, "one\n");
+        assert_eq!(
+            std::fs::read_to_string(app.join("env.txt"))?,
+            "app-own|unset"
+        );
+        Ok(())
     }
 }

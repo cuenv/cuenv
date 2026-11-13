@@ -9,7 +9,8 @@ use crate::context::ContextDefinition;
 use crate::environment::Env;
 use crate::hook::{Hook, Hooks};
 use crate::tasks::{
-    Input, MappedInput, Mapping, ProjectReference, Task, TaskDirectoryBase, TaskNode,
+    Input, MappedInput, Mapping, ProjectReference, SourceLocation, Task, TaskDirectoryBase,
+    TaskNode, TaskOutput, literal_path_prefix,
 };
 
 // ============================================================================
@@ -157,11 +158,22 @@ impl Project {
     ///
     /// Handles inputs in the format: "#project:task:path/to/file"
     /// Converts them to explicit ProjectReference inputs.
-    /// Also adds implicit dependsOn entries for all project references.
-    pub fn expand_cross_project_references(&mut self) {
-        let declared_outputs = self.declared_outputs_by_task();
+    /// Also adds implicit dependsOn entries for all project references, and
+    /// rewrites each same-project task-output input to the files its producer
+    /// declares (see [`MappedInput`]).
+    ///
+    /// `instance_path` is the project's directory relative to the CUE module
+    /// root (`.` or empty for the root): an explicit `map` places its `to`
+    /// below it, and a task without source metadata is taken to run there.
+    pub fn expand_cross_project_references(&mut self, instance_path: &Path) {
+        let project_path = normalize_relative(instance_path).unwrap_or_default();
+        let declared_outputs = self.declared_outputs_by_task(&project_path);
+        let expansion = TaskExpansion {
+            declared_outputs: &declared_outputs,
+            project_path: &project_path,
+        };
         for task_node in self.tasks.values_mut() {
-            Self::expand_task_node(task_node, &declared_outputs);
+            expansion.expand_node(task_node);
         }
     }
 
@@ -170,62 +182,107 @@ impl Project {
     /// Consuming a task's output is resolved against this: the consumer's
     /// inputs become the producer's output paths, so the consumer's cache key
     /// is a function of what the producer actually built.
-    fn declared_outputs_by_task(&self) -> HashMap<String, DeclaredTaskOutputs> {
+    fn declared_outputs_by_task(
+        &self,
+        project_path: &Path,
+    ) -> HashMap<String, DeclaredTaskOutputs> {
         let mut declared = HashMap::new();
         for (name, node) in &self.tasks {
-            Self::collect_declared_outputs(name, node, &mut declared);
+            collect_declared_outputs(
+                DeclaredNode {
+                    path: name,
+                    node,
+                    project_path,
+                },
+                &mut declared,
+            );
         }
         declared
     }
+}
 
-    fn collect_declared_outputs(
-        path: &str,
-        node: &TaskNode,
-        declared: &mut HashMap<String, DeclaredTaskOutputs>,
-    ) {
-        match node {
-            TaskNode::Task(task) => {
-                declared.insert(
-                    path.to_string(),
-                    DeclaredTaskOutputs {
-                        outputs: task.outputs.clone(),
-                        base: task_output_base(task),
+/// A node of the task tree while its declared outputs are collected.
+#[derive(Clone, Copy)]
+struct DeclaredNode<'node> {
+    /// The node's dotted path.
+    path: &'node str,
+    node: &'node TaskNode,
+    /// The project's directory, relative to the CUE module root.
+    project_path: &'node Path,
+}
+
+fn collect_declared_outputs(
+    declared_node: DeclaredNode<'_>,
+    declared: &mut HashMap<String, DeclaredTaskOutputs>,
+) {
+    let DeclaredNode {
+        path,
+        node,
+        project_path,
+    } = declared_node;
+    match node {
+        TaskNode::Task(task) => {
+            declared.insert(
+                path.to_string(),
+                DeclaredTaskOutputs {
+                    outputs: task.outputs.clone(),
+                    base: task_output_base(task, project_path),
+                },
+            );
+        }
+        TaskNode::Group(group) => {
+            for (child, sub_node) in &group.children {
+                collect_declared_outputs(
+                    DeclaredNode {
+                        path: &format!("{path}.{child}"),
+                        node: sub_node,
+                        project_path,
                     },
+                    declared,
                 );
             }
-            TaskNode::Group(group) => {
-                for (child, sub_node) in &group.children {
-                    Self::collect_declared_outputs(&format!("{path}.{child}"), sub_node, declared);
-                }
-            }
-            TaskNode::Sequence(steps) => {
-                for (index, sub_node) in steps.iter().enumerate() {
-                    Self::collect_declared_outputs(&format!("{path}[{index}]"), sub_node, declared);
-                }
+        }
+        TaskNode::Sequence(steps) => {
+            for (index, sub_node) in steps.iter().enumerate() {
+                collect_declared_outputs(
+                    DeclaredNode {
+                        path: &format!("{path}[{index}]"),
+                        node: sub_node,
+                        project_path,
+                    },
+                    declared,
+                );
             }
         }
     }
+}
 
-    fn expand_task_node(
-        node: &mut TaskNode,
-        declared_outputs: &HashMap<String, DeclaredTaskOutputs>,
-    ) {
+/// What rewriting a project's inputs reads: the outputs its tasks declare
+/// and where the project lies in its CUE module.
+#[derive(Clone, Copy)]
+struct TaskExpansion<'expansion> {
+    declared_outputs: &'expansion HashMap<String, DeclaredTaskOutputs>,
+    project_path: &'expansion Path,
+}
+
+impl TaskExpansion<'_> {
+    fn expand_node(self, node: &mut TaskNode) {
         match node {
-            TaskNode::Task(task) => Self::expand_task(task, declared_outputs),
+            TaskNode::Task(task) => self.expand_task(task),
             TaskNode::Group(group) => {
                 for sub_node in group.children.values_mut() {
-                    Self::expand_task_node(sub_node, declared_outputs);
+                    self.expand_node(sub_node);
                 }
             }
             TaskNode::Sequence(steps) => {
                 for sub_node in steps {
-                    Self::expand_task_node(sub_node, declared_outputs);
+                    self.expand_node(sub_node);
                 }
             }
         }
     }
 
-    fn expand_task(task: &mut Task, declared_outputs: &HashMap<String, DeclaredTaskOutputs>) {
+    fn expand_task(self, task: &mut Task) {
         let mut new_inputs = Vec::new();
         let mut implicit_deps = Vec::new();
 
@@ -270,36 +327,8 @@ impl Project {
                     // than making you declare it twice; without this the
                     // consumer can be scheduled alongside its producer.
                     implicit_deps.push(task_output.task.clone());
-
-                    // Rewrite to the producer's concrete output paths so the
-                    // consumer's cache key is a function of what the producer
-                    // built. Hashing the produced *content* rather than the
-                    // producer's own key is what gives early cutoff: a
-                    // producer that reruns and emits identical bytes leaves
-                    // every consumer's key unchanged.
-                    match declared_outputs.get(&task_output.task) {
-                        Some(declared) => match &declared.base {
-                            Some(base) => {
-                                let mappings = task_output.map.clone().unwrap_or_else(|| {
-                                    declared
-                                        .outputs
-                                        .iter()
-                                        .map(|output| Mapping {
-                                            from: output.clone(),
-                                            to: implicit_output_destination(output),
-                                        })
-                                        .collect()
-                                });
-                                new_inputs.extend(mappings.into_iter().map(|mapping| {
-                                    Input::Mapped(MappedInput {
-                                        source: path_to_forward_slashes(&base.join(&mapping.from)),
-                                        destination: mapping.to,
-                                        producer_task: Some(task_output.task.clone()),
-                                    })
-                                }));
-                            }
-                            None => new_inputs.push(input.clone()),
-                        },
+                    match self.mapped_task_output(task_output) {
+                        Some(mapped) => new_inputs.extend(mapped.into_iter().map(Input::Mapped)),
                         // An unresolvable reference is left alone rather than
                         // silently dropped: the cache layer reports it.
                         None => new_inputs.push(input.clone()),
@@ -320,51 +349,67 @@ impl Project {
             }
         }
     }
+
+    /// The files a task-output input stands for, or `None` when its producer
+    /// is unknown or runs outside the module.
+    ///
+    /// Rewriting to the producer's concrete output paths makes the consumer's
+    /// cache key a function of what the producer built. Hashing the produced
+    /// *content* rather than the producer's own key is what gives early
+    /// cutoff: a producer that reruns and emits identical bytes leaves every
+    /// consumer's key unchanged.
+    ///
+    /// Without `map` each output is staged where the producer writes it. An
+    /// explicit `map` stages `from` at `to` below the consumer's project.
+    fn mapped_task_output(self, task_output: &TaskOutput) -> Option<Vec<MappedInput>> {
+        let declared = self.declared_outputs.get(&task_output.task)?;
+        let base = declared.base.as_ref()?;
+        let mapped = |source: &str, destination: PathBuf| MappedInput {
+            source: path_to_forward_slashes(&base.join(source)),
+            destination: path_to_forward_slashes(&destination),
+            producer_task: Some(task_output.task.clone()),
+        };
+        Some(match &task_output.map {
+            Some(mappings) => mappings
+                .iter()
+                .map(|mapping| mapped(&mapping.from, self.project_path.join(&mapping.to)))
+                .collect(),
+            None => declared
+                .outputs
+                .iter()
+                .map(|output| mapped(output, base.join(literal_path_prefix(output))))
+                .collect(),
+        })
+    }
 }
 
-fn task_output_base(task: &Task) -> Option<PathBuf> {
-    let source_base = |caller: bool| {
-        let source = if caller {
-            task.caller_source.as_ref()
-        } else {
-            task.source.as_ref()
-        };
-        source
-            .and_then(|location| location.directory())
-            .map_or_else(PathBuf::new, PathBuf::from)
+/// The directory a task writes its outputs below, relative to the CUE module
+/// root: its `dir`, else the directory of the file that defines it, else the
+/// project's own directory. `None` when it lies outside the module.
+fn task_output_base(task: &Task, project_path: &Path) -> Option<PathBuf> {
+    let directory_of = |source: Option<&SourceLocation>| {
+        source.map_or_else(
+            || project_path.to_path_buf(),
+            |location| {
+                location
+                    .directory()
+                    .map_or_else(PathBuf::new, PathBuf::from)
+            },
+        )
     };
 
     let joined = match &task.directory {
         Some(directory) => {
             let base = match directory.from {
-                TaskDirectoryBase::Definition => source_base(false),
-                TaskDirectoryBase::Caller => source_base(true),
+                TaskDirectoryBase::Definition => directory_of(task.source.as_ref()),
+                TaskDirectoryBase::Caller => directory_of(task.caller_source.as_ref()),
                 TaskDirectoryBase::Module => PathBuf::new(),
             };
             base.join(&directory.path)
         }
-        None => source_base(false),
+        None => directory_of(task.source.as_ref()),
     };
     normalize_relative(&joined)
-}
-
-/// Preserve a producer glob's matched suffix at the same relative location.
-///
-/// Mapping `dist/**/*.js` to the literal glob string would create paths such
-/// as `dist/**/*.js/chunk.js` in the consumer. The non-glob prefix (`dist`) is
-/// the layout the producer actually wrote and therefore the implicit `to`.
-fn implicit_output_destination(output: &str) -> String {
-    output
-        .split('/')
-        .take_while(|segment| {
-            !segment.contains('*')
-                && !segment.contains('{')
-                && !segment.contains('?')
-                && !segment.contains('[')
-        })
-        .filter(|segment| !segment.is_empty() && *segment != ".")
-        .collect::<Vec<_>>()
-        .join("/")
 }
 
 fn normalize_relative(path: &Path) -> Option<PathBuf> {

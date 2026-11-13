@@ -24,8 +24,9 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use super::projects::{CiProjects, HookProject};
 use super::task_env;
-use super::task_execution::{PipelineTaskResults, PipelineTasksRequest};
+use super::task_execution::{PipelineScope, PipelineTaskResults, PipelineTasksRequest};
 
 /// Which tasks to select within the requested project and pipeline scope.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -131,6 +132,8 @@ struct DiscoveredCiProjects {
     module_root: PathBuf,
     /// Every project directory of the module, in or out of scope.
     project_directories: Vec<PathBuf>,
+    /// Every project of the module, for running those dependencies.
+    all_projects: Arc<CiProjects>,
     project_configs: ProjectConfigMap,
     /// The directory `--path` names, when it names one.
     named_path: Option<PathBuf>,
@@ -165,6 +168,7 @@ fn load_ci_projects(path_filter: Option<&str>) -> Result<Option<DiscoveredCiProj
     let frame = CheckoutFrame::around(&module.root);
     let project_map = place_projects(build_project_map(&projects), &frame);
     let project_directories = projects.iter().map(|(path, _)| path.clone()).collect();
+    let all_projects = Arc::new(CiProjects::new(&module.root, &projects));
 
     // Filter projects by path if specified (and not the default ".")
     let named_path = path_filter
@@ -194,6 +198,7 @@ fn load_ci_projects(path_filter: Option<&str>) -> Result<Option<DiscoveredCiProj
         frame,
         module_root: module.root.clone(),
         project_directories,
+        all_projects,
         project_configs,
         named_path,
     }))
@@ -329,7 +334,7 @@ async fn run_ci_projects(
     }
 
     if !dry_run.is_dry_run() {
-        prepare_secret_providers(&plans).await?;
+        prepare_secret_providers(&plans, &discovered.all_projects).await?;
     }
 
     for (project_path, config, plan) in plans {
@@ -350,6 +355,7 @@ async fn run_ci_projects(
                 changes,
                 provider,
                 project_configs: &discovered.project_configs,
+                all_projects: &discovered.all_projects,
                 max_parallel,
             })
             .await;
@@ -381,13 +387,20 @@ async fn run_ci_projects(
 /// OIDC token behind Infisical OIDC Auth) has expired.
 async fn prepare_secret_providers(
     plans: &[(&PathBuf, &Project, ProjectPipelinePlan)],
+    all_projects: &CiProjects,
 ) -> Result<()> {
     let mut env_vars = HashMap::new();
     for (project_path, config, plan) in plans {
-        let values = super::task_execution::project_env_values_in_any_context(
-            config,
-            plan.environment.as_deref(),
-        );
+        // The tasks about to run, and the tasks of other projects they
+        // depend on, each resolve their own project's secrets.
+        let values =
+            super::task_execution::pipeline_env_values(super::task_execution::PlannedPipeline {
+                project_path,
+                config,
+                task_names: &plan.tasks_to_run,
+                environment: plan.environment.as_deref(),
+                projects: all_projects,
+            });
         for (index, value) in values.into_iter().enumerate() {
             // Keys only need to be unique; secrets are grouped by resolver.
             env_vars.insert(format!("{}:{index}", project_path.display()), value);
@@ -667,6 +680,7 @@ struct PipelineExecutionRequest<'request> {
     changes: &'request ChangedFiles,
     provider: &'request dyn CIProvider,
     project_configs: &'request HashMap<PathBuf, Project>,
+    all_projects: &'request Arc<CiProjects>,
     max_parallel: usize,
 }
 
@@ -697,11 +711,28 @@ async fn execute_project_pipeline(
     super::reporting::register_ci_secrets();
 
     // Merge static + hook-generated environment once per project, then reuse for all tasks.
-    let hook_env =
-        super::hook_env::build_hook_environment(project_path, config, project_configs).await?;
+    let hook_env = request
+        .all_projects
+        .hook_environment(HookProject {
+            root: project_path,
+            config,
+            ancestor_configs: project_configs,
+        })
+        .await?;
 
     // Build task index for resolving nested task names (e.g., "deploy.preview")
     let task_index = TaskIndex::build(&config.tasks)?;
+
+    // The tasks about to run may depend on tasks of other projects, in or
+    // out of `--path`. Each of those runs in its own project.
+    let scope = Arc::new(super::task_execution::pipeline_scope(PipelineScope {
+        project_path,
+        config,
+        task_index: &task_index,
+        task_names: tasks_to_run,
+        projects: request.all_projects,
+    }));
+    let project_configs = Arc::new(project_configs.clone());
 
     let PipelineTaskResults {
         reports: tasks_reports,
@@ -720,6 +751,9 @@ async fn execute_project_pipeline(
         hook_env: &hook_env,
         continue_on_error: pipeline_continue_on_error(config, pipeline_name),
         max_parallel,
+        scope: &scope,
+        projects: request.all_projects,
+        project_configs: &project_configs,
     })
     .await;
 

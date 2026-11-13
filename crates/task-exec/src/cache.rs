@@ -168,6 +168,9 @@ pub struct BuildActionInput<'input> {
     pub workdir: &'input Path,
     /// Project root used for resolving task inputs.
     pub project_root: &'input Path,
+    /// Root of the CUE module the task's project belongs to, which is what
+    /// both sides of a [`MappedInput`] are relative to.
+    pub module_root: &'input Path,
 }
 
 /// Build the [`Action`] envelope for a task and compute its digest.
@@ -190,6 +193,7 @@ pub async fn build_action(input: BuildActionInput<'_>) -> Result<CacheOutcome> {
         cache,
         workdir,
         project_root,
+        module_root,
     } = input;
 
     // A non-hermetic task reads and writes the live workspace and inherits
@@ -262,13 +266,21 @@ pub async fn build_action(input: BuildActionInput<'_>) -> Result<CacheOutcome> {
             ResolveOutcome::Skipped(reason) => return Ok(skipped(reason, None)),
         }
     }
+    // Path inputs are declared relative to the project and move to where the
+    // project sits in the frame. A mapped input already names its place in
+    // the frame, so it is resolved there and never prefixed again.
+    let mut hashed = frame.place_project_inputs(hashed);
+    let mapped_frame = MappedFrame {
+        cache,
+        module_root,
+        task_name,
+    };
     for mapping in local_mappings {
-        match resolve_mapped_input(cache, mapping, task_name).await? {
+        match mapped_frame.resolve(mapping).await {
             ResolveOutcome::Resolved(mapped) => hashed.extend(mapped),
             ResolveOutcome::Skipped(reason) => return Ok(skipped(reason, None)),
         }
     }
-    let hashed = frame.place_project_inputs(hashed);
     let input_root_digest = match build_input_root_digest(&hashed) {
         Ok(digest) => digest,
         Err(InputRootError::Collision(path)) => {
@@ -281,6 +293,12 @@ pub async fn build_action(input: BuildActionInput<'_>) -> Result<CacheOutcome> {
         }
         Err(InputRootError::Failed(error)) => return Err(error),
     };
+    // Two declarations may name one file: a glob that covers what a task
+    // output stages where it was produced, say. The input root holds it
+    // once, and so does the snapshot an exec root is materialized from:
+    // staging it a second time would write over a read-only copy.
+    let mut staged = BTreeSet::new();
+    hashed.retain(|input| staged.insert(input.relative_path.clone()));
 
     let execution = ResolvedExecution {
         inputs: hashed,
@@ -601,21 +619,105 @@ fn resolve_project_path(
     project.starts_with(&workspace_root).then_some(project)
 }
 
-async fn resolve_mapped_input(
-    cache: &TaskCacheConfig,
-    mapping: &MappedInput,
-    task_name: &str,
-) -> Result<ResolveOutcome> {
-    resolve_path_mapping(
-        cache,
-        PathMappingInput {
-            source: &mapping.source,
-            destination: &mapping.destination,
-            source_root: &cache.vcs_hasher_root,
-            task_name,
-        },
-    )
-    .await
+/// Resolves [`MappedInput`]s, whose paths are relative to the CUE module
+/// root, in the frame of the action: relative to the hasher root.
+struct MappedFrame<'mapped> {
+    cache: &'mapped TaskCacheConfig,
+    /// Root of the CUE module of the project that owns the task.
+    module_root: &'mapped Path,
+    task_name: &'mapped str,
+}
+
+impl MappedFrame<'_> {
+    /// Hash the files `mapping` names and place them at its destination.
+    ///
+    /// `source` bounds where its matches live; everything below its literal
+    /// prefix is reproduced under `destination`, so a directory keeps its
+    /// structure. Both are rebased by where the module root lies under the
+    /// hasher root, which is the VCS workspace when there is one. A module
+    /// the hasher cannot see, or a path that leaves the hasher root, has no
+    /// place in the frame: the input is reported as unresolvable and never
+    /// dropped.
+    async fn resolve(&self, mapping: &MappedInput) -> ResolveOutcome {
+        let hasher_root = &self.cache.vcs_hasher_root;
+        let placed = self
+            .module_root
+            .strip_prefix(hasher_root)
+            .ok()
+            .and_then(|module| {
+                Some((
+                    frame_path(&module.join(&mapping.source))?,
+                    frame_path(&module.join(&mapping.destination))?,
+                ))
+            });
+        let Some((source, destination)) = placed else {
+            tracing::warn!(
+                task = %self.task_name,
+                source = mapping.source,
+                destination = mapping.destination,
+                module_root = %self.module_root.display(),
+                hasher_root = %hasher_root.display(),
+                "skipping cache: a mapped input lies outside the cache hasher root"
+            );
+            return ResolveOutcome::Skipped(CacheSkipReason::HasherRootMismatch);
+        };
+
+        let pattern = path_to_forward_slashes(&source);
+        let hashed = match self.cache.vcs_hasher.resolve_and_hash(&[pattern]).await {
+            Ok(hashed) => hashed,
+            Err(error) => {
+                tracing::warn!(
+                    task = %self.task_name,
+                    error = %error,
+                    "skipping cache: input hashing failed"
+                );
+                return ResolveOutcome::Skipped(CacheSkipReason::HashFailed {
+                    reason: error.to_string(),
+                });
+            }
+        };
+
+        let base = literal_prefix(&path_to_forward_slashes(&source));
+        ResolveOutcome::Resolved(
+            hashed
+                .into_iter()
+                .map(|input| {
+                    let below_base = input
+                        .relative_path
+                        .strip_prefix(&base)
+                        .unwrap_or(input.relative_path.as_path());
+                    let relative_path = if below_base.as_os_str().is_empty() {
+                        destination.clone()
+                    } else {
+                        destination.join(below_base)
+                    };
+                    HashedInput {
+                        relative_path,
+                        ..input
+                    }
+                })
+                .collect(),
+        )
+    }
+}
+
+/// A path in the frame of an action, without `.` and `..`; `None` when it
+/// is absolute or leaves the frame.
+fn frame_path(path: &Path) -> Option<PathBuf> {
+    path.components()
+        .try_fold(PathBuf::new(), |mut normalized, component| {
+            match component {
+                Component::CurDir => {}
+                Component::Normal(part) => normalized.push(part),
+                Component::ParentDir => {
+                    if !normalized.pop() {
+                        return None;
+                    }
+                }
+                Component::RootDir | Component::Prefix(_) => return None,
+            }
+            Some(normalized)
+        })
 }
 
 struct PathMappingInput<'mapping> {
@@ -1220,25 +1322,29 @@ impl InputDirectoryBuilder {
                 }
                 current = current.directories.entry(name.to_string()).or_default();
             } else {
-                // Any second owner is ambiguous, even when the bytes happen
-                // to match. Mode, provenance, and future content can differ,
-                // and a file cannot also own a directory prefix.
-                if current.files.contains_key(name) || current.directories.contains_key(name) {
+                let file = FileNode {
+                    name: name.to_string(),
+                    digest: Digest {
+                        hash: input.sha256.clone(),
+                        size_bytes: input.size,
+                    },
+                    is_executable: input.is_executable,
+                };
+                // The same file declared twice (same place, bytes and mode)
+                // is one input: a glob may cover what a task output stages
+                // where it was produced. Anything else that claims the path
+                // is ambiguous, and a file cannot also own a directory
+                // prefix.
+                let claimed = match current.files.get(name) {
+                    Some(existing) => *existing != file,
+                    None => current.directories.contains_key(name),
+                };
+                if claimed {
                     return Err(InputRootError::Collision(path_to_forward_slashes(
                         relative_path,
                     )));
                 }
-                current.files.insert(
-                    name.to_string(),
-                    FileNode {
-                        name: name.to_string(),
-                        digest: Digest {
-                            hash: input.sha256.clone(),
-                            size_bytes: input.size,
-                        },
-                        is_executable: input.is_executable,
-                    },
-                );
+                current.files.insert(name.to_string(), file);
             }
         }
 

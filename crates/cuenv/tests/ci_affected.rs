@@ -46,6 +46,23 @@ name: "docs"
 tasks: lint: {command: "true", inputs: ["**/*.md"]}
 "#;
 
+/// What the second commit of a [`Monorepo`] writes unless a test says
+/// otherwise: one article of `content`.
+const AN_ARTICLE_CHANGES: &[(&str, &str)] = &[("content/articles/one.md", "two\n")];
+
+/// `app` consumes the article `content` renders, at the path it maps it to.
+const APP_CONSUMING_CONTENT: &str = r#"package cuenv
+name: "app"
+let _tasks = tasks
+ci: pipelines: default: tasks: [_tasks.build]
+tasks: build: {
+	command: "sh"
+	args: ["-c", "cp vendor/one.md seen.md"]
+	inputs: ["src/**", {project: "content", task: "articles", map: [{from: "out/one.md", to: "vendor/one.md"}]}]
+	outputs: ["seen.md"]
+}
+"#;
+
 /// A module of three projects in a repository of two commits. The second
 /// commit changes only `content/articles/one.md`.
 /// How a [`Monorepo`] is laid out.
@@ -70,7 +87,7 @@ struct Monorepo {
 
 impl Monorepo {
     fn new(app: &str) -> TestResult<Self> {
-        Self::changing(app, &[], &[("content/articles/one.md", "two\n")])
+        Self::changing(app, &[], AN_ARTICLE_CHANGES)
     }
 
     /// A monorepo with some more files in its first commit, whose second
@@ -134,6 +151,23 @@ impl Monorepo {
             .args(["--from", &self.base])
             .args(arguments)
             .output()?)
+    }
+
+    /// Run `cuenv task` in one project of the module.
+    fn task(&self, project: &str, arguments: &[&str]) -> TestResult<Output> {
+        Ok(Command::new(env!("CARGO_BIN_EXE_cuenv"))
+            .current_dir(self.root().join(project))
+            .env_remove("GITHUB_ACTIONS")
+            .env_remove("BUILDKITE")
+            .env("CUENV_CACHE_DIR", self.root().join("task-cache"))
+            .arg("task")
+            .args(arguments)
+            .output()?)
+    }
+
+    fn read(&self, relative: &str) -> TestResult<String> {
+        let path = self.root().join(relative);
+        fs::read_to_string(&path).map_err(|error| format!("{}: {error}", path.display()).into())
     }
 }
 
@@ -244,25 +278,199 @@ fn a_dependency_on_a_project_outside_the_path_is_resolved() -> TestResult {
     // The project-reference form of issue 611: `app` consumes an output of
     // `content`, only a file of `content` changed, and `--path app` leaves
     // `content` out of the run.
-    let repository = Monorepo::new(
-        r#"package cuenv
-name: "app"
-let _tasks = tasks
-ci: pipelines: default: tasks: [_tasks.build]
-tasks: build: {
-	command: "sh"
-	args: ["-c", "printf ran > ran"]
-	inputs: ["src/**", {project: "content", task: "articles", map: [{from: "out/one.md", to: "vendor/one.md"}]}]
-}
-"#,
-    )?;
+    let repository = Monorepo::new(APP_CONSUMING_CONTENT)?;
 
-    let output = repository.ci(&["--path", "app", "--dry-run"])?;
+    let output = repository.ci(&["--path", "app"])?;
 
     assert_success(&output);
     let printed = text(&output);
     assert!(!printed.contains("No affected tasks"), "{printed}");
     assert!(!printed.contains("warning:"), "{printed}");
+    // The producer ran first, in its own project, on the changed article.
+    assert_eq!(repository.read("content/out/one.md")?, "two\n");
+    // The consumer read it at the path it mapped it to, which is staged for
+    // the task and never written into the checkout.
+    assert_eq!(repository.read("app/seen.md")?, "two\n");
+    assert!(!repository.root().join("app/vendor").exists());
+    Ok(())
+}
+
+#[test]
+fn a_run_without_a_path_runs_the_dependency_in_its_own_project() -> TestResult {
+    let repository = Monorepo::new(APP_CONSUMING_CONTENT)?;
+
+    let output = repository.ci(&[])?;
+
+    assert_success(&output);
+    let printed = text(&output);
+    assert!(!printed.contains("warning:"), "{printed}");
+    assert_eq!(repository.read("content/out/one.md")?, "two\n");
+    assert_eq!(repository.read("app/seen.md")?, "two\n");
+    Ok(())
+}
+
+#[test]
+fn cuenv_task_runs_the_same_dependency() -> TestResult {
+    let repository = Monorepo::new(APP_CONSUMING_CONTENT)?;
+
+    let output = repository.task("app", &["build"])?;
+
+    assert_success(&output);
+    assert_eq!(repository.read("content/out/one.md")?, "two\n");
+    assert_eq!(repository.read("app/seen.md")?, "two\n");
+    assert!(!repository.root().join("app/vendor").exists());
+    Ok(())
+}
+
+/// `content`, with a hook and a variable of its own. Its task records what
+/// it could see of them, and of `app`'s.
+const CONTENT_WITH_HOOK: &str = r#"package cuenv
+name: "content"
+env: CONTENT_VALUE: "content-own"
+hooks: onEnter: mark: {
+	command: "sh"
+	args: ["-c", "echo 'export CONTENT_HOOK=from-content-hook'"]
+	source: true
+}
+let _tasks = tasks
+ci: pipelines: default: tasks: [_tasks.articles]
+tasks: articles: {
+	command: "sh"
+	args: ["-c", "mkdir -p out && cp articles/one.md out/one.md && printf '%s|%s|%s|%s' \"${CONTENT_VALUE:-unset}\" \"${CONTENT_HOOK:-unset}\" \"${APP_SECRET:-unset}\" \"${APP_HOOK:-unset}\" > out/env.txt"]
+	inputs: ["articles/**"]
+	outputs: ["out/one.md", "out/env.txt"]
+}
+"#;
+
+/// `app`, with a hook and a secret of its own.
+const APP_WITH_HOOK: &str = r#"package cuenv
+name: "app"
+env: APP_SECRET: {resolver: "exec", command: "echo", args: ["app-only"]}
+hooks: onEnter: mark: {
+	command: "sh"
+	args: ["-c", "echo 'export APP_HOOK=from-app-hook'"]
+	source: true
+}
+let _tasks = tasks
+ci: pipelines: default: tasks: [_tasks.build]
+tasks: build: {
+	command: "sh"
+	args: ["-c", "cp vendor/one.md seen.md && printf '%s|%s|%s|%s' \"${APP_SECRET:-unset}\" \"${APP_HOOK:-unset}\" \"${CONTENT_VALUE:-unset}\" \"${CONTENT_HOOK:-unset}\" > env.txt"]
+	inputs: ["src/**", {project: "content", task: "articles", map: [{from: "out/one.md", to: "vendor/one.md"}]}]
+	outputs: ["seen.md", "env.txt"]
+}
+"#;
+
+#[test]
+fn a_dependency_runs_with_its_own_hooks_and_never_the_consumers_secrets() -> TestResult {
+    let repository = Monorepo::changing(
+        APP_WITH_HOOK,
+        &[("content/env.cue", CONTENT_WITH_HOOK)],
+        AN_ARTICLE_CHANGES,
+    )?;
+
+    let output = repository.ci(&["--path", "app"])?;
+
+    assert_success(&output);
+    // The producer: its own variable and its own hook's, nothing of `app`.
+    assert_eq!(
+        repository.read("content/out/env.txt")?,
+        "content-own|from-content-hook|unset|unset"
+    );
+    // The consumer: its own secret and its own hook's, nothing of `content`.
+    assert_eq!(
+        repository.read("app/env.txt")?,
+        "app-only|from-app-hook|unset|unset"
+    );
+    Ok(())
+}
+
+#[test]
+fn cuenv_task_gives_a_dependency_its_own_environment() -> TestResult {
+    let repository = Monorepo::changing(
+        APP_WITH_HOOK,
+        &[("content/env.cue", CONTENT_WITH_HOOK)],
+        AN_ARTICLE_CHANGES,
+    )?;
+
+    let output = repository.task("app", &["build"])?;
+
+    assert_success(&output);
+    // `cuenv task` runs no hooks. Each project still sees only its own
+    // variables.
+    assert_eq!(
+        repository.read("content/out/env.txt")?,
+        "content-own|unset|unset|unset"
+    );
+    assert_eq!(
+        repository.read("app/env.txt")?,
+        "app-only|unset|unset|unset"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_dependency_chain_across_three_projects_runs_in_order() -> TestResult {
+    // `app` consumes `content`, which consumes `sources`. Neither of the
+    // other two is under `--path app`.
+    let repository = Monorepo::changing(
+        APP_CONSUMING_CONTENT,
+        &[
+            (
+                "content/env.cue",
+                r#"package cuenv
+name: "content"
+tasks: articles: {
+	command: "sh"
+	args: ["-c", "mkdir -p out && cat articles/one.md in/raw.md > out/one.md"]
+	inputs: ["articles/**", {project: "sources", task: "pull", map: [{from: "raw.md", to: "in/raw.md"}]}]
+	outputs: ["out/one.md"]
+}
+"#,
+            ),
+            (
+                "sources/env.cue",
+                r#"package cuenv
+name: "sources"
+tasks: pull: {
+	command: "sh"
+	args: ["-c", "printf 'raw\n' > raw.md"]
+	inputs: ["env.cue"]
+	outputs: ["raw.md"]
+}
+"#,
+            ),
+        ],
+        AN_ARTICLE_CHANGES,
+    )?;
+
+    let output = repository.ci(&["--path", "app"])?;
+
+    assert_success(&output);
+    assert_eq!(repository.read("sources/raw.md")?, "raw\n");
+    assert_eq!(repository.read("content/out/one.md")?, "two\nraw\n");
+    assert_eq!(repository.read("app/seen.md")?, "two\nraw\n");
+
+    // `cuenv task` builds the same graph.
+    let task = repository.task("app", &["build"])?;
+    assert_success(&task);
+    assert_eq!(repository.read("app/seen.md")?, "two\nraw\n");
+    Ok(())
+}
+
+#[test]
+fn a_dependency_that_cannot_be_loaded_fails_the_run() -> TestResult {
+    // The dependency is neither skipped nor run in the consumer's project.
+    let repository = Monorepo::new(
+        &APP_CONSUMING_CONTENT.replace("project: \"content\"", "project: \"no-such-project\""),
+    )?;
+
+    let output = repository.ci(&["--path", "app"])?;
+
+    let printed = text(&output);
+    assert!(!output.status.success(), "{printed}");
+    assert!(printed.contains("#no-such-project:articles"), "{printed}");
+    assert!(!repository.root().join("app/seen.md").exists(), "{printed}");
     Ok(())
 }
 
@@ -298,6 +506,12 @@ tasks: build: {
             "run {run}: {printed}"
         );
     }
+
+    // A real run executes the task of `content` itself, in `content`.
+    let output = repository.ci(&["--path", "app"])?;
+    assert_success(&output);
+    assert_eq!(repository.read("content/out/one.md")?, "two\n");
+    assert!(!repository.root().join("content/drafts/out").exists());
     Ok(())
 }
 

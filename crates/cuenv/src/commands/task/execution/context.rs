@@ -5,7 +5,6 @@ use cuenv_core::manifest::Project;
 use cuenv_core::tasks::Tasks;
 use cuenv_core::{DryRun, OutputCapture};
 use cuenv_task_exec::TaskIndex;
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 pub(super) struct TaskExecutionInput<'input> {
@@ -80,9 +79,9 @@ pub(super) struct TaskExecutionContext {
     pub(super) manifest: Project,
     pub(super) project_root: PathBuf,
     pub(super) cue_module_root: Option<PathBuf>,
-    /// Every project in the module, by name and by module-relative path, so a
-    /// cross-project input resolves to a directory the hasher can read.
-    pub(super) project_roots: BTreeMap<String, PathBuf>,
     pub(super) task_index: TaskIndex,
+    /// The project's own tasks by canonical name. A run selects from these,
+    /// by name or by label, and from nothing else: the tasks of another
+    /// project are reached as dependencies only.
     pub(super) local_tasks: Tasks,
 }

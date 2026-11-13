@@ -290,7 +290,7 @@ impl Instance {
     /// Returns an error if the instance JSON does not match the Project schema.
     pub fn to_project(&self) -> crate::Result<crate::manifest::Project> {
         let mut project: crate::manifest::Project = self.deserialize()?;
-        project.expand_cross_project_references();
+        project.expand_cross_project_references(&self.path);
         Ok(project)
     }
 

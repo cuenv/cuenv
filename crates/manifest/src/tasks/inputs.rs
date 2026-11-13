@@ -9,7 +9,11 @@ pub struct Mapping {
     pub to: String,
 }
 
-/// Internal, expanded same-project output mapping.
+/// Internal, expanded task-output mapping: files one task produces, and
+/// where the task consuming them reads them.
+///
+/// Both paths are relative to the root of the CUE module of the project that
+/// owns the consuming task, so one frame places every input of an action.
 ///
 /// Serializable so an expanded task can still be listed (`cuenv task
 /// --format json`), but never deserialized: CUE has no way to spell it.
@@ -18,13 +22,43 @@ pub struct Mapping {
 pub struct MappedInput {
     /// Source path/glob relative to the CUE module root.
     pub source: String,
-    /// Destination path inside the consumer's execution root.
+    /// Destination path relative to the CUE module root. A file below the
+    /// literal prefix of `source` keeps its relative location below it.
     pub destination: String,
-    /// Same-project task that produced this input.
+    /// Task that produced this input: a name within the consumer's project,
+    /// or `#project:task` for a task of another project.
     ///
     /// Retained after expansion so CI compilation can still create the
     /// orchestrator artifact handoff.
     pub producer_task: Option<String>,
+}
+
+impl MappedInput {
+    /// Whether the files are staged anywhere other than where their producer
+    /// writes them. Only a task that runs in an execution root can read a
+    /// relocated file: nothing copies it into the live workspace.
+    #[must_use]
+    pub fn relocates(&self) -> bool {
+        literal_path_prefix(&self.source) != literal_path_prefix(&self.destination)
+    }
+}
+
+/// The leading literal directories of a path or glob: everything before its
+/// first glob segment, without empty and `.` segments.
+///
+/// `dist/**/*.js` yields `dist`; `dist/app.js` yields itself; `**/*.js`
+/// yields the empty string. This is where a glob's matches are guaranteed to
+/// live, and so where they are staged when nothing relocates them: mapping
+/// `dist/**/*.js` to the literal glob string would create paths such as
+/// `dist/**/*.js/chunk.js`.
+#[must_use]
+pub fn literal_path_prefix(pattern: &str) -> String {
+    pattern
+        .split('/')
+        .take_while(|segment| !segment.contains(['*', '{', '?', '[']))
+        .filter(|segment| !segment.is_empty() && *segment != ".")
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 /// A single task input definition
@@ -37,9 +71,10 @@ pub enum Input {
     Project(ProjectReference),
     /// Same-project task output reference
     Task(TaskOutput),
-    /// Internal expansion of a same-project `from` → `to` task-output
-    /// mapping. The CUE schema never emits this shape directly, so it is
-    /// never deserialized; it is serialized so expanded tasks can be listed.
+    /// Internal expansion of a `from` → `to` task-output mapping, from the
+    /// same project or another. The CUE schema never emits this shape
+    /// directly, so it is never deserialized; it is serialized so expanded
+    /// tasks can be listed.
     #[serde(skip_deserializing)]
     Mapped(MappedInput),
 }
@@ -72,8 +107,8 @@ impl Input {
         }
     }
 
-    /// Return the producer task name for a same-project task output,
-    /// including an internally expanded mapped input.
+    /// Return the producer task name for a task output, including an
+    /// internally expanded mapped input.
     #[must_use]
     pub fn task_output_name(&self) -> Option<&str> {
         match self {

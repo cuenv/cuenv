@@ -6,6 +6,7 @@ mod dag_export;
 mod discovery;
 mod execution;
 pub mod list_builder;
+pub(crate) mod projects;
 mod remote_cache;
 mod rendering;
 mod runner;
