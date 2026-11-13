@@ -154,33 +154,14 @@ impl Compiler {
     fn derive_trigger_paths(&self, inputs: &PipelineInputs) -> Vec<String> {
         let project_path = self.options.project_path.as_deref();
         let mut paths = HashSet::new();
-        // A file reference's paths start from its anchor, in the same
-        // module-relative frame as every other path here, and take the same
-        // two shapes; a glob with no literal prefix falls back to the
-        // anchor's own directory.
-        for (anchor, path) in &inputs.anchored {
-            paths.extend(
-                trigger_paths_for_input(Some(anchor), path)
-                    .unwrap_or_else(|| vec![directory_filter(&[])]),
-            );
+        // A file reference's paths, and the inputs of another project's
+        // task, start from their directory, in the same module-relative
+        // frame as every other path here, and are read the same way.
+        for (directory, path) in &inputs.anchored {
+            paths.extend(input_filters(Some(directory), path));
         }
         for input in &inputs.patterns {
-            // `cuenv ci` selects a task with an absolute input or an invalid
-            // glob on any change, and no narrower filter covers what such an
-            // input reads.
-            let matches_anything = matches!(
-                cuenv_core::unmatchable_pattern(input),
-                Some(
-                    cuenv_core::UnmatchablePattern::Absolute
-                        | cuenv_core::UnmatchablePattern::InvalidGlob
-                )
-            );
-            match trigger_paths_for_input(project_path, input) {
-                Some(derived) if !matches_anything => paths.extend(derived),
-                _ => {
-                    paths.insert(directory_filter(&[]));
-                }
-            }
+            paths.extend(input_filters(project_path, input));
         }
 
         if inputs.whole_project || (inputs.patterns.is_empty() && inputs.anchored.is_empty()) {
@@ -614,6 +595,26 @@ fn add_project_fallback_path(project_path: Option<&str>, paths: &mut HashSet<Str
     paths.extend(
         trigger_paths_for_input(project_path, "").unwrap_or_else(|| vec![directory_filter(&[])]),
     );
+}
+
+/// The path filters under which one input, read from `directory` (relative
+/// to the module root; `None` or empty for the root), can change.
+///
+/// `cuenv ci` selects a task with an absolute input or an invalid glob on
+/// any change, whichever directory the input is read from, and no narrower
+/// filter covers what such an input reads; nor does one cover an input that
+/// leaves the repository.
+fn input_filters(directory: Option<&str>, input: &str) -> Vec<String> {
+    let matches_anything = matches!(
+        cuenv_core::unmatchable_pattern(input),
+        Some(
+            cuenv_core::UnmatchablePattern::Absolute | cuenv_core::UnmatchablePattern::InvalidGlob
+        )
+    );
+    match trigger_paths_for_input(directory, input) {
+        Some(derived) if !matches_anything => derived,
+        _ => vec![directory_filter(&[])],
+    }
 }
 
 /// The path filters one input of a project contributes; `None` when the

@@ -764,3 +764,27 @@ fn a_dependency_on_a_task_another_project_lacks_is_a_compile_error() {
         "{error}"
     );
 }
+
+#[test]
+fn an_invalid_glob_of_another_project_triggers_on_any_change() {
+    // `cuenv ci` cannot compare `src/[x` with changed files, so it selects
+    // the task that reads it on any change, whichever project declares it.
+    let mut content = Project::new("content");
+    content
+        .tasks
+        .insert("build".to_string(), task_reading(&["src/[x"], &[]));
+
+    let ir = compiled_with_a_dependency_on_content(content).unwrap();
+    let paths = ir.pipeline.trigger.expect("a trigger").paths;
+
+    assert!(paths.contains(&"**".to_string()), "{paths:?}");
+}
+
+#[test]
+fn an_invalid_glob_of_a_file_reference_triggers_on_any_change() {
+    let ir =
+        compiled_with_inputs("services/app", vec![project_files("content", &["src/[x"])]).unwrap();
+    let paths = ir.pipeline.trigger.expect("a trigger").paths;
+
+    assert!(paths.contains(&"**".to_string()), "{paths:?}");
+}

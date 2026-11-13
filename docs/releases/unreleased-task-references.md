@@ -43,7 +43,9 @@ tasks: build: {
 - `cuenv sync ci` now accepts these dependencies. Trigger paths follow them into
   the producer (its inputs and file references, or its directory when it has no
   inputs), and on through the producer's own dependencies: its own tasks, and
-  tasks of the projects it imports. A thin workflow runs them inside `cuenv ci`. A workflow that runs each
+  tasks of the projects it imports. An input `cuenv ci` cannot compare with
+  changes (an invalid glob), in the producer or in a file reference, makes
+  every change a trigger, as it selects the consumer on any change. A thin workflow runs them inside `cuenv ci`. A workflow that runs each
   task in a job of its own (expanded and release pipelines, matrix tasks) cannot
   run a task of another project: `cuenv sync ci` refuses to generate one whose
   tasks depend on one, directly or through a group that holds them, and says to
