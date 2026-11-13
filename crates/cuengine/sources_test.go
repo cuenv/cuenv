@@ -52,3 +52,31 @@ func TestInstanceSourcesLeaveOutAnEmbedThatLeavesTheModule(t *testing.T) {
 
 	assertContains(t, response, `"embeds":[]`)
 }
+
+func TestEmbedArgumentsAreSplitAndUnquotedAsCUEDoes(t *testing.T) {
+	cases := map[string][]string{
+		`glob=x/[a,b]*.json, allowEmptyGlob`: {"glob=x/[a,b]*.json", " allowEmptyGlob"},
+		`file=#"x,y.json"#, type=json`:       {`file=#"x,y.json"#`, " type=json"},
+		`glob="a,b/*.txt"`:                   {`glob="a,b/*.txt"`},
+	}
+	for body, want := range cases {
+		got := splitAttributeArguments(body)
+		if len(got) != len(want) {
+			t.Fatalf("%s: got %q, want %q", body, got, want)
+		}
+		for index := range want {
+			if got[index] != want[index] {
+				t.Fatalf("%s: got %q, want %q", body, got, want)
+			}
+		}
+	}
+	for value, want := range map[string]string{
+		`#"x.json"#`:    "x.json",
+		`"a,b/*.txt"`:   "a,b/*.txt",
+		`config/*.yaml`: "config/*.yaml",
+	} {
+		if got := unquoteAttributeValue(value); got != want {
+			t.Fatalf("%s: got %q, want %q", value, got, want)
+		}
+	}
+}

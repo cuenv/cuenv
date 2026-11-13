@@ -33,6 +33,7 @@ on:
     - clippy.toml
     - clippy.toml/**
     - contrib/**
+    - contrib/*.cue
     - contrib/codecov/*.cue
     - contrib/contributors/*.cue
     - contrib/nix/*.cue
@@ -116,6 +117,7 @@ on:
     - clippy.toml
     - clippy.toml/**
     - contrib/**
+    - contrib/*.cue
     - contrib/codecov/*.cue
     - contrib/contributors/*.cue
     - contrib/nix/*.cue

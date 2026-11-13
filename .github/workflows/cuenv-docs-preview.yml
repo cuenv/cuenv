@@ -9,6 +9,7 @@ on:
     - .github/workflows/cuenv-docs-preview.yml
     - bun.lock
     - bun.lock/**
+    - contrib/*.cue
     - contrib/codecov/*.cue
     - contrib/contributors/*.cue
     - contrib/nix/*.cue

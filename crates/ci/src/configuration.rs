@@ -21,11 +21,16 @@ const PACKAGE: &str = "cuenv";
 /// checkout, the frame changed files are reported in.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ConfigurationSources {
-    /// Directories that contribute `.cue` files to the project's instance.
+    /// Directories that contribute, or may have contributed, `.cue` files to
+    /// the project's instance: each directory one of its files is in, and
+    /// every directory above it up to the module root.
     ///
     /// Any `.cue` file of such a directory counts, not only the files the
     /// instance is built from today: a file that was deleted is no longer
-    /// among them, and a file that was added may join them.
+    /// among them, and a file that was added may join them. The directories
+    /// above count because the last file of the package there may have been
+    /// deleted, moved, given another package or excluded by a build tag, and
+    /// the directory then contributes nothing the loader can report.
     directories: BTreeSet<PathBuf>,
     /// The paths and globs `@embed` attributes read.
     embeds: Vec<String>,
@@ -69,12 +74,9 @@ impl ConfigurationSources {
     #[must_use]
     pub fn placed(module_prefix: &Path, sources: &InstanceSources) -> Self {
         Self {
-            directories: sources
-                .files
-                .iter()
-                .map(|file| {
-                    module_prefix.join(Path::new(file).parent().unwrap_or_else(|| Path::new("")))
-                })
+            directories: contributing_directories(sources)
+                .into_iter()
+                .map(|directory| module_prefix.join(directory))
                 .collect(),
             embeds: sources
                 .embeds
@@ -120,14 +122,10 @@ impl ConfigurationSources {
 /// the path at its parent.
 #[must_use]
 pub fn trigger_paths(sources: &InstanceSources) -> BTreeSet<String> {
-    let directories: BTreeSet<&Path> = sources
-        .files
-        .iter()
-        .map(|file| Path::new(file).parent().unwrap_or_else(|| Path::new("")))
-        .collect();
+    let directories = contributing_directories(sources);
 
     let mut paths = BTreeSet::from(["cue.mod/**".to_string()]);
-    for directory in directories {
+    for directory in &directories {
         let segments = segments(directory);
         let literal = literal_segments(&segments);
         if literal.len() == segments.len() {
@@ -152,6 +150,22 @@ pub fn trigger_paths(sources: &InstanceSources) -> BTreeSet<String> {
         }
     }
     paths
+}
+
+/// Each directory of the instance's files and every directory above it,
+/// relative to the module root; the module root itself is the empty path.
+fn contributing_directories(sources: &InstanceSources) -> BTreeSet<PathBuf> {
+    sources
+        .files
+        .iter()
+        .flat_map(|file| {
+            Path::new(file)
+                .ancestors()
+                .skip(1)
+                .map(Path::to_path_buf)
+                .collect::<Vec<_>>()
+        })
+        .collect()
 }
 
 fn segments(path: &Path) -> Vec<String> {
@@ -227,6 +241,18 @@ mod tests {
         assert!(!changed(&configuration, "app/src/env.cue"));
         assert!(!changed(&configuration, "app/README.md"));
         assert!(!changed(&configuration, "shared/logo.svg"));
+    }
+
+    #[test]
+    fn a_directory_above_a_contributing_one_counts_even_with_no_file_left() {
+        // `services/defaults.cue` was the only file of the package in
+        // `services/`, and it was deleted: the loader no longer reports it.
+        let configuration =
+            ConfigurationSources::placed(Path::new(""), &sources(&["services/api/env.cue"], &[]));
+
+        assert!(changed(&configuration, "services/defaults.cue"));
+        assert!(changed(&configuration, "root.cue"));
+        assert!(!changed(&configuration, "services/web/env.cue"));
     }
 
     #[test]

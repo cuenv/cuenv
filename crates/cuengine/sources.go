@@ -11,11 +11,11 @@ import (
 	"net/http"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 
 	"cuelang.org/go/cue/ast"
 	"cuelang.org/go/cue/build"
+	"cuelang.org/go/cue/literal"
 	"cuelang.org/go/cue/load"
 	"cuelang.org/go/mod/modconfig"
 )
@@ -180,36 +180,64 @@ func embedPatterns(file *ast.File) []string {
 }
 
 // splitAttributeArguments splits the body of an attribute at the commas that
-// are not inside a quoted string.
+// are not inside a quoted string, as CUE does: a string may be raw
+// (#"..."#), and commas inside brackets, braces or parentheses do not
+// separate arguments.
 func splitAttributeArguments(body string) []string {
 	var arguments []string
 	start := 0
-	quote := byte(0)
+	depth := 0
 	for index := 0; index < len(body); index++ {
-		switch char := body[index]; {
-		case quote != 0:
-			if char == '\\' {
-				index++
-			} else if char == quote {
-				quote = 0
+		switch char := body[index]; char {
+		case '#', '"', '\'':
+			index = endOfString(body, index)
+		case '[', '{', '(':
+			depth++
+		case ']', '}', ')':
+			if depth > 0 {
+				depth--
 			}
-		case char == '"' || char == '\'':
-			quote = char
-		case char == ',':
-			arguments = append(arguments, body[start:index])
-			start = index + 1
+		case ',':
+			if depth == 0 {
+				arguments = append(arguments, body[start:index])
+				start = index + 1
+			}
 		}
 	}
 	return append(arguments, body[start:])
 }
 
-// unquoteAttributeValue is the value of an attribute argument, which may be
-// written bare or as a quoted string.
-func unquoteAttributeValue(value string) string {
-	if len(value) >= 2 && value[0] == '"' {
-		if unquoted, err := strconv.Unquote(value); err == nil {
-			return unquoted
+// endOfString is the index of the last byte of the string that starts at
+// index, which may be preceded by the `#`s of a raw string; index itself when
+// no string starts there.
+func endOfString(body string, index int) int {
+	hashes := 0
+	for index+hashes < len(body) && body[index+hashes] == '#' {
+		hashes++
+	}
+	open := index + hashes
+	if open >= len(body) || (body[open] != '"' && body[open] != '\'') {
+		return index
+	}
+	quote := body[open]
+	closing := string(quote) + strings.Repeat("#", hashes)
+	for position := open + 1; position < len(body); position++ {
+		if hashes == 0 && body[position] == '\\' {
+			position++
+			continue
+		}
+		if strings.HasPrefix(body[position:], closing) {
+			return position + len(closing) - 1
 		}
 	}
-	return strings.Trim(value, `"'`)
+	return len(body) - 1
+}
+
+// unquoteAttributeValue is the value of an attribute argument, which may be
+// written bare or as a CUE string, raw strings included.
+func unquoteAttributeValue(value string) string {
+	if unquoted, err := literal.Unquote(value); err == nil {
+		return unquoted
+	}
+	return value
 }

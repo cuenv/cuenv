@@ -548,6 +548,38 @@ fn a_deleted_cue_file_of_a_project_runs_its_tasks() -> TestResult {
 }
 
 #[test]
+fn deleting_the_last_cue_file_of_a_directory_above_a_project_runs_its_tasks() -> TestResult {
+    // `services/defaults.cue` is the only file of the package in
+    // `services/`, and `services/app` inherits it. Once it is deleted, the
+    // loader no longer reports `services/` as part of the instance.
+    let directory = tempfile::tempdir()?;
+    let root = directory.path();
+    write(root, "cue.mod/module.cue", MODULE)?;
+    write(root, "services/defaults.cue", "package cuenv\n")?;
+    write(root, "services/app/env.cue", &app_reading(r#"["src/**"]"#))?;
+    write(root, "services/app/src/main.ts", "export {}\n")?;
+    test_git::init_repository(root)?;
+    let base = test_git::commit_all(root, "base")?;
+    fs::remove_file(root.join("services/defaults.cue"))?;
+    test_git::commit_all(root, "the inherited file is deleted")?;
+    let repository = Monorepo {
+        directory,
+        checkout: std::path::PathBuf::new(),
+        base,
+    };
+
+    let output = repository.ci(&["--path", "services/app"])?;
+
+    assert_success(&output);
+    assert!(
+        repository.root().join("services/app/ran").exists(),
+        "{}",
+        text(&output)
+    );
+    Ok(())
+}
+
+#[test]
 fn a_cue_change_in_a_module_nested_in_the_repository_runs_the_tasks() -> TestResult {
     // The module is `<repository>/mono`; the checkout root is its parent.
     let directory = tempfile::tempdir()?;
