@@ -339,6 +339,7 @@ async fn run_ci_projects(
             ProjectPlan::NoSuchPipeline => {}
         }
     }
+    crate::affected::note_root_namesakes();
 
     if !pipeline_defined {
         return Err(no_project_defines_pipeline(

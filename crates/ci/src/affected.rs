@@ -4,10 +4,10 @@ use cuenv_core::tasks::{FilesAnchor, Input, InputPattern, TaskNode};
 use cuenv_core::{AffectedBy, InputFrame, PatternMatch, PlaceAnchor, UnmatchablePattern};
 use cuenv_task_exec::TaskIndex;
 use cuenv_vcs::WalkHasher;
-use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::hash::BuildHasher;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock, PoisonError};
 
 /// The frame changed files are reported in: the root of the checkout.
 ///
@@ -975,9 +975,10 @@ fn warn_about_unmatchable_inputs(changed: ChangedInputs<'_>, task_name: &str, no
 /// - The pattern does select files under its project, and the root happens
 ///   to have files of the same name (`package.json`, `src/**`). The
 ///   configuration is correct and the extra run is an accident. It is never
-///   a warning: one note says the root file also matched, that this stops
-///   when the root-relative reading goes away, and how to read that file on
-///   purpose.
+///   a warning: the task is recorded, and [`note_root_namesakes`] says once
+///   per run, for every such task, that the root file also matched, that
+///   this stops when the root-relative reading goes away, and how to read
+///   that file on purpose.
 ///
 /// Changed files alone cannot tell the two apart; the files of the project
 /// can. Without a checkout to look at, nothing is said.
@@ -1015,18 +1016,73 @@ fn warn_about_root_relative_inputs(
             )
         });
     }
-    for pattern in namesakes {
-        let key = format!("{project}\0{task_name}\0namesake");
-        if first_time(key) {
-            cuenv_events::emit_stderr!(format!(
-                "note: task '{task_name}' of project {project} was also selected because a \
-                 file at the root of the repository matches its input '{pattern}' when read \
-                 from there. Inputs are relative to their project, and this extra match stops \
-                 once the root-relative reading goes away (#611); if the task does read that \
-                 file, add `schema.#ModuleFiles & {{paths: [\"{pattern}\"]}}`"
-            ));
-        }
+    if !namesakes.is_empty() {
+        let mut recorded = root_namesakes()
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        recorded
+            .entry((project, task_name.to_string()))
+            .or_default()
+            .extend(namesakes.into_iter().map(str::to_string));
     }
+}
+
+/// The tasks of this run, by project and task name, that a file at the root
+/// of the checkout selected through a namesake of their inputs, with those
+/// inputs. Gathered while every project is planned and noted once (see
+/// [`note_root_namesakes`]).
+type RootNamesakes = BTreeMap<(String, String), BTreeSet<String>>;
+
+fn root_namesakes() -> &'static Mutex<RootNamesakes> {
+    static NAMESAKES: OnceLock<Mutex<RootNamesakes>> = OnceLock::new();
+    NAMESAKES.get_or_init(Mutex::default)
+}
+
+/// Note, once for the run, the tasks a root file selected by name alone.
+///
+/// The note lists each task that affected detection selected only because a
+/// file at the root of the repository has the name of one of its inputs,
+/// with those inputs and how to read such a file on purpose. The
+/// configuration is correct, so it is never a warning, and a run that plans
+/// many projects says it once.
+///
+/// Call it once every project of the run has been planned. What it has
+/// said is forgotten, so a later call says only what was found since.
+pub fn note_root_namesakes() {
+    let namesakes = std::mem::take(
+        &mut *root_namesakes()
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner),
+    );
+    if namesakes.is_empty() {
+        return;
+    }
+    let tasks: Vec<String> = namesakes
+        .into_iter()
+        .map(|((project, task_name), patterns)| {
+            let inputs: Vec<String> = patterns
+                .iter()
+                .map(|pattern| format!("'{pattern}'"))
+                .collect();
+            let paths: Vec<String> = patterns
+                .iter()
+                .map(|pattern| format!("\"{pattern}\""))
+                .collect();
+            format!(
+                "task '{task_name}' of project {project}, input {}: to read the root file, add \
+                 `schema.#ModuleFiles & {{paths: [{}]}}`",
+                inputs.join(", "),
+                paths.join(", ")
+            )
+        })
+        .collect();
+    cuenv_events::emit_stderr!(format!(
+        "note: these tasks were also selected because a file at the root of the repository \
+         matches one of their inputs when read from there. Inputs are relative to their \
+         project, and these extra matches stop once the root-relative reading goes away \
+         (#611):\n  {}",
+        tasks.join("\n  ")
+    ));
 }
 
 /// The inputs of a node that matched a changed file only when read from

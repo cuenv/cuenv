@@ -77,8 +77,8 @@ task references ship.
   matched a changed file only when read from the repository root still selects
   its task, and the warning now gives the `schema.#ModuleFiles` rewrite. An
   input that does select files under its project and whose name also matches a
-  changed root file gets one note instead of nothing; both extra matches stop
-  in a later release.
+  changed root file is no longer silent: one note per run lists every such
+  task and its input. Both extra matches stop in a later release.
 
 At language version `v0.18.0` a base is written `schema.#Base...`; embedding
 `schema.#Base` there closes the package and rejects every child's `name`. Below

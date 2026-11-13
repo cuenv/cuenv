@@ -245,9 +245,10 @@ always has been:
   on purpose: `schema.#ModuleFiles & {paths: ["shared/**"]}`.
 - If the pattern does select files under its project and the root happens to
   have files of the same name (`package.json`, `src/**`), the task still runs.
-  The configuration is correct, so this is never a warning: one note says the
-  root file also matched, that this stops when the root-relative reading is
-  removed, and to add `schema.#ModuleFiles` if the task does read that file.
+  The configuration is correct, so this is never a warning: one note per run
+  lists every task a root file selected this way, with the input it matched,
+  says that this stops when the root-relative reading is removed, and gives the
+  `schema.#ModuleFiles` to add if a task does read that file.
 
 A change to the CUE a project is built from selects **every** task of the
 project's pipeline. A task's command, inputs and dependencies are computed from
