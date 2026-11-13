@@ -988,6 +988,21 @@ impl Rewrite<'_> {
     /// task output that cannot be read is left as written, and the task
     /// fails when a graph reaches it.
     fn task_output(&mut self, task: BindingTask<'_>, output: TaskOutput) -> Vec<Input> {
+        if output.map.is_some() && ExternalTaskName::parse(&output.task).is_some() {
+            // Nothing relocates another project's outputs: a `map` on one
+            // would be silently ignored.
+            let problem = format!(
+                "maps the outputs of '{}', a task of another project: they are read where that \
+                 task builds them; `map` applies to tasks of this project only",
+                output.task
+            );
+            self.files
+                .problems
+                .entry(task.name.to_string())
+                .or_default()
+                .push(for_task(task.name, task.source, &problem));
+            return vec![Input::Task(output)];
+        }
         match self.outputs.get(&output.task) {
             Some(OutputFiles::Files(files)) => files.clone(),
             Some(OutputFiles::Problem(problem)) => {

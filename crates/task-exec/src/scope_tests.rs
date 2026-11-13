@@ -237,6 +237,33 @@ fn output_files_of_another_project_are_staged_where_they_are_written() {
 }
 
 #[test]
+fn a_map_on_the_outputs_of_another_project_fails_the_reader() {
+    let module = Module::new()
+        .project(
+            "app",
+            json!({
+                "name": "app",
+                "tasks": {"build": {"command": "make", "inputs": [
+                    {"task": "#content:articles", "map": [{"from": "out/one.md", "to": "vendor/one.md"}]},
+                ]}},
+            }),
+        )
+        .project(
+            "content",
+            json!({"name": "content", "tasks": {"articles": {"command": "render", "outputs": ["out/one.md"]}}}),
+        );
+    let mut scope = module.scope("app");
+
+    scope.reach(["build"], &module);
+
+    let error = scope.graph(["build"]).err().unwrap().to_string();
+    assert!(
+        error.contains("`map` applies to tasks of this project only"),
+        "{error}"
+    );
+}
+
+#[test]
 fn output_files_of_a_task_that_declares_no_outputs_fail_the_reader() {
     let module = Module::new()
         .project(
