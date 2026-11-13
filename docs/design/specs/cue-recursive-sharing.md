@@ -36,6 +36,12 @@ exponential regression; it is never checked in as a fixture, since plain
 three projects (`tests/schema-compat/testdata/modules/task-references`) under
 every supported CUE release.
 
+The fork is now pinned at
+[`badfad1`](https://github.com/rawkode/cue/commit/badfad1109de70ce104a0637d9d853cf7ead536d),
+the next commit on the same branch, which evaluates the operands that
+`Value.Expr` returns where the value settled; see
+[Operands of a superseded disjunct](#operands-of-a-superseded-disjunct).
+
 Plain `cue export` slows with what stands behind an imported task, not only
 with long chains. Take a project that depends on another project's task, where
 that task has one dependency of its own. Stock CUE v0.18.0-rc.1 exports it in
@@ -106,6 +112,80 @@ closed. A project that declared `ci: pipelines` before `tasks` copied every
 referenced task. The fork treats an unprocessed target under a recursively
 closed parent as closed for this guard, which is the flag that initialization
 would set.
+
+## Operands of a superseded disjunct
+
+A project with a matrix entry over a task that is reached through a `let`, and
+that has a dependency, ran out of memory under cuenv 0.74.0 and 0.75.1, while
+stock `cue export` (v0.17.1) of it takes about 1.2 seconds:
+
+```cue
+let _tasks = tasks
+ci: pipelines: default: tasks: [{type: "matrix", task: _tasks.build, matrix: arch: ["x"]}]
+tasks: a: {command: "true"}
+tasks: build: {command: "true", dependsOn: [tasks.a]}
+```
+
+A task typed with the union, `tasks: build: schema.#TaskNode & {...}`, does
+the same without a pipeline. Evaluation was not at fault: the fork's `cue
+export` takes 0.2 seconds. The bridge records the reference of every field
+it exports (`referenceWalk` in `crates/cuengine/metadata.go`), and for a field
+that neither the instance's source nor `Value.ReferencePath` settles, it splits
+the field's conjuncts with `Value.Expr`, which evaluates each operand again.
+For `stdout` of the matrix task, `#TaskOutputRef & {cuenvTask: _name, ...}`,
+that evaluation did not end.
+
+Both declarations give the task two disjunctions: `#TaskNode` from
+`#MatrixTask.task` (or from the declaration itself), and the pattern of
+`tasks`, which a reference through a `let` brings along with the value. A
+disjunction clones the node it is defined on, and each further disjunction
+clones the clones of the one before. A field added to the first clone keeps
+that clone as the environment of its conjuncts, and evaluation leaves the
+clone unfinished once it has cloned it again. `Value.Expr` evaluated the
+operands of `stdout` in that clone, so the reference to `_name` resumed it. The
+clone's disjunctions were processed again, then those of each task its
+`dependsOn` reaches, without the sharing that evaluation used. The work grew by
+a factor of about 3.5 per task of the chain.
+
+Stock CUE has the same flaw, on v0.16.1 and on upstream master
+(`e1a8dc4`, 2026-11-12). The resumed clone also lacks the conjuncts that later disjunctions
+contribute, so `Value.Expr` returns wrong operands:
+
+```cue
+#A: {kind: "a", _n: string | *"default", out: {name: string} & {name: _n}}
+#B: {kind: "b"}
+x: #A | #B
+x: {_n: "set", kind: "a"} | {kind: "q"}
+```
+
+`x.out.name` is `"set"`, but the second operand that `Value.Expr` returns for
+`x.out` has `name: _`.
+
+The fork's
+[`badfad1`](https://github.com/rawkode/cue/commit/badfad1109de70ce104a0637d9d853cf7ead536d)
+adds `adt.SettledEnvironment`. It replaces each vertex of an environment that
+is not finalized and lies in a superseded disjunct with the vertex that
+evaluation settled on at the same position. That vertex is the arc with the same
+label of the vertex settled on for its parent, followed through the disjunct
+it resolved to. A vertex without such an arc, or whose replacement is not
+finalized, is kept. `Value.Expr` evaluates its operands in that environment, and
+the operand above has `name: "set"`.
+
+| Measurement                                                                         | Before                       | After                       |
+| ----------------------------------------------------------------------------------- | ---------------------------- | --------------------------- |
+| `cuenv task --path app` on the matrix project, `ulimit -v 8000000`                  | out of memory after 3.6 s    | 0.22 s, 168 MB              |
+| `cuenv task build --dry-run`, matrix over a chain of 8 tasks                        | out of memory after 4 s      | 0.25 s, 199 MB              |
+| `Value.Expr` on the matrix task's `out`, schema-free chain of depth D (fork test)   | 206 unifications at D = 2    | 2 unifications, D = 2 to 32 |
+
+`TestSettledEnvironmentComplexity` (`internal/core/adt/settled_env_test.go`)
+and `TestExprOperandsOfSupersededDisjunct` (`cue/types_test.go`) in the fork
+fail without the change. In cuenv,
+`crates/cuenv/tests/superseded_disjunct_evaluation.rs` plans a matrix over a
+task reached through a `let` and a task typed `schema.#TaskNode &`, each with a
+chain of eight dependencies, and stops a run that exceeds 30 seconds.
+Apart from these tests, the fork's suite is unchanged: no golden file
+changes. `internal/vcs` and `exp_gengotypes` fail in a scratch checkout with or
+without the change, as they depend on the VCS layout around the checkout.
 
 ## Measurements
 

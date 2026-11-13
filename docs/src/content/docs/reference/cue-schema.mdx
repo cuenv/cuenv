@@ -325,6 +325,11 @@ regardless of declaration order. Since 0.75.0 the fork (commit `806b303`) also
 shares a typed reference into an imported package, as in
 `dependsOn: [content.tasks.articles]`, so a chain of projects whose tasks
 depend on the tasks of the projects they import evaluates in linear time too.
+The fork at commit `badfad1` also reads the references of a task whose fields
+CUE evaluated in a disjunct it later superseded, such as a matrix entry over a
+task reached through a `let` (`task: _tasks.build`) or a task typed
+`schema.#TaskNode & {...}`, in bounded time; with a dependency, these ran out of
+memory before.
 
 References to sequences (`dependsOn: [release]` where `release` is a list of
 tasks) keep working; cuenv resolves the name from the reference path.
