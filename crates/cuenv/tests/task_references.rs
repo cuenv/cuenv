@@ -428,6 +428,72 @@ fn a_namesake_project_of_another_module_is_never_this_project() -> TestResult {
     Ok(())
 }
 
+/// A namesake of `app` that is not a project of this module: once vendored
+/// under `cue.mod/pkg`, once as a nested CUE module.
+const FOREIGN_APP: &str = r#"package cuenv
+
+import "github.com/cuenv/cuenv/schema"
+
+schema.#Project
+name: "app"
+tasks: build: {command: "sh", args: ["-c", "printf foreign > foreign.txt"]}
+"#;
+
+#[test]
+fn ci_discovers_no_project_in_a_vendored_package_or_a_nested_module() -> TestResult {
+    let repository = Repository::new(
+        APP,
+        &[
+            ("content/articles/one.md", "two\n"),
+            ("cue.mod/pkg/example.com/other/web/env.cue", FOREIGN_APP),
+            (
+                "tools/cue.mod/module.cue",
+                "module: \"example.com/tools\"\nlanguage: version: \"v0.18.0\"\n",
+            ),
+            ("tools/env.cue", FOREIGN_APP),
+        ],
+    )?;
+
+    let output = repository.ci(&["--path", "app"])?;
+
+    // Neither namesake is evaluated as a project of this module, so neither
+    // fails discovery nor duplicates `app`'s name.
+    assert_success(&output);
+    assert_eq!(repository.read("app/site.txt")?, "two\n");
+    assert!(!repository.exists("cue.mod/pkg/example.com/other/web/foreign.txt"));
+    assert!(!repository.exists("tools/foreign.txt"));
+    Ok(())
+}
+
+#[test]
+fn ci_refuses_a_task_of_a_vendored_project_as_task_does() -> TestResult {
+    let web = WEB.replace(
+        "tasks: {\n",
+        "let _tasks = tasks\nci: providers: [\"github\"]\nci: pipelines: default: {tasks: \
+         [_tasks.site], when: branch: \"main\"}\ntasks: {\n",
+    );
+    let repository = Repository::new(
+        APP,
+        &[
+            ("web/env.cue", web.as_str()),
+            ("cue.mod/pkg/example.com/other/web/env.cue", NAMESAKE),
+        ],
+    )?;
+
+    let output = repository.ci(&["--path", "web"])?;
+
+    // Discovery passes over the vendored package; the dependency on its
+    // task then fails binding, as under `cuenv task`.
+    assert_failure(&output);
+    let printed = text(&output);
+    assert!(
+        printed.contains("references reach projects of the same CUE module only"),
+        "{printed}"
+    );
+    assert!(!repository.exists("web/local.txt"));
+    Ok(())
+}
+
 #[test]
 fn an_image_cannot_read_the_outputs_of_a_task() -> TestResult {
     let app = APP.replace(

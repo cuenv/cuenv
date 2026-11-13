@@ -13,6 +13,8 @@ cuenv uses CUE files for configuration, following a hierarchical structure that 
 
 cuenv projects should use `package cuenv`. Every `.cue` file in that package participates automatically—there is no fixed file ordering or special filename. Other CUE packages may live beside cuenv configuration for unrelated tooling, but cuenv workspace discovery ignores them and only evaluates matching `env.cue` entry points.
 
+Workspace discovery visits the directories CUE's `./...` pattern loads. It leaves out the module's `cue.mod` directory (including packages vendored under `cue.mod/pkg`), directories whose name starts with `.` or `_`, `testdata` directories, and nested CUE modules (any directory with its own `cue.mod`). An `env.cue` in one of those is never a project of your module: import a vendored package to use its values, and run cuenv inside a nested module to work with its projects.
+
 Common organization patterns include:
 
 - Keeping an `env.cue` entry point that imports `schema.#Project`
