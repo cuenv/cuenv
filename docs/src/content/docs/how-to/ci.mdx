@@ -216,7 +216,10 @@ on every change. A dependency's file references keep their own anchors.
 Before any task is selected — for an affected run, `--all`, and a run with
 nothing to compare alike — `cuenv ci` binds every file reference the pipeline
 reaches, through dependencies on other projects too, and checks that each path
-matches at least one file. It also raises the problems recorded against the
+matches at least one file. A reference's project is bound among the packages
+the project that writes it imports, as `cuenv task` binds it; one that is not
+imported, is imported from a child directory, or lies in another package or
+module fails the pipeline. It also raises the problems recorded against the
 nodes the pipeline reaches (another project's task in `dependsOn` or in the
 pipeline's `tasks`, a reference without `paths`). Any of them fails that
 pipeline, naming the project, the pipeline and the task; a problem in a node the

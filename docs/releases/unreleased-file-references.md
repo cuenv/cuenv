@@ -61,9 +61,17 @@ task references ship.
 - Never spread or iterate a reference's `paths`: that copies bare strings,
   which are paths of the consuming project. `["src/**", ...content.#Files &
 {paths: [...]}]` is valid CUE and silently drops the reference.
-- The CUE bridge evaluates an imported project once per importer. Importing a
-  very large project only to read its files costs evaluation time in every
-  command that evaluates the importer.
+- The project a reference names is found among what the reading project
+  imports, directly or through another package, and nowhere else. Nothing else
+  in the module is evaluated to find it, so a directory that does not evaluate
+  no longer fails a task that does not use it. A reference fails its task when
+  that project is not imported, is imported from a child directory that only
+  inherits its `name` (import the project's own directory), declares another
+  CUE package than `cuenv`, or comes from another CUE module.
+- The CUE bridge evaluates an imported project once per importer, and binding a
+  reference builds each imported package once more to read its `name`.
+  Importing a very large project only to read its files costs evaluation time
+  in every command that evaluates the importer.
 - Root-relative inputs: an input that selects nothing under its project and
   matched a changed file only when read from the repository root still selects
   its task, and the warning now gives the `schema.#ModuleFiles` rewrite. An
@@ -109,3 +117,6 @@ error of its task only.
 
 `cuenv ci` names the failing task without its file and line: its evaluation
 does not collect source positions.
+
+Cuetty's task list reads the new `cuenvRef` stamp on a task group as part of
+the group, not as a task, and lists the tasks of projects on the new schema.

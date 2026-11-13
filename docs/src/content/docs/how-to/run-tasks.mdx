@@ -362,6 +362,23 @@ staged where it lies under the directory sandbox, compared with changed files
 by `cuenv ci`, and turned into workflow path filters by `cuenv sync ci`, exactly
 as the task's own paths are.
 
+The project name a reference carries is bound among the packages the reading
+project imports, directly or through another package, and nowhere else: to the
+directory that declares that `name`. Nothing else in the module is evaluated to
+bind it, so a directory that does not evaluate never fails a task it has
+nothing to do with, and an error elsewhere in the imported project does not
+stop its name from being read. A reference fails its task, saying what to do,
+when:
+
+- the project is not imported (a reference written by hand);
+- it is imported from a directory that only inherits its `name` from the
+  directory above (`content/drafts` instead of `content`): import the
+  project's own directory;
+- the imported directory declares another CUE package than `cuenv`;
+- it comes from another CUE module: references name files of the same module
+  only;
+- two directories declare the name.
+
 **Every path must match at least one file.** cuenv checks it whenever it builds
 a graph that reaches the task (`cuenv task`, `cuenv ci`, `cuenv up`) and when
 `cuenv ci` selects affected tasks, including `--all` and runs with nothing to
@@ -405,8 +422,9 @@ Things to know:
   read each other's files cannot both import the other: one side uses
   `schema.#ModuleFiles` with the module-relative path. References name files of
   the same CUE module only, and nothing above the module root.
-- The CUE bridge evaluates an imported project once per importer, so importing
-  a large project only to read its files costs evaluation time.
+- The CUE bridge evaluates an imported project once per importer, and binding
+  a reference builds each imported package once more to read its `name`, so
+  importing a large project only to read its files costs evaluation time.
 
 The schema also stamps every task, group, service and image with the project it
 belongs to (a reserved `cuenvRef` field), and every output reference with its
