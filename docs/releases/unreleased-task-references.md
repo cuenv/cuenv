@@ -46,7 +46,11 @@ tasks: build: {
   tasks of the projects it imports. A thin workflow runs them inside `cuenv ci`. A workflow that runs each
   task in a job of its own (expanded and release pipelines, matrix tasks) cannot
   run a task of another project: `cuenv sync ci` refuses to generate one whose
-  tasks depend on one, and says to use `mode: "thin"`. Regenerate workflows.
+  tasks depend on one, directly or through a group that holds them, and says to
+  use `mode: "thin"`. Regenerate workflows.
+- In such a workflow a group's `dependsOn` now reaches every task beneath it: a
+  member's job waits for the group's dependencies of the same project, which
+  were left out of the workflow before.
 - A task whose only inputs are other tasks' `outputFiles` is affected, and
   triggered, through those tasks, instead of on every change.
 - Two projects that depend on each other's tasks are an import cycle: move what

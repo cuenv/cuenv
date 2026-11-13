@@ -494,6 +494,58 @@ fn a_workflow_of_a_job_per_task_cannot_run_a_task_of_another_project() -> TestRe
     Ok(())
 }
 
+#[test]
+fn a_workflow_of_a_job_per_task_cannot_run_a_groups_dependency_on_another_project() -> TestResult {
+    let app = APP
+        .replace(
+            "tasks: [_tasks.site], when: branch: \"main\"}",
+            "tasks: [_tasks.checks], when: branch: \"main\", mode: \"expanded\"}",
+        )
+        .replace(
+            "tasks: {\n",
+            "tasks: {\n\tchecks: {\n\t\ttype: \"group\"\n\t\tdependsOn: [content.tasks.build, \
+             build]\n\t\tunit: {command: \"true\", inputs: [\"src/**\"]}\n\t}\n",
+        );
+    let repository = Repository::new(&app, &[])?;
+
+    let output = repository.sync_ci()?;
+
+    assert_failure(&output);
+    let printed = text(&output);
+    assert!(
+        printed
+            .contains("task 'checks.unit' depends on '#content:build', a task of another project"),
+        "{printed}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_job_of_a_group_member_waits_for_the_groups_dependencies() -> TestResult {
+    let app = APP
+        .replace(
+            "tasks: [_tasks.site], when: branch: \"main\"}",
+            "tasks: [_tasks.checks], when: branch: \"main\", mode: \"expanded\"}",
+        )
+        .replace(
+            "tasks: {\n",
+            "tasks: {\n\tchecks: {\n\t\ttype: \"group\"\n\t\tdependsOn: [build]\n\t\tunit: \
+             {command: \"true\", inputs: [\"src/**\"]}\n\t}\n",
+        );
+    let repository = Repository::new(&app, &[])?;
+
+    let output = repository.sync_ci()?;
+
+    assert_success(&output);
+    let workflow: serde_yaml::Value =
+        serde_yaml::from_str(&repository.read(".github/workflows/app-default.yml")?)?;
+    let jobs = &workflow["jobs"];
+    assert!(!jobs["build"].is_null(), "a job runs `build`: {jobs:?}");
+    let needs = serde_yaml::to_string(&jobs["checks-unit"]["needs"])?;
+    assert!(needs.contains("build"), "{needs}");
+    Ok(())
+}
+
 /// A chain of `depth` projects whose two tasks each depend on both tasks of
 /// the next project through its import, and read one of its outputs.
 fn chain_of_projects(depth: usize) -> TestResult<TempDir> {

@@ -224,3 +224,56 @@ fn test_expand_dependency_sibling_resolution() {
         "Sibling reference 'build' should resolve to 'docs.build'"
     );
 }
+
+#[test]
+fn a_groups_dependencies_are_every_childs() {
+    // `checks` depends on `lint` of this project and on `build` of
+    // `content`; `checks.nested.unit` lies two groups below it.
+    let leaf = |command: &str| {
+        TaskNode::Task(Box::new(Task {
+            command: command.to_string(),
+            ..Default::default()
+        }))
+    };
+    let group = |children: Vec<(&str, TaskNode)>, depends_on: Vec<TaskDependency>| {
+        TaskNode::Group(TaskGroup {
+            type_: "group".to_string(),
+            children: children
+                .into_iter()
+                .map(|(name, node)| (name.to_string(), node))
+                .collect(),
+            depends_on,
+            description: None,
+            max_concurrency: None,
+        })
+    };
+    let mut project = Project::new("app");
+    project.tasks.insert("lint".to_string(), leaf("lint"));
+    project.tasks.insert(
+        "checks".to_string(),
+        group(
+            vec![
+                ("types", leaf("tsc")),
+                ("nested", group(vec![("unit", leaf("test"))], Vec::new())),
+            ],
+            vec![
+                TaskDependency::from_name("lint"),
+                TaskDependency::from_name("#content:build"),
+            ],
+        ),
+    );
+
+    let ir = Compiler::new(project).compile().unwrap();
+
+    for id in ["checks.types", "checks.nested.unit"] {
+        let task = ir
+            .tasks
+            .iter()
+            .find(|task| task.id == id)
+            .unwrap_or_else(|| panic!("{id} is compiled"));
+        assert_eq!(task.depends_on, ["lint"], "{id}");
+        assert_eq!(task.external_dependencies, ["#content:build"], "{id}");
+    }
+    let lint = ir.tasks.iter().find(|task| task.id == "lint").unwrap();
+    assert!(lint.depends_on.is_empty() && lint.external_dependencies.is_empty());
+}
