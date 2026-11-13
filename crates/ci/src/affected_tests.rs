@@ -1847,16 +1847,46 @@ fn matched_inputs_name_the_file_reference_that_matched() {
     assert_eq!(matched, [r#"docs.#Files & {paths: ["api/**"]}"#]);
 }
 
+/// Binds the projects of [`content_reading_files`] as if every project
+/// imported every other, and records which project wrote each reference.
+struct ImportingEverything<'anchors> {
+    anchors: super::CheckoutAnchors<'anchors, std::hash::RandomState>,
+    owners: std::sync::Mutex<Vec<PathBuf>>,
+}
+
+impl super::BindFiles for ImportingEverything<'_> {
+    fn bind(
+        &self,
+        project_root: &Path,
+        anchor: &cuenv_core::tasks::FilesAnchor,
+    ) -> Result<PathBuf, String> {
+        if let Ok(mut owners) = self.owners.lock() {
+            owners.push(project_root.to_path_buf());
+        }
+        cuenv_core::PlaceAnchor::place(&self.anchors, anchor)
+            .ok_or_else(|| format!("{anchor} is not imported here"))
+    }
+}
+
 /// The problems a pipeline of `app`'s `build` reaches, against a checkout
 /// holding `files`.
 fn problems_reached(project: &Project, files: &[&str]) -> Vec<String> {
+    problems_and_owners(project, files).0
+}
+
+/// The problems a pipeline of `app`'s `build` reaches, and the directory of
+/// the project each reference it bound belongs to.
+fn problems_and_owners(project: &Project, files: &[&str]) -> (Vec<String>, Vec<PathBuf>) {
     let checkout = checkout_with(files);
     let all_projects = content_reading_files();
-    let anchors = super::CheckoutAnchors {
-        projects: &all_projects,
-        module_root: Some(Path::new("")),
+    let binder = ImportingEverything {
+        anchors: super::CheckoutAnchors {
+            projects: &all_projects,
+            module_root: Some(Path::new("")),
+        },
+        owners: std::sync::Mutex::default(),
     };
-    super::reached_problems(
+    let problems = super::reached_problems(
         &super::PipelineReach {
             project,
             project_root: Path::new("app"),
@@ -1864,9 +1894,11 @@ fn problems_reached(project: &Project, files: &[&str]) -> Vec<String> {
             pipeline_tasks: &["build".to_string()],
             all_projects: &all_projects,
         },
-        &anchors,
+        &binder,
         &mut cuenv_core::tasks::file_references::ReferenceChecks::new(checkout.path()),
-    )
+    );
+    let owners = binder.owners.into_inner().unwrap_or_default();
+    (problems, owners)
 }
 
 #[test]
@@ -1898,12 +1930,14 @@ fn a_producers_references_are_checked_where_a_pipeline_reaches_them() {
     );
     let project = make_project(vec![("build", consumer)]);
 
-    let problems = problems_reached(&project, &["docs/api/x.md"]);
+    let (problems, owners) = problems_and_owners(&project, &["docs/api/x.md"]);
     assert_eq!(problems.len(), 1, "{problems:?}");
     assert!(
         problems[0].contains("`bun.lock` matches nothing in the module root"),
         "{problems:?}"
     );
+    // The producer's references are bound among what the producer imports.
+    assert_eq!(owners, [PathBuf::from("content"), PathBuf::from("content")]);
 }
 
 #[test]
@@ -1936,7 +1970,7 @@ fn a_reference_to_an_unknown_project_is_a_problem() {
     let problems = problems_reached(&project, &[]);
     assert_eq!(problems.len(), 1, "{problems:?}");
     assert!(
-        problems[0].contains("no project of this module is named 'elsewhere'"),
+        problems[0].contains("project 'elsewhere' is not imported here"),
         "{problems:?}"
     );
 }

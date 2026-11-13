@@ -328,6 +328,7 @@ async fn run_ci_projects(
             project_map: &discovered.project_map,
             frame: &discovered.frame,
             module_prefix: module_prefix.as_deref(),
+            projects: &discovered.all_projects,
             changed_configuration: &changed_configuration,
         })? {
             ProjectPlan::Run(plan) => {
@@ -488,6 +489,9 @@ struct ProjectPipelinePlanRequest<'request> {
     /// The root of the CUE module relative to the root of the checkout,
     /// where `schema.#ModuleFiles` paths start; `None` outside it.
     module_prefix: Option<&'request Path>,
+    /// Every project of the module, which binds file references through
+    /// what each project imports.
+    projects: &'request CiProjects,
     /// The checkout-relative directories of the projects whose CUE
     /// configuration a changed file can change.
     changed_configuration: &'request HashSet<PathBuf>,
@@ -554,6 +558,7 @@ fn plan_project_pipeline(request: ProjectPipelinePlanRequest<'_>) -> Result<Proj
         project_map,
         frame,
         module_prefix,
+        projects,
         changed_configuration,
     } = request;
 
@@ -623,7 +628,7 @@ fn plan_project_pipeline(request: ProjectPipelinePlanRequest<'_>) -> Result<Proj
             pipeline_tasks: &pipeline_task_names,
             all_projects: project_map,
         },
-        &anchors,
+        projects,
         &mut ReferenceChecks::new(frame.root()),
     );
     if !problems.is_empty() {
@@ -907,6 +912,12 @@ mod tests {
             project_map: &HashMap::new(),
             frame: &CheckoutFrame::at(Path::new("/workspace")),
             module_prefix: Some(Path::new("")),
+            projects: &CiProjects::new(CiModule {
+                module_root: Path::new("/workspace"),
+                checkout_root: Path::new("/workspace"),
+                projects: &[],
+                named: &HashMap::new(),
+            }),
             changed_configuration: &HashSet::new(),
         })
     }
@@ -930,6 +941,12 @@ mod tests {
             project_map: &HashMap::new(),
             frame: &CheckoutFrame::at(Path::new("/workspace")),
             module_prefix: Some(Path::new("")),
+            projects: &CiProjects::new(CiModule {
+                module_root: Path::new("/workspace"),
+                checkout_root: Path::new("/workspace"),
+                projects: &[],
+                named: &HashMap::new(),
+            }),
             changed_configuration: &HashSet::new(),
         })
     }

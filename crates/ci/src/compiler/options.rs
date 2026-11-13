@@ -2,7 +2,8 @@
 
 use crate::ir::{CachePolicy, PurityMode};
 use cuenv_core::ci::Pipeline;
-use std::collections::{BTreeMap, HashMap};
+use cuenv_core::module::ImportedProjects;
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 /// Compiler configuration options
@@ -58,40 +59,26 @@ pub struct CompilerOptions {
     /// be `"projects/rawkode.academy/api"`.
     pub project_path: Option<String>,
 
-    /// The directory each project name of the module means, relative to the
-    /// module root (empty for the root): where the paths of a
-    /// `<pkg>.#Files` reference start. See [`file_anchors`].
-    pub file_anchors: BTreeMap<String, String>,
+    /// Where the packages the project imports are read from, which is where
+    /// the project name of a `<pkg>.#Files` reference is bound. `None` reads
+    /// them from the project's instance at `module_root` and
+    /// `project_path`, when a module root is set.
+    pub file_anchors: Option<FileAnchors>,
 }
 
-/// The directory each project name of a module means, as
-/// [`CompilerOptions::file_anchors`] holds it: the shallowest directory
-/// that carries the name, relative to the module root.
-#[must_use]
-pub fn file_anchors<'project>(
-    projects: impl IntoIterator<Item = cuenv_core::module::NamedProject<'project>>,
-) -> BTreeMap<String, String> {
-    cuenv_core::module::declaring_directories(projects)
-        .into_iter()
-        .map(|(name, path)| {
-            let path = path.to_string_lossy().replace('\\', "/");
-            let path = if path == "." { String::new() } else { path };
-            (name.to_string(), path)
-        })
-        .collect()
-}
-
-/// [`file_anchors`] for every project of an evaluated module.
-#[must_use]
-pub fn module_file_anchors(module: &cuenv_core::ModuleEvaluation) -> BTreeMap<String, String> {
-    file_anchors(module.projects().filter_map(|instance| {
-        instance
-            .project_name()
-            .map(|name| cuenv_core::module::NamedProject {
-                path: instance.path.as_path(),
-                name,
-            })
-    }))
+/// Where a compilation reads the packages its project imports.
+#[derive(Debug, Clone)]
+pub enum FileAnchors {
+    /// Read from the project's CUE instance in `directory`, of the module
+    /// at `module_root`, the first time a file reference needs them.
+    Instance {
+        /// The root of the CUE module.
+        module_root: PathBuf,
+        /// The project's directory.
+        directory: PathBuf,
+    },
+    /// Known already.
+    Known(ImportedProjects),
 }
 
 impl std::fmt::Debug for CompilerOptions {

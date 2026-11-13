@@ -16,6 +16,10 @@ struct Module {
     lists_projects: bool,
     lookups: Cell<usize>,
     evaluations: Cell<usize>,
+    /// How often a file reference's project was bound.
+    files_lookups: Cell<usize>,
+    /// Names a file reference cannot bind, and why.
+    unbindable: BTreeMap<String, String>,
 }
 
 impl Module {
@@ -30,6 +34,8 @@ impl Module {
             lists_projects: true,
             lookups: Cell::new(0),
             evaluations: Cell::new(0),
+            files_lookups: Cell::new(0),
+            unbindable: BTreeMap::new(),
         }
     }
 
@@ -77,6 +83,23 @@ impl ProjectSource for Module {
             .iter()
             .find(|(_, project)| project.name == name)
             .map(|(directory, _)| self.directory(directory)))
+    }
+
+    fn files_anchor(&self, origin: &Path, name: &str) -> std::result::Result<PathBuf, String> {
+        // Every project imports every other here, so the name binds to the
+        // project's own directory, unless the origin "imports" it from a
+        // child directory that only inherits the name.
+        self.files_lookups.set(self.files_lookups.get() + 1);
+        if let Some(problem) = self.unbindable.get(name) {
+            return Err(problem.clone());
+        }
+        self.projects
+            .iter()
+            .find(|(directory, project)| {
+                project.name == name && self.directory(directory).as_path() != origin
+            })
+            .map(|(directory, _)| self.directory(directory))
+            .ok_or_else(|| format!("project '{name}' is not imported here"))
     }
 
     fn name_of(&self, root: &Path) -> Option<String> {
@@ -845,6 +868,11 @@ fn a_file_reference_is_bound_to_its_anchor_and_loads_no_project() {
         "no project is loaded for its files"
     );
     assert_eq!(
+        (module.lookups.get(), module.files_lookups.get()),
+        (0, 1),
+        "the name is bound among the imports, never by listing the module"
+    );
+    assert_eq!(
         task(&scope, "build").inputs,
         vec![
             Input::Path("src/**".to_string()),
@@ -869,7 +897,7 @@ fn a_file_reference_that_does_not_bind_fails_only_the_graphs_that_reach_it() {
     for (reference, expected) in [
         (
             json!({"cuenvFiles": "project", "cuenvProject": "missing", "paths": ["a/**"]}),
-            "no project of this module is named 'missing'",
+            "project 'missing' is not imported here",
         ),
         (
             json!({"cuenvFiles": "project", "cuenvProject": "content", "paths": ["posts/**"]}),

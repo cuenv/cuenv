@@ -9,6 +9,7 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use cuenv_ci::imports::{FilesOwner, ImportsByDirectory};
 use cuenv_core::Result;
 use cuenv_core::module::{ModuleEvaluation, NamedProject, declaring_directories};
 use cuenv_core::tasks::output_refs::OutputRefDep;
@@ -40,18 +41,19 @@ pub struct ModuleProjects<'source> {
     /// The names of each module a reference was made in, by module root,
     /// listed the first time one of its names is looked up.
     directories: RefCell<BTreeMap<PathBuf, NamedDirectories>>,
+    /// What the project in each directory imports, read the first time a
+    /// file reference of it is bound.
+    imports: ImportsByDirectory,
 }
 
 impl<'source> ModuleProjects<'source> {
     /// The projects reachable through `executor`'s evaluations.
-    pub const fn new(
-        executor: &'source CommandExecutor,
-        contributors: WorkspaceContributors,
-    ) -> Self {
+    pub fn new(executor: &'source CommandExecutor, contributors: WorkspaceContributors) -> Self {
         Self {
             executor,
             contributors,
             directories: RefCell::new(BTreeMap::new()),
+            imports: ImportsByDirectory::default(),
         }
     }
 
@@ -81,6 +83,24 @@ impl ProjectSource for ModuleProjects<'_> {
                 "the projects of this module could not be listed: {reason}"
             ))),
         }
+    }
+
+    fn files_anchor(&self, origin: &Path, name: &str) -> std::result::Result<PathBuf, String> {
+        // Bound among what the project imports: nothing else is evaluated,
+        // so a directory of the module that does not evaluate cannot fail
+        // the task.
+        let module_root =
+            env_file::find_cue_module_root(origin).unwrap_or_else(|| origin.to_path_buf());
+        self.imports
+            .bind(
+                FilesOwner {
+                    module_root: &module_root,
+                    directory: origin,
+                    package: self.executor.package(),
+                },
+                name,
+            )
+            .map(|directory| module_root.join(directory))
     }
 
     fn name_of(&self, root: &Path) -> Option<String> {

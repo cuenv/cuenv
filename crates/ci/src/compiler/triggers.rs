@@ -4,7 +4,7 @@ use super::{Compiler, CompilerError};
 use crate::configuration::{directory_filter, is_special_in_github_filter};
 use crate::ir::{ManualTriggerConfig, TriggerCondition, WorkflowDispatchInputDef};
 use cuenv_core::ci::{ManualTrigger, Pipeline};
-use cuenv_core::tasks::file_references::{for_task, path_problem, unknown_project};
+use cuenv_core::tasks::file_references::{for_task, path_problem};
 use cuenv_core::tasks::{FilesAnchor, InputPattern, TaskNode, anchored_path_problem};
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Component, Path, PathBuf};
@@ -369,12 +369,12 @@ impl Compiler {
         }
         match anchor {
             FilesAnchor::Module => Ok(String::new()),
+            // Bound among what the project imports, as everywhere else; no
+            // working tree is read.
             FilesAnchor::Project(name) => self
-                .options
-                .file_anchors
-                .get(name)
-                .cloned()
-                .ok_or_else(|| unknown_project(name)),
+                .imported_projects()?
+                .bind(name)
+                .map(|directory| directory.to_string_lossy().replace('\\', "/")),
         }
     }
 }

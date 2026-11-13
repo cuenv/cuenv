@@ -22,6 +22,8 @@ pub mod executor;
 pub mod flake;
 /// Prune unused local cache and Nix store data.
 pub mod gc;
+/// Read the packages a project imports, where file references are bound.
+pub mod imports;
 /// Pipeline intermediate representation and validation.
 pub mod ir;
 /// Pipeline phase types shared with emitters.

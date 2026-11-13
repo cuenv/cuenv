@@ -300,14 +300,34 @@ fn compiled_with_inputs(
         pipeline_name: Some("default".to_string()),
         pipeline: Some(pipeline),
         project_path: Some(project_path.to_string()),
-        file_anchors: BTreeMap::from([
-            ("content".to_string(), "content".to_string()),
-            ("site".to_string(), "site+web".to_string()),
-            ("root".to_string(), String::new()),
-        ]),
+        file_anchors: Some(crate::compiler::FileAnchors::Known(imported(&[
+            ("content", "content"),
+            ("site", "site+web"),
+            ("root", "."),
+        ]))),
         ..Default::default()
     };
     Compiler::with_options(project, options).compile()
+}
+
+/// What a project imports: each `(name, directory)` a project of this module
+/// that declares its name in its own directory.
+fn imported(projects: &[(&str, &str)]) -> cuenv_core::module::ImportedProjects {
+    cuenv_core::module::ImportedProjects {
+        module: "example.com/site@v0".to_string(),
+        package: "cuenv".to_string(),
+        records: projects
+            .iter()
+            .map(|(name, directory)| cuenv_core::module::ImportRecord {
+                import_path: format!("example.com/site/{directory}:cuenv"),
+                directory: (*directory).to_string(),
+                package: "cuenv".to_string(),
+                module: "example.com/site@v0".to_string(),
+                name: Some((*name).to_string()),
+                ..cuenv_core::module::ImportRecord::default()
+            })
+            .collect(),
+    }
 }
 
 fn files(anchor: cuenv_core::tasks::FilesAnchor, paths: &[&str]) -> cuenv_core::tasks::Input {
@@ -389,7 +409,7 @@ fn a_file_reference_to_an_unknown_project_is_a_compile_error() {
     );
     assert!(message.contains("task 'build'"), "{message}");
     assert!(
-        message.contains("no project of this module is named 'elsewhere'"),
+        message.contains("project 'elsewhere' is not imported here"),
         "{message}"
     );
 }

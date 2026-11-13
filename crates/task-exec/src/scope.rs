@@ -20,9 +20,7 @@ use crate::{
 };
 use cuenv_core::contributors::CONTRIBUTOR_TASK_PREFIX;
 use cuenv_core::manifest::Project;
-use cuenv_core::tasks::file_references::{
-    BoundPath, ReferenceChecks, anchored_pattern, for_task, unknown_project,
-};
+use cuenv_core::tasks::file_references::{BoundPath, ReferenceChecks, anchored_pattern, for_task};
 use cuenv_core::tasks::output_refs::{OutputRefDep, TaskOutputRef};
 use cuenv_core::{Error, Result};
 use cuenv_task_graph::{TaskResolution, TaskResolver};
@@ -110,6 +108,21 @@ pub trait ProjectSource {
     /// Returns an error when the source cannot list those projects, so that
     /// it cannot say whether one of them carries the name.
     fn directory_of(&self, origin: &Path, name: &str) -> Result<Option<PathBuf>>;
+
+    /// The directory a file reference to the project called `name`, in a
+    /// task of the project in `origin`, starts from: the directory that
+    /// declares that name among the packages the project in `origin`
+    /// imports. Only an import can stamp a reference with a project's name,
+    /// so the module's other projects are never looked at, and no project is
+    /// evaluated to answer.
+    ///
+    /// # Errors
+    ///
+    /// Returns what to do when the name binds to no directory: the project
+    /// is not imported, is imported from a directory that only inherits its
+    /// name, lies in another package or module, or the imports cannot be
+    /// listed.
+    fn files_anchor(&self, origin: &Path, name: &str) -> std::result::Result<PathBuf, String>;
 
     /// The name that means the project in the directory `root`, when the
     /// source already knows it: the name [`Self::directory_of`] would lead
@@ -912,8 +925,8 @@ fn locate_by_path(
 }
 
 /// The directory a file reference's anchor means for a task of `owner`:
-/// the directory that declares the named project, by the module's
-/// project-name rule, or the root of the owner's CUE module.
+/// the directory that declares the named project among what the owner
+/// imports, or the root of the owner's CUE module.
 fn bind_anchor(
     owner: &OwnerFrame,
     anchor: &FilesAnchor,
@@ -921,13 +934,7 @@ fn bind_anchor(
 ) -> std::result::Result<PathBuf, String> {
     match anchor {
         FilesAnchor::Module => Ok(owner.module_root.clone()),
-        FilesAnchor::Project(name) => match source.directory_of(&owner.root, name) {
-            Ok(Some(directory)) => Ok(canonical(directory)),
-            Ok(None) => Err(unknown_project(name)),
-            Err(error) => Err(format!(
-                "the project named '{name}' cannot be looked up: {error}"
-            )),
-        },
+        FilesAnchor::Project(name) => source.files_anchor(&owner.root, name).map(canonical),
     }
 }
 

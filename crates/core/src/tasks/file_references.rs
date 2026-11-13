@@ -144,16 +144,6 @@ pub fn path_problem(anchor: &FilesAnchor, path: &str, problem: &str) -> String {
     )
 }
 
-/// The message for a reference to a project no project of the module is.
-#[must_use]
-pub fn unknown_project(name: &str) -> String {
-    format!(
-        "no project of this module is named '{name}': import the project that holds the files \
-         and write `<pkg>.#Files & {{paths: [...]}}` (for files outside every project, \
-         `schema.#ModuleFiles & {{paths: [...]}}`)"
-    )
-}
-
 /// A problem with a task's file reference, worded for the task.
 #[must_use]
 pub fn for_task(task: &str, source: Option<&SourceLocation>, problem: &str) -> String {

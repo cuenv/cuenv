@@ -1,5 +1,5 @@
 use cuenv_core::manifest::Project;
-use cuenv_core::tasks::file_references::{BoundPath, ReferenceChecks, for_task, unknown_project};
+use cuenv_core::tasks::file_references::{BoundPath, ReferenceChecks, for_task};
 use cuenv_core::tasks::{FilesAnchor, Input, InputPattern, TaskNode};
 use cuenv_core::{AffectedBy, InputFrame, PatternMatch, PlaceAnchor, UnmatchablePattern};
 use cuenv_task_exec::TaskIndex;
@@ -375,6 +375,19 @@ where
     result
 }
 
+/// Binds the file references of the projects a pipeline reaches.
+pub trait BindFiles {
+    /// The directory, relative to the root of the checkout, that `anchor`
+    /// means to a file reference of the project in `project_root` (also
+    /// relative to the root of the checkout).
+    ///
+    /// # Errors
+    ///
+    /// Returns what to do when the anchor binds to no directory in the
+    /// checkout.
+    fn bind(&self, project_root: &Path, anchor: &FilesAnchor) -> Result<PathBuf, String>;
+}
+
 /// A pipeline of one project, and every project its tasks can depend on.
 pub struct PipelineReach<'reach, S> {
     /// The project whose pipeline it is.
@@ -402,14 +415,14 @@ pub struct PipelineReach<'reach, S> {
 /// with nothing to compare with check them as well.
 pub fn reached_problems<S>(
     reach: &PipelineReach<'_, S>,
-    anchors: &dyn PlaceAnchor,
+    binder: &dyn BindFiles,
     checks: &mut ReferenceChecks,
 ) -> Vec<String>
 where
     S: BuildHasher,
 {
     let mut walk = ReachWalk {
-        anchors,
+        binder,
         checks,
         all_projects: reach.all_projects,
         problems: reach.project.diagnostics.pipeline(reach.pipeline).to_vec(),
@@ -446,7 +459,7 @@ struct ReachedProject<'project> {
 }
 
 struct ReachWalk<'walk, S> {
-    anchors: &'walk dyn PlaceAnchor,
+    binder: &'walk dyn BindFiles,
     checks: &'walk mut ReferenceChecks,
     all_projects: &'walk HashMap<String, (PathBuf, Project), S>,
     problems: Vec<String>,
@@ -468,7 +481,7 @@ impl<S: BuildHasher> ReachWalk<'_, S> {
             TaskNode::Task(task) => {
                 for reference in task.inputs.iter().filter_map(Input::as_files) {
                     for path in &reference.paths {
-                        if let Err(problem) = self.bind(&reference.anchor, path) {
+                        if let Err(problem) = self.bind(owner, &reference.anchor, path) {
                             self.problems
                                 .push(for_task(name, task.source.as_ref(), &problem));
                         }
@@ -549,17 +562,15 @@ impl<S: BuildHasher> ReachWalk<'_, S> {
 
     /// Bind one path of a file reference and check it against the files of
     /// the checkout.
-    fn bind(&mut self, anchor: &FilesAnchor, path: &str) -> Result<(), String> {
-        let Some(placed) = self.anchors.place(anchor) else {
-            return Err(match anchor {
-                FilesAnchor::Project(name) => unknown_project(name),
-                FilesAnchor::Module => {
-                    "the CUE module's root is not inside the checkout, so its files cannot be \
-                     compared with changes"
-                        .to_string()
-                }
-            });
-        };
+    fn bind(
+        &mut self,
+        owner: ReachedProject<'_>,
+        anchor: &FilesAnchor,
+        path: &str,
+    ) -> Result<(), String> {
+        // A name is bound among what the project that writes the reference
+        // imports: a producer's references keep their own anchors.
+        let placed = self.binder.bind(owner.project_root, anchor)?;
         let directory = self.checks.root().join(placed);
         self.checks.check(BoundPath {
             anchor,
