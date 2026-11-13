@@ -147,6 +147,23 @@ func TestInstanceSourcesListTransitiveImportsOnce(t *testing.T) {
 	}
 }
 
+func TestInstanceSourcesListAnEmptyImportListForAnInstanceThatImportsNothing(t *testing.T) {
+	moduleRoot := writeCueModule(t, map[string]string{
+		"cue.mod/module.cue": "module: \"example.com/refs@v0\"\nlanguage: version: \"v0.14.1\"\n",
+		"app/env.cue":        "package cuenv\n\nname: \"app\"\n",
+	})
+
+	response := instanceSourcesResponseWith(sourcesRequest{
+		moduleRoot:  moduleRoot,
+		directory:   filepath.Join(moduleRoot, "app"),
+		packageName: "cuenv",
+		options:     `{"fields":["name"]}`,
+	})
+
+	// A list, never null: readers of the payload expect one.
+	assertContains(t, response, `"imports":[]`)
+}
+
 func TestInstanceSourcesListNoImportsWithoutFields(t *testing.T) {
 	moduleRoot := writeCueModule(t, map[string]string{
 		"cue.mod/module.cue": "module: \"example.com/refs@v0\"\nlanguage: version: \"v0.14.1\"\n",
