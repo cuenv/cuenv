@@ -1,6 +1,7 @@
 //! CI trigger condition and path derivation.
 
 use super::Compiler;
+use crate::configuration::{directory_filter, is_special_in_github_filter};
 use crate::ir::{ManualTriggerConfig, TriggerCondition, WorkflowDispatchInputDef};
 use cuenv_core::ci::{CI, ManualTrigger, Pipeline};
 use cuenv_core::tasks::TaskNode;
@@ -146,7 +147,21 @@ impl Compiler {
         result
     }
 
+    /// Add the path filters for a change to the project's configuration.
+    ///
+    /// A change to the CUE a project is built from selects every task of the
+    /// project at runtime, so the workflow has to start for it: the project's
+    /// own files, the same-package files of the directories above it, every
+    /// package it imports, what its `@embed` attributes read, and `cue.mod`.
+    /// They come from the CUE loader. Where the instance cannot be loaded
+    /// (the compiler was given no module root, as when it compiles a project
+    /// that is not on disk), the project's `env.cue` and `schema/` stand in.
     fn add_implicit_cue_trigger_paths(&self, paths: &mut HashSet<String>) {
+        if let Some(sources) = self.configuration_sources() {
+            paths.extend(crate::configuration::trigger_paths(&sources));
+            return;
+        }
+
         for input in ["env.cue", "schema/**"] {
             if let Some(derived) =
                 trigger_paths_for_input(self.options.project_path.as_deref(), input)
@@ -156,6 +171,27 @@ impl Compiler {
         }
 
         paths.insert("cue.mod/**".to_string());
+    }
+
+    /// What the project's instance is built from, when it can be loaded.
+    fn configuration_sources(&self) -> Option<cuengine::InstanceSources> {
+        const PACKAGE: &str = "cuenv";
+        let module_root = self.options.module_root.as_ref()?;
+        let directory = match self.options.project_path.as_deref() {
+            Some(project_path) if !project_path.is_empty() && project_path != "." => {
+                module_root.join(project_path)
+            }
+            _ => module_root.clone(),
+        };
+        cuengine::instance_sources(module_root, &directory, PACKAGE)
+            .inspect_err(|error| {
+                tracing::debug!(
+                    directory = %directory.display(),
+                    %error,
+                    "Could not list the project's CUE files; using its env.cue for triggers"
+                );
+            })
+            .ok()
     }
 
     /// Adds paths for workspace member dependencies (direct and transitive).
@@ -319,22 +355,6 @@ fn trigger_paths_for_input(project_path: Option<&str>, input: &str) -> Option<Ve
         return Some(vec![format!("{path}/**"), path]);
     }
     Some(vec![directory_filter(&literal)])
-}
-
-/// The filter for everything beneath a directory given by its segments.
-fn directory_filter(segments: &[&str]) -> String {
-    if segments.is_empty() {
-        "**".to_string()
-    } else {
-        format!("{}/**", segments.join("/"))
-    }
-}
-
-/// Whether a literal path segment would be read as a pattern by GitHub's
-/// `paths` filters: `*`, `?`, `+` and `[]` are operators, `\` escapes, and a
-/// leading `!` negates.
-fn is_special_in_github_filter(segment: &str) -> bool {
-    segment.contains(['*', '?', '+', '[', ']', '\\']) || segment.starts_with('!')
 }
 
 fn push_relative_components(path: &mut PathBuf, input: &Path) -> bool {

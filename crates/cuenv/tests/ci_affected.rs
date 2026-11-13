@@ -424,3 +424,199 @@ fn a_correct_project_is_not_warned_about_files_of_the_same_name_at_the_root() ->
     assert!(!text(&output).contains("warning:"), "{}", text(&output));
     Ok(())
 }
+
+/// An `app` that imports a shared package for the name of the file its task
+/// writes, with a base in the module root that `app` inherits.
+const APP_BUILT_FROM_SHARED_CUE: &str = r#"package cuenv
+
+import "test.example/monorepo/shared"
+
+name: "app"
+let _tasks = tasks
+ci: pipelines: default: tasks: [_tasks.build]
+tasks: build: {
+	command: "sh"
+	args: ["-c", "printf ran > \(shared.marker)"]
+	inputs: ["src/**"]
+	hermetic: sandbox: "dir"
+}
+"#;
+
+fn monorepo_built_from_shared_cue(changes: &[(&str, &str)]) -> TestResult<Monorepo> {
+    Monorepo::changing(
+        APP_BUILT_FROM_SHARED_CUE,
+        &[
+            ("env.cue", "package cuenv\n\nenv: SHARED: \"base\"\n"),
+            ("shared/shared.cue", "package shared\n\nmarker: \"ran\"\n"),
+            ("unrelated/notes.cue", "package notes\n\ntext: \"one\"\n"),
+        ],
+        changes,
+    )
+}
+
+#[test]
+fn a_change_to_the_cue_a_project_is_built_from_runs_its_tasks() -> TestResult {
+    // None of these files is a declared input of `build`.
+    for (changed, content) in [
+        // The project's own file.
+        (
+            "app/env.cue",
+            format!("{APP_BUILT_FROM_SHARED_CUE}\n// a comment\n"),
+        ),
+        // A file of a directory above it, in the same package.
+        (
+            "env.cue",
+            "package cuenv\n\nenv: SHARED: \"changed\"\n".to_string(),
+        ),
+        // A package it imports.
+        (
+            "shared/shared.cue",
+            "package shared\n\nmarker: \"ran\"\n// changed\n".to_string(),
+        ),
+        // A new file in a directory that contributes to it.
+        ("app/extra.cue", "package cuenv\n".to_string()),
+        // The module's own metadata.
+        ("cue.mod/module.cue", format!("{MODULE}// a comment\n")),
+    ] {
+        let repository = monorepo_built_from_shared_cue(&[(changed, &content)])?;
+
+        let output = repository.ci(&["--path", "app"])?;
+
+        assert_success(&output);
+        assert!(
+            repository.root().join("app/ran").exists(),
+            "{changed} changed: {}",
+            text(&output)
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn a_change_to_cue_a_project_is_not_built_from_does_not_run_its_tasks() -> TestResult {
+    for (changed, content) in [
+        ("unrelated/notes.cue", "package notes\n\ntext: \"two\"\n"),
+        (
+            "docs/env.cue",
+            "package cuenv\nname: \"docs\"\ntasks: lint: {command: \"true\"}\n",
+        ),
+        // A `.cue` file beneath the project that is neither part of its
+        // instance nor one of its inputs.
+        ("app/vendor/data.cue", "package data\n"),
+    ] {
+        let repository = monorepo_built_from_shared_cue(&[(changed, content)])?;
+
+        let output = repository.ci(&["--path", "app"])?;
+
+        assert_success(&output);
+        assert!(
+            !repository.root().join("app/ran").exists(),
+            "{changed} changed: {}",
+            text(&output)
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn a_deleted_cue_file_of_a_project_runs_its_tasks() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let root = directory.path();
+    write(root, "cue.mod/module.cue", MODULE)?;
+    write(root, "app/env.cue", &app_reading(r#"["src/**"]"#))?;
+    write(root, "app/extra.cue", "package cuenv\n")?;
+    write(root, "app/src/main.ts", "export {}\n")?;
+    test_git::init_repository(root)?;
+    let base = test_git::commit_all(root, "base")?;
+    fs::remove_file(root.join("app/extra.cue"))?;
+    test_git::commit_all(root, "a CUE file is deleted")?;
+    let repository = Monorepo {
+        directory,
+        checkout: std::path::PathBuf::new(),
+        base,
+    };
+
+    let output = repository.ci(&["--path", "app"])?;
+
+    assert_success(&output);
+    assert!(
+        repository.root().join("app/ran").exists(),
+        "{}",
+        text(&output)
+    );
+    Ok(())
+}
+
+#[test]
+fn deleting_the_last_cue_file_of_a_directory_above_a_project_runs_its_tasks() -> TestResult {
+    // `services/defaults.cue` is the only file of the package in
+    // `services/`, and `services/app` inherits it. Once it is deleted, the
+    // loader no longer reports `services/` as part of the instance.
+    let directory = tempfile::tempdir()?;
+    let root = directory.path();
+    write(root, "cue.mod/module.cue", MODULE)?;
+    write(root, "services/defaults.cue", "package cuenv\n")?;
+    write(root, "services/app/env.cue", &app_reading(r#"["src/**"]"#))?;
+    write(root, "services/app/src/main.ts", "export {}\n")?;
+    test_git::init_repository(root)?;
+    let base = test_git::commit_all(root, "base")?;
+    fs::remove_file(root.join("services/defaults.cue"))?;
+    test_git::commit_all(root, "the inherited file is deleted")?;
+    let repository = Monorepo {
+        directory,
+        checkout: std::path::PathBuf::new(),
+        base,
+    };
+
+    let output = repository.ci(&["--path", "services/app"])?;
+
+    assert_success(&output);
+    assert!(
+        repository.root().join("services/app/ran").exists(),
+        "{}",
+        text(&output)
+    );
+    Ok(())
+}
+
+#[test]
+fn a_cue_change_in_a_module_nested_in_the_repository_runs_the_tasks() -> TestResult {
+    // The module is `<repository>/mono`; the checkout root is its parent.
+    let directory = tempfile::tempdir()?;
+    let root = directory.path();
+    let module = root.join("mono");
+    write(&module, "cue.mod/module.cue", MODULE)?;
+    write(&module, "app/env.cue", &app_reading(r#"["src/**"]"#))?;
+    write(&module, "app/src/main.ts", "export {}\n")?;
+    // A namesake outside the module must not count.
+    write(root, "app/env.cue", "package other\n")?;
+    test_git::init_repository(root)?;
+    let base = test_git::commit_all(root, "base")?;
+
+    let run = |repository: &Path| -> TestResult<Output> {
+        Ok(Command::new(env!("CARGO_BIN_EXE_cuenv"))
+            .current_dir(repository.join("mono"))
+            .env_remove("GITHUB_ACTIONS")
+            .env_remove("BUILDKITE")
+            .env("CUENV_STATE_DIR", repository.join("state"))
+            .args(["ci", "--from", &base, "--path", "app"])
+            .output()?)
+    };
+
+    write(root, "app/env.cue", "package other\n// changed\n")?;
+    test_git::commit_all(root, "a file outside the module changes")?;
+    let output = run(root)?;
+    assert_success(&output);
+    assert!(!module.join("app/ran").exists(), "{}", text(&output));
+
+    write(
+        &module,
+        "app/env.cue",
+        &format!("{}// changed\n", app_reading(r#"["src/**"]"#)),
+    )?;
+    test_git::commit_all(root, "the project's CUE changes")?;
+    let output = run(root)?;
+    assert_success(&output);
+    assert!(module.join("app/ran").exists(), "{}", text(&output));
+    Ok(())
+}

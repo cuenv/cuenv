@@ -2324,6 +2324,8 @@ The derived filters are a superset of the changes that affect a task, so a workf
 - An input that is not a glob (no `*`, `?`, `[` or `{`) is emitted as itself and as `path/**`, since it stands for that file or for everything beneath that directory.
 - A glob is emitted as the directory it is rooted in: `src/*.txt` and `src/**/*.{ts,tsx}` both become `src/**`. A glob with no literal directory, such as `**/*.md`, becomes the whole project.
 
+The CUE a project is built from is a trigger as well, because a change to it selects every task of the project: each directory that contributes `.cue` files to the project's instance is emitted as `<dir>/*.cue` (the project's own directory, the directories above it in the same package, and every imported package of the module), each file an `@embed` attribute reads as itself (a glob as its directory), and `cue.mod/**`. Naming directories instead of files means adding a `.cue` file does not change the generated workflow.
+
 A path segment that GitHub would read as a pattern (`+page.svelte`, `c++`) cuts the filter at its parent directory. When any task the pipeline reaches has no path inputs, the whole project is a trigger, because that task always runs. An input that resolves outside the repository root, an absolute input and an invalid glob make every change a trigger, because `cuenv ci` selects their task on any change. An input with a `..` segment inside the repository is emitted at the path it resolves to, although `cuenv ci` selects its task on any change until such inputs are rejected. `cuenv ci` does the precise selection once the workflow has started.
 
 ### #PipelineCondition

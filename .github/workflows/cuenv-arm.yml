@@ -7,6 +7,7 @@ on:
     branches:
     - main
     paths:
+    - '*.cue'
     - .agents/skills/**
     - .cargo/config.toml
     - .cargo/config.toml/**
@@ -30,6 +31,10 @@ on:
     - clippy.toml
     - clippy.toml/**
     - contrib/**
+    - contrib/*.cue
+    - contrib/codecov/*.cue
+    - contrib/contributors/*.cue
+    - contrib/nix/*.cue
     - crates/**
     - cue.mod/**
     - deny.toml
@@ -46,6 +51,8 @@ on:
     - nix/source-files.json
     - nix/source-files.json/**
     - schema/**
+    - schema/*.cue
+    - schema/codegen/*.cue
     - tools/function-enum/Cargo.lock
     - tools/function-enum/Cargo.lock/**
     - tools/function-enum/Cargo.toml

@@ -4,6 +4,8 @@
 pub mod affected;
 /// Lower project tasks and contributors into CI intermediate representation.
 pub mod compiler;
+/// What a project's CUE configuration is built from.
+pub mod configuration;
 /// Describe the CI event and source revision that triggered a run.
 pub mod context;
 /// Compare reports from two CI runs and explain cache invalidation.

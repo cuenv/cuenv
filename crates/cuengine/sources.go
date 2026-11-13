@@ -13,7 +13,9 @@ import (
 	"sort"
 	"strings"
 
+	"cuelang.org/go/cue/ast"
 	"cuelang.org/go/cue/build"
+	"cuelang.org/go/cue/literal"
 	"cuelang.org/go/cue/load"
 	"cuelang.org/go/mod/modconfig"
 )
@@ -25,6 +27,11 @@ type instanceSources struct {
 	// directories that CUE unifies into it) and the files of every package
 	// it imports, transitively, that lives inside the module.
 	Files []string `json:"files"`
+	// What the @embed attributes of those files read, relative to the module
+	// root and sorted: a path for `file=`, a glob for `glob=`. They are read
+	// from the source, so a file a glob would match is covered whether or not
+	// it exists.
+	Embeds []string `json:"embeds"`
 }
 
 //export cue_instance_sources
@@ -76,14 +83,10 @@ func instanceSourcesResponse(moduleRoot string, directory string, packageName st
 		return createErrorResponse(ErrorCodeLoadInstance, instances[0].Err.Error(), nil)
 	}
 
-	files := map[string]struct{}{}
-	collectInstanceSources(instances[0], absoluteModuleRoot, files, map[*build.Instance]struct{}{})
+	collected := sourceSet{files: map[string]struct{}{}, embeds: map[string]struct{}{}}
+	collectInstanceSources(instances[0], absoluteModuleRoot, collected, map[*build.Instance]struct{}{})
 
-	payload := instanceSources{Files: make([]string, 0, len(files))}
-	for file := range files {
-		payload.Files = append(payload.Files, file)
-	}
-	sort.Strings(payload.Files)
+	payload := instanceSources{Files: sortedKeys(collected.files), Embeds: sortedKeys(collected.embeds)}
 
 	encoded, err := json.Marshal(payload)
 	if err != nil {
@@ -92,23 +95,149 @@ func instanceSourcesResponse(moduleRoot string, directory string, packageName st
 	return createSuccessResponse(string(encoded))
 }
 
+// sourceSet is what an instance and its imports are built from.
+type sourceSet struct {
+	files  map[string]struct{}
+	embeds map[string]struct{}
+}
+
+func sortedKeys(set map[string]struct{}) []string {
+	keys := make([]string, 0, len(set))
+	for key := range set {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// moduleRelative is path relative to the module root with forward slashes, or
+// false when it lies outside the module.
+func moduleRelative(moduleRoot string, path string) (string, bool) {
+	relative, err := filepath.Rel(moduleRoot, path)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || filepath.IsAbs(relative) {
+		return "", false
+	}
+	return filepath.ToSlash(relative), true
+}
+
 // collectInstanceSources adds the module-relative files of inst and of every
-// instance it imports. Files outside the module (registry dependencies in the
-// module cache) are left out.
-func collectInstanceSources(inst *build.Instance, moduleRoot string, files map[string]struct{}, seen map[*build.Instance]struct{}) {
+// instance it imports, and what their @embed attributes read. Files outside
+// the module (registry dependencies in the module cache) are left out.
+func collectInstanceSources(inst *build.Instance, moduleRoot string, collected sourceSet, seen map[*build.Instance]struct{}) {
 	if _, done := seen[inst]; done {
 		return
 	}
 	seen[inst] = struct{}{}
 
 	for _, file := range inst.BuildFiles {
-		relative, err := filepath.Rel(moduleRoot, file.Filename)
-		if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || filepath.IsAbs(relative) {
+		if relative, inside := moduleRelative(moduleRoot, file.Filename); inside {
+			collected.files[relative] = struct{}{}
+		}
+	}
+	for _, file := range inst.Files {
+		if _, inside := moduleRelative(moduleRoot, file.Filename); !inside {
 			continue
 		}
-		files[filepath.ToSlash(relative)] = struct{}{}
+		directory := filepath.Dir(file.Filename)
+		for _, pattern := range embedPatterns(file) {
+			// An @embed path is relative to the directory of its file.
+			if relative, inside := moduleRelative(moduleRoot, filepath.Join(directory, filepath.FromSlash(pattern))); inside {
+				collected.embeds[relative] = struct{}{}
+			}
+		}
 	}
 	for _, imported := range inst.Imports {
-		collectInstanceSources(imported, moduleRoot, files, seen)
+		collectInstanceSources(imported, moduleRoot, collected, seen)
 	}
+}
+
+// embedPatterns lists the `file=` paths and `glob=` patterns of the @embed
+// attributes in file, as written.
+func embedPatterns(file *ast.File) []string {
+	var patterns []string
+	ast.Walk(file, func(node ast.Node) bool {
+		attribute, isAttribute := node.(*ast.Attribute)
+		if !isAttribute {
+			return true
+		}
+		key, body := attribute.Split()
+		if key != "embed" {
+			return true
+		}
+		for _, argument := range splitAttributeArguments(body) {
+			name, value, hasValue := strings.Cut(argument, "=")
+			name = strings.TrimSpace(name)
+			if !hasValue || (name != "file" && name != "glob") {
+				continue
+			}
+			if pattern := unquoteAttributeValue(strings.TrimSpace(value)); pattern != "" {
+				patterns = append(patterns, pattern)
+			}
+		}
+		return true
+	}, nil)
+	return patterns
+}
+
+// splitAttributeArguments splits the body of an attribute at the commas that
+// are not inside a quoted string, as CUE does: a string may be raw
+// (#"..."#), and commas inside brackets, braces or parentheses do not
+// separate arguments.
+func splitAttributeArguments(body string) []string {
+	var arguments []string
+	start := 0
+	depth := 0
+	for index := 0; index < len(body); index++ {
+		switch char := body[index]; char {
+		case '#', '"', '\'':
+			index = endOfString(body, index)
+		case '[', '{', '(':
+			depth++
+		case ']', '}', ')':
+			if depth > 0 {
+				depth--
+			}
+		case ',':
+			if depth == 0 {
+				arguments = append(arguments, body[start:index])
+				start = index + 1
+			}
+		}
+	}
+	return append(arguments, body[start:])
+}
+
+// endOfString is the index of the last byte of the string that starts at
+// index, which may be preceded by the `#`s of a raw string; index itself when
+// no string starts there.
+func endOfString(body string, index int) int {
+	hashes := 0
+	for index+hashes < len(body) && body[index+hashes] == '#' {
+		hashes++
+	}
+	open := index + hashes
+	if open >= len(body) || (body[open] != '"' && body[open] != '\'') {
+		return index
+	}
+	quote := body[open]
+	closing := string(quote) + strings.Repeat("#", hashes)
+	for position := open + 1; position < len(body); position++ {
+		if hashes == 0 && body[position] == '\\' {
+			position++
+			continue
+		}
+		if strings.HasPrefix(body[position:], closing) {
+			return position + len(closing) - 1
+		}
+	}
+	return len(body) - 1
+}
+
+// unquoteAttributeValue is the value of an attribute argument, which may be
+// written bare or as a CUE string, raw strings included.
+func unquoteAttributeValue(value string) string {
+	if unquoted, err := literal.Unquote(value); err == nil {
+		return unquoted
+	}
+	return value
 }

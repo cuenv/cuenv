@@ -7,6 +7,7 @@ on:
     branches:
     - main
     paths:
+    - '*.cue'
     - .agents/skills/**
     - .cargo/config.toml
     - .cargo/config.toml/**
@@ -32,6 +33,10 @@ on:
     - clippy.toml
     - clippy.toml/**
     - contrib/**
+    - contrib/*.cue
+    - contrib/codecov/*.cue
+    - contrib/contributors/*.cue
+    - contrib/nix/*.cue
     - crates/**
     - cue.mod/**
     - cuenv.lock
@@ -66,6 +71,8 @@ on:
     - readme.md
     - readme.md/**
     - schema/**
+    - schema/*.cue
+    - schema/codegen/*.cue
     - scripts/check-schema-compat.sh
     - scripts/check-schema-compat.sh/**
     - scripts/check-schema-docs.sh
@@ -84,6 +91,7 @@ on:
     branches:
     - main
     paths:
+    - '*.cue'
     - .agents/skills/**
     - .cargo/config.toml
     - .cargo/config.toml/**
@@ -109,6 +117,10 @@ on:
     - clippy.toml
     - clippy.toml/**
     - contrib/**
+    - contrib/*.cue
+    - contrib/codecov/*.cue
+    - contrib/contributors/*.cue
+    - contrib/nix/*.cue
     - crates/**
     - cue.mod/**
     - cuenv.lock
@@ -143,6 +155,8 @@ on:
     - readme.md
     - readme.md/**
     - schema/**
+    - schema/*.cue
+    - schema/codegen/*.cue
     - scripts/check-schema-compat.sh
     - scripts/check-schema-compat.sh/**
     - scripts/check-schema-docs.sh
