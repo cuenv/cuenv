@@ -35,6 +35,7 @@ impl EvaluationMetadataBuilder {
             references: non_empty(self.references),
             sources: non_empty(self.sources),
             caller_sources: non_empty(self.caller_sources),
+            declarations: None,
         }
     }
 }

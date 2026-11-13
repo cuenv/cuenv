@@ -373,6 +373,61 @@ fn a_task_or_a_group_used_as_an_input_says_what_to_write_instead() -> TestResult
     Ok(())
 }
 
+/// `web`, which imports a package of another module, vendored under
+/// `cue.mod/pkg`, whose project is named `web` too.
+const WEB: &str = r#"package cuenv
+
+import (
+	"github.com/cuenv/cuenv/schema"
+	other "example.com/other/web:cuenv"
+)
+
+schema.#Project
+name: "web"
+tasks: {
+	build: {command: "sh", args: ["-c", "printf local > local.txt"], outputs: ["local.txt"]}
+	site: {command: "true", dependsOn: [other.tasks.build]}
+	own: {command: "true", dependsOn: [build]}
+}
+"#;
+
+/// The vendored namesake of `web`.
+const NAMESAKE: &str = r#"package cuenv
+
+import "github.com/cuenv/cuenv/schema"
+
+schema.#Project
+name: "web"
+tasks: build: {command: "sh", args: ["-c", "printf vendored > vendored.txt"]}
+"#;
+
+#[test]
+fn a_namesake_project_of_another_module_is_never_this_project() -> TestResult {
+    let repository = Repository::new(
+        APP,
+        &[
+            ("web/env.cue", WEB),
+            ("cue.mod/pkg/example.com/other/web/env.cue", NAMESAKE),
+        ],
+    )?;
+
+    let output = repository.task("web", &["site"])?;
+
+    // The vendored `build` is another project's, which references cannot
+    // reach; the local `build` never runs in its place.
+    assert_failure(&output);
+    let printed = text(&output);
+    assert!(
+        printed.contains("references reach projects of the same CUE module only"),
+        "{printed}"
+    );
+    assert!(!repository.exists("web/local.txt"));
+    // A dependency on the local `build` is still the local one.
+    assert_success(&repository.task("web", &["own"])?);
+    assert_eq!(repository.read("web/local.txt")?, "local");
+    Ok(())
+}
+
 #[test]
 fn a_change_to_the_producers_inputs_selects_the_consumer_in_ci() -> TestResult {
     let repository = Repository::new(APP, &[("content/articles/one.md", "two\n")])?;

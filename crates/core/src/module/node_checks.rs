@@ -21,6 +21,13 @@
 //!   service's `watch.rebuild`, or a service's or image's `dependsOn` is not
 //!   supported across projects yet.
 //!
+//! A stamp is this project's when it names this project and, where the
+//! evaluation records where values are declared, its project is declared
+//! where this instance's `name` is. A project of another package with the
+//! same name (one vendored from outside the module, say) is another project:
+//! its task is `#name:task`, which binds among the imports like any other
+//! and fails there, never a task of this project.
+//!
 //! An entry that cannot be read is removed and the problem recorded against
 //! the node (see [`NodeDiagnostics`]), which fails only what reaches that
 //! node.
@@ -39,6 +46,7 @@ use std::path::{Component, Path, PathBuf};
 
 use serde_json::{Map, Value};
 
+use super::SourceMap;
 use crate::manifest::NodeDiagnostics;
 use crate::tasks::SourceLocation;
 use crate::tasks::file_references::for_task;
@@ -61,12 +69,78 @@ const GROUP_FIELDS: &[&str] = &[
 /// removed: replacing keeps the indices reference metadata is keyed on.
 const FOREIGN_MARKER: &str = "_cuenvForeign";
 
+/// Where the values of one instance are declared: what tells this
+/// project's own stamps from those of a same-named project.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct Declarations<'declarations> {
+    /// The instance's key in the evaluation, which field paths are
+    /// prefixed with.
+    pub(super) instance: &'declarations str,
+    /// Where each value is declared, by `<instance>/<field path>`; `None`
+    /// when the evaluation recorded nothing.
+    pub(super) at: Option<&'declarations SourceMap>,
+}
+
+impl<'declarations> Declarations<'declarations> {
+    /// Where the value at `field` of the instance is declared.
+    fn of(&self, field: &str) -> Option<&'declarations SourceLocation> {
+        self.at?.get(&format!("{}/{field}", self.instance))
+    }
+}
+
+/// The project an instance declares.
+#[derive(Debug, Clone, Copy)]
+struct Owner<'owner> {
+    name: &'owner str,
+    declarations: Declarations<'owner>,
+    /// Where the instance's `name` is declared, which the stamp of every
+    /// node of this project points at; `None` when the evaluation recorded
+    /// nothing, and stamps are told apart by name alone.
+    declared: Option<&'owner SourceLocation>,
+}
+
+impl<'owner> Owner<'owner> {
+    fn new(name: &'owner str, declarations: Declarations<'owner>) -> Self {
+        Self {
+            name,
+            declarations,
+            declared: declarations.of("name"),
+        }
+    }
+
+    /// Where the project named `project`, which the value at `field`
+    /// holds, is declared, when it carries this project's name and is not
+    /// this project; `None` for this project and for any other name. A
+    /// stamp whose declaration was not recorded, while this instance's was,
+    /// cannot be shown to be this project's, and is not.
+    fn namesake(&self, project: &str, field: &str) -> Option<String> {
+        if project != self.name {
+            return None;
+        }
+        let own = self.declared?;
+        match self.declarations.of(field) {
+            Some(declared) if declared == own => None,
+            Some(declared) => Some(format!("`{}`", declared.file)),
+            None => Some("a place this evaluation did not record".to_string()),
+        }
+    }
+
+    /// Whether the project named `project`, which the value at `field`
+    /// holds, is this project.
+    fn owns(&self, project: &str, field: &str) -> bool {
+        project == self.name && self.namesake(project, field).is_none()
+    }
+}
+
 /// Check the identities in a project instance's value, before reference
 /// metadata names any dependency: the stamps of whole sequences are still
 /// there to inspect. Every entry of another project is replaced by a
 /// marker, which [`check_inputs`] removes once names are assigned. An
 /// instance without a `name` is no project and is left alone.
-pub(super) fn check_identities(value: &mut Value) -> NodeDiagnostics {
+pub(super) fn check_identities(
+    value: &mut Value,
+    declarations: Declarations<'_>,
+) -> NodeDiagnostics {
     let Some(root) = value.as_object_mut() else {
         return NodeDiagnostics::default();
     };
@@ -79,7 +153,7 @@ pub(super) fn check_identities(value: &mut Value) -> NodeDiagnostics {
         return NodeDiagnostics::default();
     };
     let mut checks = NodeChecks {
-        owner: &owner,
+        owner: Owner::new(&owner, declarations),
         diagnostics: NodeDiagnostics::default(),
     };
     if let Some(Value::Object(tasks)) = root.get_mut("tasks") {
@@ -89,13 +163,21 @@ pub(super) fn check_identities(value: &mut Value) -> NodeDiagnostics {
     }
     if let Some(Value::Object(services)) = root.get_mut("services") {
         for (name, service) in services.iter_mut() {
-            let problems = worded("service", name, checks.service(service));
+            let problems = worded(
+                "service",
+                name,
+                checks.service(service, &format!("services.{name}")),
+            );
             record(&mut checks.diagnostics.services, name, problems);
         }
     }
     if let Some(Value::Object(images)) = root.get_mut("images") {
         for (name, image) in images.iter_mut() {
-            let problems = worded("image", name, checks.image(image));
+            let problems = worded(
+                "image",
+                name,
+                checks.image(image, &format!("images.{name}")),
+            );
             record(&mut checks.diagnostics.images, name, problems);
         }
     }
@@ -120,6 +202,8 @@ pub(super) struct InstancePlace<'place> {
     /// The declaring directory of every project name the evaluation knows,
     /// relative to the module root.
     pub(super) projects: &'place BTreeMap<String, PathBuf>,
+    /// Where the instance's values are declared.
+    pub(super) declarations: Declarations<'place>,
 }
 
 /// Remove what [`check_identities`] marked, check every task's inputs and
@@ -144,7 +228,7 @@ pub(super) fn check_inputs(
         return;
     };
     let checks = InputChecks {
-        owner: &owner,
+        owner: Owner::new(&owner, place.declarations),
         place,
     };
     if let Some(Value::Object(tasks)) = root.get_mut("tasks") {
@@ -155,7 +239,11 @@ pub(super) fn check_inputs(
     if let Some(Value::Object(images)) = root.get_mut("images") {
         for (name, image) in images.iter_mut() {
             if let Value::Object(object) = image {
-                let problems = worded("image", name, checks.inputs(object));
+                let problems = worded(
+                    "image",
+                    name,
+                    checks.inputs(object, &format!("images.{name}")),
+                );
                 record(&mut diagnostics.images, name, problems);
             }
         }
@@ -187,8 +275,8 @@ fn remove_marked(value: &mut Value) {
 
 /// The checks of inputs and dependency names, once names are assigned.
 struct InputChecks<'checks> {
-    /// The name of the project being checked.
-    owner: &'checks str,
+    /// The project being checked.
+    owner: Owner<'checks>,
     place: InstancePlace<'checks>,
 }
 
@@ -217,7 +305,7 @@ impl InputChecks<'_> {
             Value::Object(object) => {
                 let source = source_of(object);
                 let mut problems = unnamed_dependencies(object);
-                problems.extend(self.inputs(object));
+                problems.extend(self.inputs(object, &format!("tasks.{name}")));
                 let worded: Vec<String> = problems
                     .iter()
                     .map(|problem| for_task(name, source.as_ref(), problem))
@@ -228,10 +316,10 @@ impl InputChecks<'_> {
         }
     }
 
-    /// Read every input of a task or image the way the rest of cuenv reads
-    /// inputs: a task's `outputFiles` becomes a task-output input, and an
-    /// input that cannot be read is removed, saying why.
-    fn inputs(&self, object: &mut Map<String, Value>) -> Vec<String> {
+    /// Read every input of the task or image at `path` the way the rest of
+    /// cuenv reads inputs: a task's `outputFiles` becomes a task-output
+    /// input, and an input that cannot be read is removed, saying why.
+    fn inputs(&self, object: &mut Map<String, Value>, path: &str) -> Vec<String> {
         let Some(inputs) = object.get_mut("inputs") else {
             return Vec::new();
         };
@@ -243,7 +331,7 @@ impl InputChecks<'_> {
         let mut problems = Vec::new();
         let mut kept = Vec::with_capacity(entries.len());
         for (index, entry) in std::mem::take(entries).into_iter().enumerate() {
-            match self.input(entry) {
+            match self.input(entry, &format!("{path}.inputs[{index}]")) {
                 Ok(entry) => kept.push(entry),
                 Err(problem) => problems.push(format!("inputs[{index}] {problem}")),
             }
@@ -252,15 +340,16 @@ impl InputChecks<'_> {
         problems
     }
 
-    /// One input as the rest of cuenv reads it, or why it cannot be read.
-    fn input(&self, entry: Value) -> Result<Value, String> {
+    /// The input at `path` as the rest of cuenv reads it, or why it cannot
+    /// be read.
+    fn input(&self, entry: Value, path: &str) -> Result<Value, String> {
         match &entry {
             Value::Null => Err("has no value".to_string()),
             Value::Object(object) if object.contains_key("cuenvFiles") => {
                 file_reference_problem(object).map_or(Ok(entry), Err)
             }
             Value::Object(object) if object.contains_key("cuenvOutputFilesRef") => {
-                self.output_files(object)
+                self.output_files(object, path)
             }
             Value::Object(object) if object.contains_key("project") => {
                 Err(removed_project_reference(object))
@@ -278,10 +367,10 @@ impl InputChecks<'_> {
         }
     }
 
-    /// A task's `outputFiles` as the task-output input of the task it
-    /// stamps (R5): by its name in this project, `#project:name` in
+    /// A task's `outputFiles`, at `path`, as the task-output input of the
+    /// task it stamps (R5): by its name in this project, `#project:name` in
     /// another.
-    fn output_files(&self, object: &Map<String, Value>) -> Result<Value, String> {
+    fn output_files(&self, object: &Map<String, Value>, path: &str) -> Result<Value, String> {
         let text = |field: &str| {
             object
                 .get(field)
@@ -302,7 +391,7 @@ impl InputChecks<'_> {
                  here (a step of a sequence): read the `outputFiles` of a named task"
             ));
         }
-        let name = if project == self.owner {
+        let name = if self.owner.owns(project, &format!("{path}.cuenvProject")) {
             task.to_string()
         } else {
             format!("#{project}:{task}")
@@ -498,6 +587,9 @@ struct Identity {
     kind: String,
     project: String,
     name: String,
+    /// Where its project is declared, when that project carries this
+    /// project's name and is not this project.
+    namesake: Option<String>,
 }
 
 impl std::fmt::Display for Identity {
@@ -508,47 +600,73 @@ impl std::fmt::Display for Identity {
             &self.kind
         };
         if self.name.is_empty() {
-            write!(formatter, "a {kind} of project '{}'", self.project)
+            write!(formatter, "a {kind} of project '{}'", self.project)?;
         } else {
             write!(
                 formatter,
                 "{kind} '{}' of project '{}'",
                 self.name, self.project
-            )
+            )?;
+        }
+        match &self.namesake {
+            Some(declared) => write!(
+                formatter,
+                " declared in {declared}, a namesake of this project"
+            ),
+            None => Ok(()),
         }
     }
 }
 
-/// The identity the stamp of `value` gives, when it names a project.
-fn stamped(value: &Value) -> Option<Identity> {
-    let stamp = value.get("cuenvRef")?;
-    let text = |field: &str| {
-        stamp
-            .get(field)
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string()
-    };
-    let project = text("project");
-    (!project.is_empty()).then(|| Identity {
-        kind: text("kind"),
-        project,
-        name: text("name"),
-    })
-}
-
 struct NodeChecks<'owner> {
-    owner: &'owner str,
+    owner: Owner<'owner>,
     diagnostics: NodeDiagnostics,
 }
 
 impl NodeChecks<'_> {
-    /// The identity of `value` when it belongs to another project. A
-    /// sequence belongs to another project when any member does.
-    fn foreign(&self, value: &Value) -> Option<Identity> {
+    /// The identity the stamp of `value`, the value at `path`, gives, when
+    /// it names a project.
+    fn stamped(&self, value: &Value, path: &str) -> Option<Identity> {
+        let stamp = value.get("cuenvRef")?;
+        let text = |field: &str| {
+            stamp
+                .get(field)
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string()
+        };
+        let project = text("project");
+        if project.is_empty() {
+            return None;
+        }
+        let namesake = self
+            .owner
+            .namesake(&project, &format!("{path}.cuenvRef.project"));
+        Some(Identity {
+            kind: text("kind"),
+            project,
+            name: text("name"),
+            namesake,
+        })
+    }
+
+    /// Whether the node `identity` names is a node of this project.
+    fn owns(&self, identity: &Identity) -> bool {
+        identity.project == self.owner.name && identity.namesake.is_none()
+    }
+
+    /// The identity of `value`, the value at `path`, when it belongs to
+    /// another project. A sequence belongs to another project when any
+    /// member does.
+    fn foreign(&self, value: &Value, path: &str) -> Option<Identity> {
         match value {
-            Value::Array(members) => members.iter().find_map(|member| self.foreign(member)),
-            Value::Object(_) => stamped(value).filter(|identity| identity.project != self.owner),
+            Value::Array(members) => members
+                .iter()
+                .enumerate()
+                .find_map(|(index, member)| self.foreign(member, &format!("{path}[{index}]"))),
+            Value::Object(_) => self
+                .stamped(value, path)
+                .filter(|identity| !self.owns(identity)),
             Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => None,
         }
     }
@@ -563,7 +681,8 @@ impl NodeChecks<'_> {
                 }
             }
             Value::Object(object) => {
-                let mut problems = self.task_dependencies(object);
+                let path = format!("tasks.{name}");
+                let mut problems = self.task_dependencies(object, &path);
                 if is_group(object) {
                     for (child, child_node) in object.iter_mut() {
                         if !GROUP_FIELDS.contains(&child.as_str()) {
@@ -571,7 +690,7 @@ impl NodeChecks<'_> {
                         }
                     }
                 } else {
-                    problems.extend(self.output_references(object));
+                    problems.extend(self.output_references(object, &path));
                 }
                 let worded = problems
                     .iter()
@@ -588,13 +707,14 @@ impl NodeChecks<'_> {
     /// project as `#project:name` (R2). What a stamp cannot name is removed,
     /// saying why. An entry whose stamp names no project, or that has no
     /// stamp (an older pinned schema), is left to reference metadata.
-    fn task_dependencies(&self, object: &mut Map<String, Value>) -> Vec<String> {
+    fn task_dependencies(&self, object: &mut Map<String, Value>, path: &str) -> Vec<String> {
         let Some(Value::Array(entries)) = object.get_mut("dependsOn") else {
             return Vec::new();
         };
         let mut problems = Vec::new();
         for (index, entry) in entries.iter_mut().enumerate() {
-            if let Some(problem) = self.dependency(index, entry) {
+            let entry_path = format!("{path}.dependsOn[{index}]");
+            if let Some(problem) = self.dependency(index, entry, &entry_path) {
                 problems.push(problem);
                 *entry = marker();
             }
@@ -602,13 +722,13 @@ impl NodeChecks<'_> {
         problems
     }
 
-    /// Name one `dependsOn` entry by its stamp, or say why it cannot be a
-    /// dependency.
-    fn dependency(&self, index: usize, entry: &mut Value) -> Option<String> {
+    /// Name one `dependsOn` entry, the value at `path`, by its stamp, or say
+    /// why it cannot be a dependency.
+    fn dependency(&self, index: usize, entry: &mut Value, path: &str) -> Option<String> {
         if entry.is_array() {
             // A whole sequence has no stamp of its own and no name another
             // project could know it by.
-            return self.foreign(entry).map(|identity| {
+            return self.foreign(entry, path).map(|identity| {
                 format!(
                     "dependsOn[{index}] is a sequence holding {identity}: depend on a named task \
                      or group of project '{}'",
@@ -616,8 +736,8 @@ impl NodeChecks<'_> {
                 )
             });
         }
-        let identity = stamped(entry)?;
-        let local = identity.project == self.owner;
+        let identity = self.stamped(entry, path)?;
+        let local = self.owns(&identity);
         let name = if local {
             if identity.name.is_empty() {
                 // A step of a sequence of this project: the bridge names it
@@ -646,19 +766,21 @@ impl NodeChecks<'_> {
         None
     }
 
-    /// Mark the entries of the list `field` of `object` that belong to
-    /// another project for removal, returning each with its index.
+    /// Mark the entries of the list `field` of `object`, the value at
+    /// `path`, that belong to another project for removal, returning each
+    /// with its index.
     fn foreign_entries(
         &self,
         object: &mut Map<String, Value>,
         field: &str,
+        path: &str,
     ) -> Vec<(usize, Identity)> {
         let Some(Value::Array(entries)) = object.get_mut(field) else {
             return Vec::new();
         };
         let mut found = Vec::new();
         for (index, entry) in entries.iter_mut().enumerate() {
-            if let Some(identity) = self.foreign(entry) {
+            if let Some(identity) = self.foreign(entry, &format!("{path}.{field}[{index}]")) {
                 found.push((index, identity));
                 *entry = marker();
             }
@@ -667,9 +789,9 @@ impl NodeChecks<'_> {
     }
 
     /// Problems with output references to another project's tasks or images
-    /// anywhere in a node, other than in its own computed references and in
-    /// the nodes it embeds.
-    fn output_references(&self, object: &Map<String, Value>) -> Vec<String> {
+    /// anywhere in the node at `path`, other than in its own computed
+    /// references and in the nodes it embeds.
+    fn output_references(&self, object: &Map<String, Value>, path: &str) -> Vec<String> {
         let mut problems = Vec::new();
         for (field, value) in object {
             if matches!(
@@ -686,19 +808,22 @@ impl NodeChecks<'_> {
             ) {
                 continue;
             }
-            self.collect_output_references(value, &mut problems);
+            self.collect_output_references(value, &format!("{path}.{field}"), &mut problems);
         }
         problems
     }
 
-    fn collect_output_references(&self, value: &Value, problems: &mut Vec<String>) {
+    /// Problems with output references to another project's tasks or images
+    /// in `value`, the value at `path`.
+    fn collect_output_references(&self, value: &Value, path: &str, problems: &mut Vec<String>) {
         match value {
             Value::Object(object) if is_output_reference(object) => {
                 let project = object
                     .get("cuenvProject")
                     .and_then(Value::as_str)
                     .unwrap_or_default();
-                if !project.is_empty() && project != self.owner {
+                if !project.is_empty() && !self.owner.owns(project, &format!("{path}.cuenvProject"))
+                {
                     let target = object
                         .get("cuenvTask")
                         .or_else(|| object.get("cuenvImage"))
@@ -716,37 +841,39 @@ impl NodeChecks<'_> {
                 }
             }
             Value::Object(object) => {
-                for nested in object.values() {
-                    self.collect_output_references(nested, problems);
+                for (field, nested) in object {
+                    self.collect_output_references(nested, &format!("{path}.{field}"), problems);
                 }
             }
             Value::Array(items) => {
-                for item in items {
-                    self.collect_output_references(item, problems);
+                for (index, item) in items.iter().enumerate() {
+                    self.collect_output_references(item, &format!("{path}[{index}]"), problems);
                 }
             }
             Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
         }
     }
 
-    fn service(&self, service: &mut Value) -> Vec<String> {
+    /// Problems of the service at `path`.
+    fn service(&self, service: &mut Value, path: &str) -> Vec<String> {
         let Value::Object(object) = service else {
             return Vec::new();
         };
-        let mut problems = self.unsupported(object, "dependsOn");
+        let mut problems = self.unsupported(object, "dependsOn", path);
         if let Some(Value::Object(watch)) = object.get_mut("watch") {
-            problems.extend(self.unsupported(watch, "rebuild"));
+            problems.extend(self.unsupported(watch, "rebuild", &format!("{path}.watch")));
         }
-        problems.extend(self.output_references(object));
+        problems.extend(self.output_references(object, path));
         problems
     }
 
-    fn image(&self, image: &mut Value) -> Vec<String> {
+    /// Problems of the image at `path`.
+    fn image(&self, image: &mut Value, path: &str) -> Vec<String> {
         let Value::Object(object) = image else {
             return Vec::new();
         };
-        let mut problems = self.unsupported(object, "dependsOn");
-        problems.extend(self.output_references(object));
+        let mut problems = self.unsupported(object, "dependsOn", path);
+        problems.extend(self.output_references(object, path));
         problems
     }
 
@@ -756,13 +883,17 @@ impl NodeChecks<'_> {
         };
         let mut problems = Vec::new();
         for (index, entry) in entries.iter_mut().enumerate() {
+            let path = format!("ci.pipelines.{name}.tasks[{index}]");
             // A matrix entry names its task in `task`.
-            let named = entry
+            let (named, path) = match entry
                 .as_object()
                 .filter(|object| !object.contains_key("cuenvRef"))
                 .and_then(|object| object.get("task"))
-                .unwrap_or(entry);
-            if let Some(identity) = self.foreign(named) {
+            {
+                Some(task) => (task, format!("{path}.task")),
+                None => (&*entry, path),
+            };
+            if let Some(identity) = self.foreign(named, &path) {
                 problems.push(format!(
                     "pipeline '{name}' entry tasks[{index}] is {identity}: not supported across \
                      projects yet; run it from a pipeline of project '{}'",
@@ -774,10 +905,11 @@ impl NodeChecks<'_> {
         problems
     }
 
-    /// Remove the entries of `field` that belong to another project, where
-    /// no cross-project reference is supported yet (R6).
-    fn unsupported(&self, object: &mut Map<String, Value>, field: &str) -> Vec<String> {
-        self.foreign_entries(object, field)
+    /// Remove the entries of `field` of the node at `path` that belong to
+    /// another project, where no cross-project reference is supported yet
+    /// (R6).
+    fn unsupported(&self, object: &mut Map<String, Value>, field: &str, path: &str) -> Vec<String> {
+        self.foreign_entries(object, field, path)
             .into_iter()
             .map(|(index, identity)| {
                 format!("{field}[{index}] is {identity}: not supported across projects yet")
@@ -862,8 +994,15 @@ mod tests {
         ])
     }
 
-    fn check_nodes(value: &mut Value) {
-        let diagnostics = check_identities(value);
+    /// An evaluation that recorded no declarations: stamps are told apart
+    /// by project name alone.
+    const UNRECORDED: Declarations<'static> = Declarations {
+        instance: "app",
+        at: None,
+    };
+
+    fn check_declared(value: &mut Value, declarations: Declarations<'_>) {
+        let diagnostics = check_identities(value, declarations);
         let projects = module_projects();
         check_inputs(
             value,
@@ -871,8 +1010,13 @@ mod tests {
             InstancePlace {
                 path: Path::new("app"),
                 projects: &projects,
+                declarations,
             },
         );
+    }
+
+    fn check_nodes(value: &mut Value) {
+        check_declared(value, UNRECORDED);
     }
 
     fn checked(mut value: Value) -> Project {
@@ -904,6 +1048,90 @@ mod tests {
     }
 
     #[test]
+    fn a_namesake_project_of_another_package_is_another_project() {
+        // `app` imports a package from outside its module that is also
+        // named `app`: its stamps name `app`, but its `name` is declared
+        // elsewhere.
+        let at = |file: &str, line: u32| SourceLocation {
+            file: file.to_string(),
+            line,
+            column: 0,
+        };
+        let own = at("app/env.cue", 9);
+        let vendored = at("cue.mod/pkg/example.com/other/app/env.cue", 6);
+        let mut consumer = task("app", "deploy");
+        consumer["dependsOn"] = json!([
+            task("app", "build"),
+            task("app", "build"),
+            task("app", "lint")
+        ]);
+        consumer["inputs"] = json!([
+            {"cuenvOutputFilesRef": true, "cuenvProject": "app", "cuenvTask": "build"},
+            {"cuenvOutputFilesRef": true, "cuenvProject": "app", "cuenvTask": "build"},
+        ]);
+        consumer["env"] = json!({
+            "BUILT": {"cuenvOutputRef": true, "cuenvProject": "app", "cuenvTask": "build", "cuenvOutput": "stdout"},
+        });
+        let declarations: SourceMap = [
+            ("app/name", &own),
+            ("app/tasks.deploy.dependsOn[0].cuenvRef.project", &vendored),
+            ("app/tasks.deploy.dependsOn[1].cuenvRef.project", &own),
+            ("app/tasks.deploy.inputs[0].cuenvProject", &vendored),
+            ("app/tasks.deploy.inputs[1].cuenvProject", &own),
+            ("app/tasks.deploy.env.BUILT.cuenvProject", &vendored),
+            (
+                "app/ci.pipelines.default.tasks[0].cuenvRef.project",
+                &vendored,
+            ),
+        ]
+        .into_iter()
+        .map(|(key, location)| (key.to_string(), location.clone()))
+        .collect();
+        let mut value = json!({
+            "name": "app",
+            "tasks": {"build": task("app", "build"), "lint": task("app", "lint"), "deploy": consumer},
+            "ci": {"pipelines": {"default": {"tasks": [task("app", "build")]}}},
+        });
+        check_declared(
+            &mut value,
+            Declarations {
+                instance: "app",
+                at: Some(&declarations),
+            },
+        );
+        let project: Project = serde_json::from_value(value).expect("the project loads");
+
+        let deploy = project.tasks["deploy"].as_task().expect("a task");
+        // The namesake's `build` is bound among the imports, where a project
+        // of another module never binds; a stamp whose declaration was not
+        // recorded cannot be shown to be this project's.
+        assert_eq!(
+            deploy.dependency_names().collect::<Vec<_>>(),
+            ["#app:build", "build", "#app:lint"]
+        );
+        assert_eq!(
+            deploy.iter_task_output_names().collect::<Vec<_>>(),
+            ["#app:build", "build"]
+        );
+        let problems = project.diagnostics.task("deploy");
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(
+            problems[0]
+                .contains("`build.stdout` of project 'app' is not supported across projects"),
+            "{problems:?}"
+        );
+        let pipeline = project.diagnostics.pipeline("default");
+        assert_eq!(pipeline.len(), 1, "{pipeline:?}");
+        assert!(
+            pipeline[0].contains(
+                "task 'build' of project 'app' declared in \
+                 `cue.mod/pkg/example.com/other/app/env.cue`, a namesake of this project"
+            ),
+            "{pipeline:?}"
+        );
+    }
+
+    #[test]
     fn a_stamp_names_a_dependency_before_reference_metadata() {
         // Reference metadata names what the bridge saw, which a `let` or a
         // re-export can spell any way; the stamp says what the value is.
@@ -911,7 +1139,7 @@ mod tests {
             "name": "app",
             "tasks": {"deploy": {"command": "true", "dependsOn": [task("content", "build")]}},
         });
-        let diagnostics = check_identities(&mut value);
+        let diagnostics = check_identities(&mut value, UNRECORDED);
         assert!(diagnostics.is_empty());
         assert_eq!(
             value["tasks"]["deploy"]["dependsOn"][0]["_name"],

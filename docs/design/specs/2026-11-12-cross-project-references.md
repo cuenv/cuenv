@@ -529,7 +529,13 @@ an `Instance.reference_errors` entry), never a failed evaluation.
 - R0 a string input with a `..` segment, regardless of the pinned schema version (old schemas
   still pass `../` through) → diagnostic with the import message.
 - R1 `cuenvRef.project` == owner → local; name = `cuenvRef.name`, or reference metadata when
-  `name` is empty (own-instance sequence item; the bridge fills it).
+  `name` is empty (own-instance sequence item; the bridge fills it). The name alone does not
+  make a stamp local: where the evaluation records declarations, the stamp's `project` must be
+  declared where the instance's own `name` is. A same-named project of another package (one
+  vendored under `cue.mod/pkg`, say) is foreign and takes R2, so binding through the imports
+  fails it with the out-of-module error; a stamp whose declaration was not recorded, while the
+  instance's was, is foreign too. The same test decides an `outputFiles` input (R5), an output
+  reference, and every entry R6 inspects.
 - R2 `cuenvRef.project` non-empty and ≠ owner → `_name = "#p:name"`. Lists in `dependsOn` (whole
   sequences) are inspected recursively before any metadata naming; any member with a foreign
   project, or a foreign entry with empty `name` → diagnostic "depend on a named task or group of

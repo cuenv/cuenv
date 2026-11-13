@@ -25,7 +25,10 @@ tasks: build: {
 - `dependsOn: [content.tasks.articles]` depends on `content`'s task, never on a
   task of this project with the same name. It runs first, in `content`, with
   `content`'s own environment and cache identity, under `cuenv task`, `cuenv ci`
-  and `cuenv up`.
+  and `cuenv up`. A project of another package that carries this project's own
+  name (one vendored from outside the module, say) is another project too: a
+  reference to its task fails as one to any project outside the module does,
+  and never runs this project's task of that name.
 - Every task now carries `outputFiles`, its declared `outputs` as an input of
   another task. Reading it also depends on the task, which must declare
   `outputs`. The files are staged where the producer writes them. Within a

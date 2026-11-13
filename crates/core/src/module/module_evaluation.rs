@@ -48,6 +48,11 @@ pub struct ModuleEvaluationMetadata {
     pub references: Option<ReferenceMap>,
     pub sources: Option<SourceMap>,
     pub caller_sources: Option<SourceMap>,
+    /// Where values are declared, by field path, for an evaluation that
+    /// does not inject task sources: only what tells a project's own
+    /// stamps from a same-named project's (the instance's `name`, and the
+    /// project of each stamp) is read from it. `sources` serves when set.
+    pub declarations: Option<SourceMap>,
 }
 
 /// Raw CUE evaluation payload used to build a [`ModuleEvaluation`].
@@ -161,7 +166,11 @@ impl ModuleEvaluation {
                 // A node another project stamped is never named by bare
                 // reference metadata: inspect the stamps before any name is
                 // assigned, while whole sequences still carry theirs.
-                let diagnostics = node_checks::check_identities(&mut value);
+                let declarations = node_checks::Declarations {
+                    instance: &path,
+                    at: metadata.sources.as_ref().or(metadata.declarations.as_ref()),
+                };
+                let diagnostics = node_checks::check_identities(&mut value, declarations);
 
                 // Enrich task references with _name using CUE reference metadata.
                 if let Some(ref refs) = metadata.references {
@@ -190,6 +199,7 @@ impl ModuleEvaluation {
                     node_checks::InstancePlace {
                         path: &instance_path,
                         projects: &projects,
+                        declarations,
                     },
                 );
 
