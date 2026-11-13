@@ -31,91 +31,146 @@ pub enum UnmatchablePattern {
 /// changed.
 #[must_use]
 pub fn unmatchable_pattern(pattern: &str) -> Option<UnmatchablePattern> {
+    let pattern = cuenv_vcs::pattern::normalize(pattern);
     if pattern.split('/').any(|segment| segment == "..") {
         return Some(UnmatchablePattern::ParentSegment);
     }
-    if Path::new(pattern).is_absolute() {
+    if Path::new(&pattern).is_absolute() {
         return Some(UnmatchablePattern::Absolute);
     }
-    if is_glob(pattern) && Glob::new(pattern).is_err() {
+    if cuenv_vcs::pattern::is_glob(&pattern) && Glob::new(&pattern).is_err() {
         return Some(UnmatchablePattern::InvalidGlob);
     }
     None
 }
 
-/// Whether a pattern is matched as a glob rather than as a path prefix.
-fn is_glob(pattern: &str) -> bool {
-    pattern.contains('*') || pattern.contains('?') || pattern.contains('[')
+/// How an input pattern compares with the changed files.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PatternMatch {
+    /// No changed file matches the pattern.
+    None,
+    /// A changed file of the project matches, or the pattern cannot be
+    /// compared with changed files at all and something changed.
+    Matched,
+    /// No changed file of the project matches, and a changed file outside
+    /// the project does when the pattern is read from the root of the
+    /// checkout instead of from the project.
+    ///
+    /// cuenv has always counted this as a match, so it still does, but a
+    /// pattern is relative to its project: whether this is a root-relative
+    /// input someone relies on or an accident of two directories sharing a
+    /// name is for the caller to tell apart.
+    OnlyFromCheckoutRoot,
 }
 
-/// Check if any of the given files match a pattern.
+/// Compare the changed files with one input pattern of a project.
 ///
-/// Supports two matching modes:
-/// - **Simple paths**: Patterns without wildcards (`*`, `?`, `[`) are treated as path prefixes.
-///   For example, `"crates"` matches `"crates/foo/bar.rs"`.
-/// - **Glob patterns**: Patterns with wildcards use glob matching.
+/// `files` and `project_root` are in one frame: relative to the root of the
+/// checkout. The project root is `.` or empty for a project at that root.
+/// The pattern is relative to the project and is read as every other reader
+/// of inputs reads it (see `cuenv_vcs::pattern`):
+///
+/// - the empty pattern is the project directory, and matches every file of
+///   the project;
+/// - a glob (`*`, `?`, `[`, `{`) is matched as one;
+/// - anything else is a path, and matches that file and every file beneath
+///   that directory.
 ///
 /// A pattern that cannot be compared with changed files at all (see
 /// [`unmatchable_pattern`]) matches whenever any file changed: reporting no
 /// match would claim the task is unaffected when nothing shows that.
-///
-/// # Arguments
-///
-/// * `files` - Changed file paths (typically repo-relative from git diff)
-/// * `project_root` - The project root for normalizing paths
-/// * `pattern` - The input pattern to match against
-///
-/// # Returns
-///
-/// `true` if any file matches the pattern
-pub fn matches_pattern(files: &[PathBuf], project_root: &Path, pattern: &str) -> bool {
+#[must_use]
+pub fn match_pattern(files: &[PathBuf], project_root: &Path, pattern: &str) -> PatternMatch {
     if let Some(reason) = unmatchable_pattern(pattern) {
         tracing::trace!(
             pattern,
             ?reason,
             "Pattern cannot be matched; failing closed"
         );
-        return !files.is_empty();
+        return if files.is_empty() {
+            PatternMatch::None
+        } else {
+            PatternMatch::Matched
+        };
     }
 
-    // If pattern doesn't contain glob characters, treat it as a path prefix
-    let is_simple_path = !is_glob(pattern);
+    let pattern = cuenv_vcs::pattern::normalize(pattern);
+    let reader = PatternReader::new(&pattern);
+    let mut from_checkout_root = false;
 
     for file in files {
-        // Normalize the file path relative to project root
-        let relative_path = normalize_path(file, project_root);
-
-        let matched = if is_simple_path {
-            // Check if the pattern is a prefix of the file path
-            let pattern_path = Path::new(pattern);
-            relative_path.starts_with(pattern_path)
-        } else {
-            // Use glob matching for patterns with wildcards
-            let Ok(glob) = Glob::new(pattern) else {
-                tracing::trace!(pattern, "Skipping invalid glob pattern");
-                continue;
-            };
-            let Ok(set) = GlobSetBuilder::new().add(glob).build() else {
-                continue;
-            };
-            set.is_match(&relative_path)
+        let matched = match within_project(file, project_root) {
+            Some(relative) => reader.matches(relative),
+            None => {
+                // Outside the project. The empty pattern is the project
+                // directory and nothing else.
+                from_checkout_root |= !pattern.is_empty() && reader.matches(file);
+                false
+            }
         };
 
         tracing::trace!(
             file = %file.display(),
-            normalized = %relative_path.display(),
             project_root = %project_root.display(),
-            pattern,
+            pattern = %pattern,
             matched,
             "Compared changed file against affected pattern"
         );
 
         if matched {
-            return true;
+            return PatternMatch::Matched;
         }
     }
 
-    false
+    if from_checkout_root {
+        PatternMatch::OnlyFromCheckoutRoot
+    } else {
+        PatternMatch::None
+    }
+}
+
+/// Check if any of the given files match a pattern.
+///
+/// See [`match_pattern`], which this reduces to a yes or no:
+/// [`PatternMatch::OnlyFromCheckoutRoot`] counts as a match.
+#[must_use]
+pub fn matches_pattern(files: &[PathBuf], project_root: &Path, pattern: &str) -> bool {
+    match_pattern(files, project_root, pattern) != PatternMatch::None
+}
+
+/// One normalised pattern, compiled once.
+enum PatternReader<'pattern> {
+    /// The project directory: every file of the project.
+    Everything,
+    /// A file, or a directory and everything beneath it.
+    Path(&'pattern Path),
+    /// A glob.
+    Glob(GlobSet),
+}
+
+impl<'pattern> PatternReader<'pattern> {
+    fn new(pattern: &'pattern str) -> Self {
+        if pattern.is_empty() {
+            return Self::Everything;
+        }
+        if !cuenv_vcs::pattern::is_glob(pattern) {
+            return Self::Path(Path::new(pattern));
+        }
+        // `unmatchable_pattern` has refused an invalid glob by now, so a
+        // failure here matches nothing rather than everything.
+        Glob::new(pattern)
+            .ok()
+            .and_then(|glob| GlobSetBuilder::new().add(glob).build().ok())
+            .map_or(Self::Path(Path::new(pattern)), Self::Glob)
+    }
+
+    fn matches(&self, relative: &Path) -> bool {
+        match self {
+            Self::Everything => true,
+            Self::Path(path) => relative.starts_with(path),
+            Self::Glob(set) => set.is_match(relative),
+        }
+    }
 }
 
 /// Build a GlobSet from multiple patterns for efficient batch matching.
@@ -147,75 +202,17 @@ pub fn build_glob_set<'a>(patterns: impl Iterator<Item = &'a str>) -> Option<Glo
     builder.build().ok()
 }
 
-/// Normalize a file path relative to a project root.
+/// The path of `file` inside the project, when it is a file of the project.
 ///
-/// Handles the common case where git diff returns repo-relative paths,
-/// but we need to match against project-relative patterns.
-fn normalize_path(file: &Path, project_root: &Path) -> PathBuf {
-    // If root is "." or empty, use file as-is
+/// Both are relative to the root of the checkout, so this is an exact prefix
+/// test. Guessing where an absolute project root sits in the checkout from
+/// the names of its last directories used to make a checkout named like one
+/// of its projects (`.../docs/docs`) read every path one level off.
+fn within_project<'file>(file: &'file Path, project_root: &Path) -> Option<&'file Path> {
     if project_root == Path::new(".") || project_root.as_os_str().is_empty() {
-        tracing::trace!(
-            file = %file.display(),
-            project_root = %project_root.display(),
-            normalized = %file.display(),
-            "Project root is current directory; using file path as-is"
-        );
-        return file.to_path_buf();
+        return Some(file);
     }
-
-    if let Some(stripped) = strip_project_root_prefix(file, project_root) {
-        tracing::trace!(
-            file = %file.display(),
-            project_root = %project_root.display(),
-            normalized = %stripped.display(),
-            "Normalized changed file relative to project root"
-        );
-        return stripped;
-    }
-
-    tracing::trace!(
-        file = %file.display(),
-        project_root = %project_root.display(),
-        normalized = %file.display(),
-        "Could not normalize changed file against project root; using original path"
-    );
-    file.to_path_buf()
-}
-
-fn strip_project_root_prefix(file: &Path, project_root: &Path) -> Option<PathBuf> {
-    if let Ok(stripped) = file.strip_prefix(project_root) {
-        return Some(stripped.to_path_buf());
-    }
-
-    if file.is_relative() && project_root.is_absolute() {
-        return strip_relative_file_with_absolute_project_root(file, project_root);
-    }
-
-    None
-}
-
-fn strip_relative_file_with_absolute_project_root(
-    file: &Path,
-    project_root: &Path,
-) -> Option<PathBuf> {
-    let root_components: Vec<_> = project_root.components().collect();
-
-    for suffix_start in 0..root_components.len() {
-        let candidate: PathBuf = root_components[suffix_start..]
-            .iter()
-            .map(|component| component.as_os_str())
-            .collect();
-
-        if candidate.as_os_str().is_empty() || candidate.is_absolute() {
-            continue;
-        }
-
-        if file.starts_with(&candidate) {
-            return file.strip_prefix(&candidate).ok().map(Path::to_path_buf);
-        }
-    }
-
-    None
+    file.strip_prefix(project_root).ok()
 }
 
 /// Trait for types that can determine if they are affected by file changes.
@@ -295,49 +292,127 @@ mod tests {
     }
 
     #[test]
-    fn test_normalize_path_relative_file_with_project_root() {
-        let file = Path::new("projects/website/src/lib.rs");
-        let root = Path::new("projects/website");
-
-        let normalized = normalize_path(file, root);
-        assert_eq!(normalized, PathBuf::from("src/lib.rs"));
+    fn a_file_is_placed_in_its_project_by_an_exact_prefix() {
+        assert_eq!(
+            within_project(
+                Path::new("projects/website/src/lib.rs"),
+                Path::new("projects/website")
+            ),
+            Some(Path::new("src/lib.rs"))
+        );
+        assert_eq!(
+            within_project(Path::new("src/lib.rs"), Path::new(".")),
+            Some(Path::new("src/lib.rs"))
+        );
+        assert_eq!(
+            within_project(Path::new("src/lib.rs"), Path::new("")),
+            Some(Path::new("src/lib.rs"))
+        );
+        assert_eq!(
+            within_project(
+                Path::new("projects/api/src/lib.rs"),
+                Path::new("projects/website")
+            ),
+            None
+        );
     }
 
     #[test]
-    fn test_normalize_path_dot_root() {
-        let file = Path::new("src/lib.rs");
+    fn a_checkout_named_like_its_project_is_not_read_one_level_off() {
+        // The checkout is `.../docs/docs` and the project is `docs`. Placing
+        // the project by the names of its last directories stripped `docs/`
+        // twice and read `docs/index.md` as `index.md` of a project `docs/docs`.
+        let files = vec![PathBuf::from("docs/index.md")];
+
+        assert!(matches_pattern(&files, Path::new("docs"), "index.md"));
+        assert!(matches_pattern(&files, Path::new("docs"), "**/*.md"));
+        assert!(!matches_pattern(&files, Path::new("docs"), "docs/**"));
+    }
+
+    #[test]
+    fn a_pattern_is_matched_however_it_is_spelled() {
+        let root = Path::new("app");
+        let lock = vec![PathBuf::from("app/bun.lock")];
+        let nested = vec![PathBuf::from("app/src/deep/c.txt")];
+
+        for spelling in ["bun.lock", "./bun.lock", " bun.lock ", "bun.lock\u{a0}"] {
+            assert!(matches_pattern(&lock, root, spelling), "{spelling:?}");
+        }
+        for spelling in [
+            "src",
+            "./src",
+            "src/",
+            "src/.",
+            "src//deep",
+            "src/./deep/c.txt",
+        ] {
+            assert!(matches_pattern(&nested, root, spelling), "{spelling:?}");
+        }
+        for spelling in ["src/**", "./src/**", "src//**", "src/** "] {
+            assert!(matches_pattern(&nested, root, spelling), "{spelling:?}");
+        }
+    }
+
+    #[test]
+    fn a_brace_pattern_is_a_glob() {
         let root = Path::new(".");
+        let files = vec![PathBuf::from("src/a.txt")];
 
-        let normalized = normalize_path(file, root);
-        assert_eq!(normalized, PathBuf::from("src/lib.rs"));
+        assert!(matches_pattern(&files, root, "src/{a,b}.txt"));
+        assert!(!matches_pattern(&files, root, "src/{b,c}.txt"));
+        assert!(matches_pattern(
+            &[PathBuf::from("config.yaml")],
+            root,
+            "config.{json,yaml}"
+        ));
     }
 
     #[test]
-    fn test_normalize_path_relative_file_with_absolute_project_root() {
-        let file = Path::new("chat/src/lib.rs");
-        let root = Path::new("/repo/chat");
+    fn the_empty_pattern_is_the_project_directory() {
+        let root = Path::new("app");
 
-        let normalized = normalize_path(file, root);
-        assert_eq!(normalized, PathBuf::from("src/lib.rs"));
+        for spelling in ["", ".", "./", " "] {
+            assert!(
+                matches_pattern(&[PathBuf::from("app/any/file.txt")], root, spelling),
+                "{spelling:?}"
+            );
+            assert_eq!(
+                match_pattern(&[PathBuf::from("docs/readme.md")], root, spelling),
+                PatternMatch::None,
+                "{spelling:?}"
+            );
+        }
     }
 
     #[test]
-    fn test_normalize_path_relative_file_with_nested_absolute_project_root() {
-        let file = Path::new("infrastructure/waddle.cloud/src/main.rs");
-        let root = Path::new("/repo/infrastructure/waddle.cloud");
+    fn a_match_only_from_the_checkout_root_is_told_apart() {
+        let root = Path::new("app");
+        let shared = vec![PathBuf::from("shared/x.txt")];
 
-        let normalized = normalize_path(file, root);
-        assert_eq!(normalized, PathBuf::from("src/main.rs"));
-    }
+        assert_eq!(
+            match_pattern(&shared, root, "shared/**"),
+            PatternMatch::OnlyFromCheckoutRoot
+        );
+        assert_eq!(
+            match_pattern(&shared, root, "shared"),
+            PatternMatch::OnlyFromCheckoutRoot
+        );
+        assert!(matches_pattern(&shared, root, "shared/**"));
+        assert_eq!(match_pattern(&shared, root, "src/**"), PatternMatch::None);
 
-    #[test]
-    fn test_matches_pattern_with_absolute_project_root() {
-        let files = vec![PathBuf::from("chat/src/app.rs")];
-        let root = Path::new("/repo/chat");
-
-        assert!(matches_pattern(&files, root, "src"));
-        assert!(matches_pattern(&files, root, "src/app.rs"));
-        assert!(matches_pattern(&files, root, "src/**"));
+        // A file of the project wins over a root namesake.
+        let both = vec![
+            PathBuf::from("package.json"),
+            PathBuf::from("app/package.json"),
+        ];
+        assert_eq!(
+            match_pattern(&both, root, "package.json"),
+            PatternMatch::Matched
+        );
+        assert_eq!(
+            match_pattern(&both[..1], root, "package.json"),
+            PatternMatch::OnlyFromCheckoutRoot
+        );
     }
 
     #[test]

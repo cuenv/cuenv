@@ -114,6 +114,13 @@ impl Checkout {
         self.repository().is_shallow()
     }
 
+    /// The root of the worktree, which changed files are relative to; `None`
+    /// for a bare repository.
+    #[must_use]
+    pub fn root(&self) -> Option<PathBuf> {
+        self.repository().workdir().map(Path::to_path_buf)
+    }
+
     /// The repository, for the thread that asks.
     fn repository(&self) -> gix::Repository {
         self.repository.to_thread_local()

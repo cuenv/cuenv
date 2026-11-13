@@ -34,7 +34,6 @@ on:
     - contrib/**
     - crates/**
     - cue.mod/**
-    - cue.mod/**/*.cue
     - cuenv.lock
     - cuenv.lock/**
     - deny.toml
@@ -67,7 +66,6 @@ on:
     - readme.md
     - readme.md/**
     - schema/**
-    - schema/**/*.cue
     - scripts/check-schema-compat.sh
     - scripts/check-schema-compat.sh/**
     - scripts/check-schema-docs.sh
@@ -113,7 +111,6 @@ on:
     - contrib/**
     - crates/**
     - cue.mod/**
-    - cue.mod/**/*.cue
     - cuenv.lock
     - cuenv.lock/**
     - deny.toml
@@ -146,7 +143,6 @@ on:
     - readme.md
     - readme.md/**
     - schema/**
-    - schema/**/*.cue
     - scripts/check-schema-compat.sh
     - scripts/check-schema-compat.sh/**
     - scripts/check-schema-docs.sh

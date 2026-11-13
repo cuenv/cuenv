@@ -9,6 +9,7 @@
 
 pub mod error;
 pub mod hasher;
+pub mod pattern;
 pub mod walker;
 
 pub use error::{Error, Result};

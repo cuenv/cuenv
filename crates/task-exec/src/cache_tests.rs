@@ -2154,3 +2154,26 @@ fn literal_prefix_bounds_a_pattern() {
     );
     assert_eq!(super::literal_prefix("**/*.js"), PathBuf::new());
 }
+
+#[test]
+fn a_blank_input_means_the_project_directory_below_the_hasher_root() {
+    let patterns = [
+        "".to_string(),
+        " ".to_string(),
+        ".".to_string(),
+        "src/**".to_string(),
+    ];
+
+    let prefixed = super::prefix_patterns_for_hasher_root(
+        &patterns,
+        Path::new("/repo/app"),
+        Path::new("/repo"),
+    )
+    .unwrap();
+
+    let normalized: Vec<String> = prefixed
+        .iter()
+        .map(|pattern| cuenv_vcs::pattern::normalize(pattern))
+        .collect();
+    assert_eq!(normalized, ["app", "app", "app", "app/src/**"]);
+}

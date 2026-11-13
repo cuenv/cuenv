@@ -6,7 +6,7 @@
 //! This module owns project-level scheduling and reporting. Per-task DAG
 //! execution lives in `task_execution`.
 
-use crate::affected::{AffectedProjects, ChangedInputs};
+use crate::affected::{AffectedProjects, ChangedInputs, CheckoutFrame};
 use crate::discovery;
 use crate::provider::CIProvider;
 use crate::report::{ContextReport, PipelineReport, PipelineStatus};
@@ -112,7 +112,11 @@ struct DiscoveredCiProjects {
     projects: Vec<(PathBuf, Project)>,
     /// Every project of the module by name, in or out of scope: a task in
     /// scope may depend on a task of a project that `--path` leaves out.
+    /// Each project's directory is relative to the root of the checkout,
+    /// the frame changed files are reported in.
     project_map: ProjectDependencyMap,
+    /// Where the checkout's root is.
+    frame: CheckoutFrame,
     project_configs: ProjectConfigMap,
     /// The directory `--path` names, when it names one.
     named_path: Option<PathBuf>,
@@ -144,7 +148,8 @@ fn load_ci_projects(path_filter: Option<&str>) -> Result<Option<DiscoveredCiProj
 
     // Dependencies are resolved against every project of the module, before
     // `--path` narrows what runs.
-    let project_map = build_project_map(&projects);
+    let frame = CheckoutFrame::around(&module.root);
+    let project_map = place_projects(build_project_map(&projects), &frame);
 
     // Filter projects by path if specified (and not the default ".")
     let named_path = path_filter
@@ -171,6 +176,7 @@ fn load_ci_projects(path_filter: Option<&str>) -> Result<Option<DiscoveredCiProj
     Ok(Some(DiscoveredCiProjects {
         projects,
         project_map,
+        frame,
         project_configs,
         named_path,
     }))
@@ -197,6 +203,29 @@ fn build_project_map(projects: &[(PathBuf, Project)]) -> ProjectDependencyMap {
         }
     }
     project_map
+}
+
+/// Give every project its directory relative to the root of the checkout.
+///
+/// A project outside the checkout cannot be compared with changed files. It
+/// is left out, so a dependency on it does not resolve and counts as
+/// affected.
+fn place_projects(projects: ProjectDependencyMap, frame: &CheckoutFrame) -> ProjectDependencyMap {
+    projects
+        .into_iter()
+        .filter_map(|(name, (path, config))| {
+            let placed = frame.place(&path);
+            if placed.is_none() {
+                cuenv_events::emit_stderr!(format!(
+                    "warning: project '{name}' at {} is outside the checkout at {}, so its \
+                     files cannot be compared with changes; tasks that depend on it always run",
+                    path.display(),
+                    frame.root().display()
+                ));
+            }
+            placed.map(|placed| (name, (placed, config)))
+        })
+        .collect()
 }
 
 fn build_project_configs(projects: &[(PathBuf, Project)]) -> ProjectConfigMap {
@@ -260,6 +289,7 @@ async fn run_ci_projects(
             context,
             changed_files,
             project_map: &discovered.project_map,
+            frame: &discovered.frame,
         })? {
             ProjectPlan::Run(plan) => {
                 pipeline_defined = true;
@@ -408,6 +438,7 @@ struct ProjectPipelinePlanRequest<'request> {
     context: &'request crate::context::CIContext,
     changed_files: &'request [PathBuf],
     project_map: &'request ProjectDependencyMap,
+    frame: &'request CheckoutFrame,
 }
 
 #[derive(Debug)]
@@ -428,6 +459,7 @@ fn plan_project_pipeline(request: ProjectPipelinePlanRequest<'_>) -> Result<Proj
         context,
         changed_files,
         project_map,
+        frame,
     } = request;
 
     // A project the caller named must have the pipeline. A discovered one
@@ -481,18 +513,29 @@ fn plan_project_pipeline(request: ProjectPipelinePlanRequest<'_>) -> Result<Proj
 
     let tasks_to_run = if task_selection == TaskSelection::All || context.event == "release" {
         pipeline_task_names
-    } else {
+    } else if let Some(project_root) = frame.place(project_path) {
         crate::affected::compute_affected_tasks(
             ChangedInputs {
                 files: changed_files,
-                project_root: project_path,
+                project_root: &project_root,
             },
             &pipeline_task_names,
             &AffectedProjects {
                 project: config,
                 all_projects: project_map,
+                checkout_root: Some(frame.root()),
             },
         )
+    } else {
+        // Changed files are relative to the checkout. A project that is not
+        // inside it cannot be shown to be unaffected by any of them.
+        cuenv_events::emit_stderr!(format!(
+            "warning: project {} is outside the checkout at {}, so its inputs cannot be \
+             compared with changes; every task of pipeline '{pipeline_name}' is selected",
+            project_path.display(),
+            frame.root().display()
+        ));
+        pipeline_task_names
     };
 
     if tasks_to_run.is_empty() {
@@ -696,6 +739,7 @@ mod tests {
             context: &context,
             changed_files: &[PathBuf::from("changed.txt")],
             project_map: &HashMap::new(),
+            frame: &CheckoutFrame::at(Path::new("/workspace")),
         });
         assert_eq!(context.event, "merge_group");
         assert_eq!(context.sha, "candidate");
@@ -727,6 +771,7 @@ mod tests {
             context: &context,
             changed_files: &[PathBuf::from("changed.txt")],
             project_map: &HashMap::new(),
+            frame: &CheckoutFrame::at(Path::new("/workspace")),
         })
     }
 

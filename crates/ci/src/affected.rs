@@ -1,18 +1,75 @@
 use cuenv_core::manifest::Project;
 use cuenv_core::tasks::TaskNode;
-use cuenv_core::{AffectedBy, UnmatchablePattern};
+use cuenv_core::{AffectedBy, PatternMatch, UnmatchablePattern};
 use cuenv_task_exec::TaskIndex;
+use cuenv_vcs::WalkHasher;
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::hash::BuildHasher;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
-/// Changed files relative to a project root.
+/// The frame changed files are reported in: the root of the checkout.
+///
+/// A provider reports changed files relative to the root of the checkout,
+/// and a task's inputs are relative to its project. To compare them, a
+/// project's directory is placed in the checkout by an exact prefix.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckoutFrame {
+    /// Canonical, so a project reached through a symlink is still placed.
+    root: PathBuf,
+}
+
+impl CheckoutFrame {
+    /// The checkout that holds `directory`: the root of its git worktree,
+    /// or `directory` itself outside a repository, where no file is
+    /// reported as changed and the frame only has to be consistent.
+    #[must_use]
+    pub fn around(directory: &Path) -> Self {
+        let root = crate::provider::git::Checkout::around(directory)
+            .and_then(|checkout| checkout.root())
+            .unwrap_or_else(|| directory.to_path_buf());
+        Self::at(&root)
+    }
+
+    /// The frame of a checkout whose root is known.
+    #[must_use]
+    pub fn at(root: &Path) -> Self {
+        Self {
+            root: canonical(root),
+        }
+    }
+
+    /// The root of the checkout.
+    #[must_use]
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// `directory` relative to the root of the checkout, empty for the root
+    /// itself; `None` when the directory is not inside the checkout.
+    #[must_use]
+    pub fn place(&self, directory: &Path) -> Option<PathBuf> {
+        canonical(directory)
+            .strip_prefix(&self.root)
+            .ok()
+            .map(Path::to_path_buf)
+    }
+}
+
+/// The canonical form of a path, or the path as given when it cannot be
+/// resolved (it does not exist, as in a dry description of a checkout).
+fn canonical(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// Changed files and the project whose inputs they are compared with, in
+/// one frame: both relative to the root of the checkout.
 #[derive(Clone, Copy)]
 pub struct ChangedInputs<'changes> {
     /// Files changed for the current event.
     pub files: &'changes [PathBuf],
-    /// Project root used to match task input paths.
+    /// The project's directory (see [`CheckoutFrame::place`]); `.` or empty
+    /// for a project at the root of the checkout.
     pub project_root: &'changes Path,
 }
 
@@ -20,12 +77,18 @@ pub struct ChangedInputs<'changes> {
 pub struct AffectedProjects<'projects, S> {
     /// Project whose pipeline tasks are being selected.
     pub project: &'projects Project,
-    /// Workspace projects available to external task references.
+    /// Workspace projects available to external task references, each with
+    /// its directory relative to the root of the checkout.
     pub all_projects: &'projects HashMap<String, (PathBuf, Project), S>,
+    /// The root of the checkout, when the files of a project can be looked
+    /// at. It is only used to tell a root-relative input someone relies on
+    /// from an accident of names (see [`PatternMatch::OnlyFromCheckoutRoot`]).
+    pub checkout_root: Option<&'projects Path>,
 }
 
 struct ExternalDependencyContext<'context, S> {
     projects: &'context HashMap<String, (PathBuf, Project), S>,
+    checkout_root: Option<&'context Path>,
     changed_files: &'context [PathBuf],
     cache: &'context mut HashMap<String, bool>,
     /// Dependencies whose check has started and not finished. Meeting one
@@ -56,6 +119,7 @@ where
     let AffectedProjects {
         project: config,
         all_projects,
+        checkout_root,
     } = projects;
     tracing::trace!(
         project_root = %project_root.display(),
@@ -63,6 +127,16 @@ where
         changed_files = ?changed_files,
         "Computing affected tasks for CI pipeline"
     );
+
+    // A directory below a project inherits the project's name and is
+    // planned on its own. Its inherited inputs are written for the
+    // directory that declares the name, so the root-relative reading is no
+    // sign of a mistake there.
+    let warning_root = checkout_root.filter(|_| {
+        all_projects
+            .get(&config.name)
+            .is_none_or(|(declaring, _)| declaring == project_root)
+    });
 
     let mut affected = HashSet::new();
     let mut visited_external_cache: HashMap<String, bool> = HashMap::new();
@@ -92,6 +166,14 @@ where
     for task_name in &all_dag_tasks {
         let directly_affected = if let Ok(entry) = index.resolve(task_name) {
             warn_about_unmatchable_inputs(project_root, task_name, &entry.node);
+            warn_about_root_relative_inputs(
+                changed,
+                warning_root,
+                NamedNode {
+                    name: task_name,
+                    node: &entry.node,
+                },
+            );
             entry.node.is_affected_by(changed_files, project_root)
         } else {
             // The executor reports the missing task; selecting it here is
@@ -99,7 +181,7 @@ where
             warn_once(&format!(
                 "task '{task_name}' of project {} does not resolve, so it cannot be shown to \
                  be unaffected and is selected",
-                project_root.display()
+                display_project(project_root)
             ));
             true
         };
@@ -135,6 +217,7 @@ where
                                 dep_name,
                                 &mut ExternalDependencyContext {
                                     projects: all_projects,
+                                    checkout_root: *checkout_root,
                                     changed_files,
                                     cache: &mut visited_external_cache,
                                     visiting: &mut visiting_external,
@@ -352,6 +435,17 @@ where
         };
 
         warn_about_unmatchable_inputs(project_path, task_name, &entry.node);
+        warn_about_root_relative_inputs(
+            ChangedInputs {
+                files: context.changed_files,
+                project_root: project_path,
+            },
+            context.checkout_root,
+            NamedNode {
+                name: task_name,
+                node: &entry.node,
+            },
+        );
         if entry
             .node
             .is_affected_by(context.changed_files, project_path)
@@ -413,10 +507,92 @@ fn warn_about_unmatchable_inputs(project_root: &Path, task_name: &str, node: &Ta
         warn_once_per_task(task, &format!("{reason:?}"), || {
             format!(
                 "task '{task_name}' of project {} has input '{pattern}': {explanation}",
-                project_root.display()
+                display_project(project_root)
             )
         });
     }
+}
+
+/// Warn about inputs of `node` that someone relies on being read from the
+/// root of the checkout.
+///
+/// An input is relative to its project, yet a changed file outside the
+/// project has always been compared with the pattern as well. That keeps a
+/// task affected in two different situations:
+///
+/// - The pattern selects nothing under its project (`shared/**` in `app`,
+///   with a `shared/` directory only at the root). The root-relative reading
+///   is what the user relies on, and it is going away, so they are told.
+/// - The pattern does select files under its project, and the root happens
+///   to have files of the same name (`package.json`, `src/**`). The
+///   configuration is correct and the extra run is an accident. Nothing is
+///   said.
+///
+/// Changed files alone cannot tell the two apart; the files of the project
+/// can. Without a checkout to look at, nothing is said.
+fn warn_about_root_relative_inputs(
+    changed: ChangedInputs<'_>,
+    checkout_root: Option<&Path>,
+    task: NamedNode<'_>,
+) {
+    let Some(checkout_root) = checkout_root else {
+        return;
+    };
+    let NamedNode {
+        name: task_name,
+        node,
+    } = task;
+    let warned = WarnedTask {
+        project_root: changed.project_root,
+        task_name,
+    };
+    for pattern in root_relative_inputs(changed, checkout_root, node) {
+        warn_once_per_task(warned, "root-relative", || {
+            format!(
+                "task '{task_name}' of project {project} has input '{pattern}', which selects \
+                 nothing under {project} and matched a changed file only when read from the \
+                 root of the repository. Inputs are relative to their project; this \
+                 root-relative reading still selects the task for now and is going away (#611)",
+                project = display_project(changed.project_root)
+            )
+        });
+    }
+}
+
+/// The inputs of `node` that matched a changed file only when read from the
+/// root of the checkout and that select no file under their own project.
+fn root_relative_inputs<'node>(
+    changed: ChangedInputs<'_>,
+    checkout_root: &Path,
+    node: &'node TaskNode,
+) -> Vec<&'node str> {
+    let project_directory = checkout_root.join(changed.project_root);
+    let walker = WalkHasher::new(&project_directory);
+    node.input_patterns()
+        .into_iter()
+        .filter(|pattern| {
+            cuenv_core::match_pattern(changed.files, changed.project_root, pattern)
+                == PatternMatch::OnlyFromCheckoutRoot
+        })
+        // A pattern the walker cannot read selects nothing under the project.
+        .filter(|pattern| !walker.selects_any(pattern).unwrap_or(false))
+        .collect()
+}
+
+/// A project's directory as a warning names it.
+fn display_project(project_root: &Path) -> String {
+    if project_root.as_os_str().is_empty() {
+        ".".to_string()
+    } else {
+        project_root.display().to_string()
+    }
+}
+
+/// A task node and the name it is selected by.
+#[derive(Clone, Copy)]
+struct NamedNode<'node> {
+    name: &'node str,
+    node: &'node TaskNode,
 }
 
 /// The task a warning is about.

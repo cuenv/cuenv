@@ -6,6 +6,7 @@
 
 use crate::error::{Error, Result};
 use crate::hasher::{HashedInput, VcsHasher};
+use crate::pattern;
 use async_trait::async_trait;
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use sha2::{Digest, Sha256};
@@ -86,50 +87,54 @@ impl WalkHasher {
         Ok((hex::encode(hasher.finalize()), size))
     }
 
+    /// Whether `pattern` selects at least one file of the workspace.
+    ///
+    /// The pattern is read exactly as hashing reads it, so the answer is
+    /// whether hashing would find anything. Nothing is hashed, and the walk
+    /// stops at the first match. A path that does not exist selects nothing.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the pattern is not a valid glob, leaves the workspace, or
+    /// the workspace cannot be read.
+    pub fn selects_any(&self, pattern: &str) -> Result<bool> {
+        let found = self.resolve(&[pattern.to_string()], Collect::FirstMatch)?;
+        Ok(!found.is_empty())
+    }
+
     fn resolve_sync(&self, patterns: &[String]) -> Result<Vec<HashedInput>> {
+        self.resolve(patterns, Collect::Hash)
+    }
+
+    fn resolve(&self, patterns: &[String], collect: Collect) -> Result<Vec<HashedInput>> {
         let mut explicit_files: Vec<String> = Vec::new();
         let mut dirs_to_walk: Vec<(String, GlobSet)> = Vec::new();
 
         for pat in patterns {
-            let trimmed = pat.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            validate_pattern(trimmed)?;
-            let looks_like_glob = trimmed.contains('*')
-                || trimmed.contains('{')
-                || trimmed.contains('?')
-                || trimmed.contains('[');
-            let abs = self.workspace_root.join(trimmed);
+            // Every reader of an input pattern normalises it the same way;
+            // see `crate::pattern`. The empty pattern is the workspace itself.
+            let normal = pattern::normalize(pat);
+            validate_pattern(&normal)?;
+            let abs = self.workspace_root.join(&normal);
 
-            if looks_like_glob {
-                let base_dir = extract_glob_base(trimmed);
-                let glob = Glob::new(trimmed).map_err(|e| {
-                    Error::pattern(format!("invalid glob pattern `{trimmed}`: {e}"))
-                })?;
-                let set = GlobSetBuilder::new()
-                    .add(glob)
-                    .build()
-                    .map_err(|e| Error::pattern(format!("failed to build globset: {e}")))?;
-                dirs_to_walk.push((base_dir, set));
+            if pattern::is_glob(&normal) {
+                let base_dir = pattern::literal_prefix(&normal);
+                dirs_to_walk.push((base_dir, single_glob(&normal)?));
             } else if abs.is_dir() {
-                let glob_pat = format!("{}/**/*", trimmed.trim_end_matches('/'));
-                let glob = Glob::new(&glob_pat).map_err(|e| {
-                    Error::pattern(format!("invalid glob pattern `{glob_pat}`: {e}"))
-                })?;
-                let set = GlobSetBuilder::new()
-                    .add(glob)
-                    .build()
-                    .map_err(|e| Error::pattern(format!("failed to build globset: {e}")))?;
-                dirs_to_walk.push((trimmed.to_string(), set));
+                let glob_pat = if normal.is_empty() {
+                    "**/*".to_string()
+                } else {
+                    format!("{normal}/**/*")
+                };
+                dirs_to_walk.push((normal, single_glob(&glob_pat)?));
             } else {
-                explicit_files.push(trimmed.to_string());
+                explicit_files.push(normal);
             }
         }
 
         let workspace = fs::canonicalize(&self.workspace_root)
             .map_err(|e| Error::io(e, &self.workspace_root, "canonicalize"))?;
-        let mut collected = Collected::default();
+        let mut collected = Collected::new(collect);
         // Canonical, so a walk that reaches them through a symlink or a
         // `/var` -> `/private/var` alias still recognises them.
         let excluded: Vec<PathBuf> = self
@@ -143,19 +148,22 @@ impl WalkHasher {
             // A declared path may be, or pass through, a symlink. Like a Bazel
             // source file, it stands for whatever it points at.
             let target = match fs::canonicalize(&abs) {
-                Ok(target) => target,
+                Ok(target) if target.is_file() => target,
+                // Asking whether a path selects anything is not an error
+                // when it selects nothing.
+                _ if collect == Collect::FirstMatch => continue,
                 Err(error) if fs::symlink_metadata(&abs).is_ok() => {
                     return Err(Error::io(error, &abs, "follow dangling symlink input"));
                 }
-                Err(_) => return Err(explicit_not_found(raw, &abs)),
+                Ok(_) | Err(_) => return Err(explicit_not_found(raw, &abs)),
             };
-            if !target.is_file() {
-                return Err(explicit_not_found(raw, &abs));
-            }
             collected.push(normalize_rel_path(Path::new(raw)), &target)?;
         }
 
         for (base_dir, globset) in &dirs_to_walk {
+            if collected.complete() {
+                break;
+            }
             let walk_root = self.workspace_root.join(base_dir);
             // `exists` follows symlinks, so a dangling base is skipped too.
             if !walk_root.exists() {
@@ -226,14 +234,46 @@ fn normalize_rel_path(p: &Path) -> PathBuf {
     out
 }
 
+/// A set that matches one glob.
+fn single_glob(glob: &str) -> Result<GlobSet> {
+    let compiled = Glob::new(glob)
+        .map_err(|e| Error::pattern(format!("invalid glob pattern `{glob}`: {e}")))?;
+    GlobSetBuilder::new()
+        .add(compiled)
+        .build()
+        .map_err(|e| Error::pattern(format!("failed to build globset: {e}")))
+}
+
+/// What a resolution is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Collect {
+    /// Every selected file, hashed.
+    Hash,
+    /// Whether anything is selected: stop at the first file and hash nothing.
+    FirstMatch,
+}
+
 /// Inputs resolved so far, deduplicated by workspace-relative path.
-#[derive(Default)]
 struct Collected {
+    collect: Collect,
     seen: BTreeSet<PathBuf>,
     results: Vec<HashedInput>,
 }
 
 impl Collected {
+    fn new(collect: Collect) -> Self {
+        Self {
+            collect,
+            seen: BTreeSet::new(),
+            results: Vec::new(),
+        }
+    }
+
+    /// Whether nothing more needs to be found.
+    fn complete(&self) -> bool {
+        self.collect == Collect::FirstMatch && !self.results.is_empty()
+    }
+
     /// Record the file at `target` as the input named `relative`.
     ///
     /// `target` is the resolved file, so a symlinked input contributes the
@@ -242,13 +282,19 @@ impl Collected {
         if !self.seen.insert(relative.clone()) {
             return Ok(());
         }
-        let (sha256, size) = WalkHasher::hash_file(target)?;
+        let (sha256, size, is_executable) = match self.collect {
+            Collect::Hash => {
+                let (sha256, size) = WalkHasher::hash_file(target)?;
+                (sha256, size, is_executable(target)?)
+            }
+            Collect::FirstMatch => (String::new(), 0, false),
+        };
         self.results.push(HashedInput {
             relative_path: relative,
             absolute_path: target.to_path_buf(),
             sha256,
             size,
-            is_executable: is_executable(target)?,
+            is_executable,
         });
         Ok(())
     }
@@ -297,6 +343,9 @@ impl Walk<'_> {
         let entries =
             fs::read_dir(physical).map_err(|e| Error::io(e, physical, "walk directory"))?;
         for entry in entries {
+            if collected.complete() {
+                break;
+            }
             let entry = entry.map_err(|e| Error::io(e, physical, "walk directory"))?;
             let path = entry.path();
             if is_scratch_dir(&path) {
@@ -373,28 +422,6 @@ fn is_executable(_path: &Path) -> Result<bool> {
     Ok(false)
 }
 
-/// Extract the literal-prefix of a glob pattern.
-///
-/// * `src/**/*.ts` → `src`
-/// * `**/*.ts` → `` (workspace root)
-/// * `foo/bar/*.rs` → `foo/bar`
-fn extract_glob_base(pattern: &str) -> String {
-    let mut parts = Vec::new();
-    for segment in pattern.split('/') {
-        if segment.contains('*')
-            || segment.contains('{')
-            || segment.contains('?')
-            || segment.contains('[')
-        {
-            break;
-        }
-        if !segment.is_empty() {
-            parts.push(segment);
-        }
-    }
-    parts.join("/")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -434,12 +461,85 @@ mod tests {
     }
 
     #[test]
-    fn empty_and_whitespace_patterns_are_ignored() {
+    fn the_empty_pattern_and_a_lone_dot_mean_the_workspace_itself() {
+        // Affected detection reads these as "anything in the project", so
+        // hashing has to as well: a pattern hashed as nothing and matched as
+        // everything would never invalidate the cache.
         let tmp = TempDir::new().unwrap();
+        fs::create_dir_all(tmp.path().join("src")).unwrap();
         fs::write(tmp.path().join("a.txt"), "content").unwrap();
+        fs::write(tmp.path().join("src/b.txt"), "content").unwrap();
         let hasher = WalkHasher::new(tmp.path());
-        let inputs = hasher.resolve_sync(&[String::new(), "  ".into()]).unwrap();
-        assert!(inputs.is_empty());
+        for pattern in ["", "  ", ".", "./"] {
+            let inputs = hasher.resolve_sync(&[pattern.into()]).unwrap();
+            let paths: Vec<_> = inputs.iter().map(|i| i.relative_path.clone()).collect();
+            assert_eq!(
+                paths,
+                [PathBuf::from("a.txt"), PathBuf::from("src/b.txt")],
+                "{pattern:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_pattern_is_read_the_same_however_it_is_spelled() {
+        let tmp = TempDir::new().unwrap();
+        fs::create_dir_all(tmp.path().join("src/deep")).unwrap();
+        fs::write(tmp.path().join("bun.lock"), "lock").unwrap();
+        fs::write(tmp.path().join("src/a.txt"), "a").unwrap();
+        fs::write(tmp.path().join("src/b.txt"), "b").unwrap();
+        fs::write(tmp.path().join("src/deep/c.txt"), "c").unwrap();
+        for (plain, spellings) in [
+            (
+                "bun.lock",
+                vec!["./bun.lock", " bun.lock ", "bun.lock\u{a0}"],
+            ),
+            ("src", vec!["./src", "src/", "src/.", "src//", " src"]),
+            (
+                "src/deep/c.txt",
+                vec!["src/./deep/c.txt", "src//deep/c.txt"],
+            ),
+            ("src/*.txt", vec!["./src/*.txt", "src//*.txt", "src/*.txt "]),
+            ("src/{a,b}.txt", vec!["./src/{a,b}.txt"]),
+        ] {
+            let expected = resolved(tmp.path(), &[plain]);
+            assert!(!expected.is_empty(), "{plain:?} selects something");
+            for spelling in spellings {
+                assert_eq!(resolved(tmp.path(), &[spelling]), expected, "{spelling:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn selects_any_answers_without_hashing_and_reads_patterns_as_hashing_does() {
+        let tmp = TempDir::new().unwrap();
+        fs::create_dir_all(tmp.path().join("src/deep")).unwrap();
+        fs::create_dir_all(tmp.path().join("empty")).unwrap();
+        fs::write(tmp.path().join("src/deep/c.txt"), "c").unwrap();
+        let hasher = WalkHasher::new(tmp.path());
+
+        for selected in [
+            "src",
+            "./src/",
+            "src/**",
+            "src/deep/c.txt",
+            "**/*.txt",
+            "",
+            "src/{deep,x}/*",
+        ] {
+            assert!(hasher.selects_any(selected).unwrap(), "{selected:?}");
+        }
+        for nothing in [
+            "shared/**",
+            "shared",
+            "missing.txt",
+            "empty",
+            "empty/**",
+            "src/*.md",
+        ] {
+            assert!(!hasher.selects_any(nothing).unwrap(), "{nothing:?}");
+        }
+        assert!(hasher.selects_any("../outside").is_err());
     }
 
     #[test]
@@ -552,14 +652,6 @@ mod tests {
         let hasher = WalkHasher::new(tmp.path());
         let inputs = hasher.resolve_and_hash(&["*.txt".into()]).await.unwrap();
         assert_eq!(inputs.len(), 1);
-    }
-
-    #[test]
-    fn extract_glob_base_handles_common_shapes() {
-        assert_eq!(extract_glob_base("src/**/*.ts"), "src");
-        assert_eq!(extract_glob_base("**/*.ts"), "");
-        assert_eq!(extract_glob_base("foo/bar/*.rs"), "foo/bar");
-        assert_eq!(extract_glob_base("*.txt"), "");
     }
 
     #[test]

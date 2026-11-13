@@ -32,7 +32,6 @@ on:
     - contrib/**
     - crates/**
     - cue.mod/**
-    - cue.mod/**/*.cue
     - deny.toml
     - deny.toml/**
     - env.cue
@@ -47,7 +46,6 @@ on:
     - nix/source-files.json
     - nix/source-files.json/**
     - schema/**
-    - schema/**/*.cue
     - tools/function-enum/Cargo.lock
     - tools/function-enum/Cargo.lock/**
     - tools/function-enum/Cargo.toml

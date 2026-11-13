@@ -15,7 +15,8 @@ on:
     - docs/wrangler.jsonc
     - docs/wrangler.jsonc/**
     - env.cue
-    - integrations/*/package.json
+    - env.cue/**
+    - integrations/**
     - package.json
     - package.json/**
     - schema/**
