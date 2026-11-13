@@ -14,6 +14,7 @@ mod rail;
 mod scrollbar;
 mod search_bar;
 mod session_state;
+mod toast;
 mod tokens;
 mod tooltip;
 

@@ -245,6 +245,11 @@ impl InteractionState {
         matched
     }
 
+    /// Lets go of whatever is selected, as after it has been copied.
+    pub fn clear_selection(&mut self) {
+        self.place_selection(None, SelectionSource::User);
+    }
+
     pub fn select_match(&mut self, matched: SearchMatch) {
         self.place_selection(Some(match_selection(matched)), SelectionSource::SearchMatch);
     }
@@ -329,6 +334,26 @@ mod tests {
             .copy(&source),
             "abcd"
         );
+    }
+
+    #[test]
+    fn clearing_after_a_copy_leaves_nothing_selected() {
+        let sampled = frame(vec![("one ", RowWrap::None)]);
+        let hit = CellHitTest {
+            cell_width: 1.0,
+            cell_height: 1.0,
+            rows: 1,
+            columns: 4,
+        };
+        let mut state = InteractionState::default();
+        state.begin_selection(hit, LogicalPosition { line: 0, column: 0 });
+        state.extend_selection(hit, LogicalPosition { line: 0, column: 2 });
+        state.end_selection();
+        assert_eq!(state.copy(&sampled).as_deref(), Some("one"));
+
+        state.clear_selection();
+        assert_eq!(state.selection(), None);
+        assert_eq!(state.copy(&sampled), None);
     }
 
     #[test]

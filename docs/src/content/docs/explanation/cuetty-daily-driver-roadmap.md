@@ -179,7 +179,10 @@ Rio-owned history navigation is now wired through `TerminalSession` to
 wheel/trackpad scrolling and Shift-Page Up/Down or Shift-Home/End. A real-PTY
 fixture proves navigation to retained history and back to the live viewport.
 Mouse selections now use Rio's history and copy on release; dragging at the
-top or bottom of the grid scrolls and extends the selection. Literal search
+top or bottom of the grid scrolls and extends the selection. Every copy, on
+release, from the copy shortcut, or from the palette, shows a brief "Copied to
+clipboard" toast, and a copied selection is cleared so the copy is visible.
+OSC 52 writes from programs stay silent. Literal search
 still addresses one sampled viewport and is rebuilt when the viewport moves.
 
 The ad-hoc-signed app bundle also launched into a visible shell. Direct command

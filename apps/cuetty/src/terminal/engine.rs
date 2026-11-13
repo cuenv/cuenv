@@ -1779,6 +1779,19 @@ pub(super) struct TerminalView {
     /// What the platform says about motion, read once as the window opens.
     system_motion: MotionPace,
     pub(super) motion: ChromeMotion,
+    /// The note showing at the foot of the terminal, until its time is up.
+    toast: Option<Toast>,
+    /// Identifies the latest toast, so an older one's timer leaves a newer one alone.
+    toast_id: u64,
+}
+
+/// How long a toast stays before it goes on its own.
+const TOAST_DURATION: std::time::Duration = std::time::Duration::from_millis(1500);
+
+#[derive(Clone, Copy)]
+struct Toast {
+    id: u64,
+    message: &'static str,
 }
 
 #[derive(Clone, Copy)]
@@ -2360,6 +2373,8 @@ impl TerminalView {
             frame_due: None,
             system_motion: MotionPace::default(),
             motion: ChromeMotion::default(),
+            toast: None,
+            toast_id: 0,
         };
         view.read_system_motion(cx);
         if let Some(session) = session {
@@ -3192,7 +3207,7 @@ impl TerminalView {
                     .active_state()
                     .and_then(|state| state.session.last_command_output())
                 {
-                    cx.write_to_clipboard(ClipboardItem::new_string(text));
+                    self.copy_to_clipboard(text, cx);
                 }
             }
         }
@@ -3523,8 +3538,12 @@ impl TerminalView {
                     state.session.selection_text()
                 }
             }) {
-                cx.write_to_clipboard(ClipboardItem::new_string(text));
+                self.copy_to_clipboard(text, cx);
+                if let Some(pane) = self.active_pane() {
+                    self.drop_selection(pane);
+                }
             }
+            cx.notify();
             return;
         }
         if self
@@ -3723,6 +3742,53 @@ impl TerminalView {
             .is_some_and(|gesture| gesture.id == id)
     }
 
+    /// Copies what a finished drag selected, then lets go of it, so the selection
+    /// vanishing and the toast together say the copy happened.
+    fn copy_finished_selection(&mut self, cx: &mut Context<Self>) {
+        let pane = self.selection_gesture.map(|gesture| gesture.pane);
+        if let (Some(pane), Some(text)) = (pane, self.finish_selection()) {
+            self.copy_to_clipboard(text, cx);
+            self.drop_selection(pane);
+        }
+    }
+
+    /// Clears a pane's selection, both what Rio paints and what search placed.
+    fn drop_selection(&mut self, pane: crate::workspace::PaneId) {
+        if let Some(state) = self.registry.sessions.get_mut(&pane) {
+            state.session.clear_selection();
+            state.interaction.clear_selection();
+        }
+    }
+
+    /// Puts `text` on the clipboard and says so.
+    fn copy_to_clipboard(&mut self, text: String, cx: &mut Context<Self>) {
+        cx.write_to_clipboard(ClipboardItem::new_string(text));
+        self.show_toast("Copied to clipboard", cx);
+    }
+
+    /// Shows `message` briefly. A newer toast replaces it and gets its own full time.
+    fn show_toast(&mut self, message: &'static str, cx: &mut Context<Self>) {
+        self.toast_id = self.toast_id.wrapping_add(1);
+        let id = self.toast_id;
+        self.toast = Some(Toast { id, message });
+        cx.spawn(async move |weak, cx| {
+            Timer::after(TOAST_DURATION).await;
+            let _ = weak.update(cx, |view, cx| {
+                if view.toast.is_some_and(|toast| toast.id == id) {
+                    view.toast = None;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// What the toast says, while one is showing.
+    pub(super) fn toast_message(&self) -> Option<&'static str> {
+        self.toast.map(|toast| toast.message)
+    }
+
     /// Finish only the session that owned the press, even if the active tab changed.
     fn finish_selection(&mut self) -> Option<String> {
         let gesture = self.selection_gesture.take()?;
@@ -3748,9 +3814,7 @@ impl TerminalView {
         } else {
             // Moving with no button held means the press ended where no release
             // could reach this view, such as outside the window.
-            if let Some(text) = self.finish_selection() {
-                cx.write_to_clipboard(ClipboardItem::new_string(text));
-            }
+            self.copy_finished_selection(cx);
             cx.notify();
         }
     }
@@ -3763,9 +3827,7 @@ impl TerminalView {
         }
         if event.button == MouseButton::Left {
             self.update_selection_position(event.position);
-            if let Some(text) = self.finish_selection() {
-                cx.write_to_clipboard(ClipboardItem::new_string(text));
-            }
+            self.copy_finished_selection(cx);
             cx.notify();
         }
     }
@@ -4048,6 +4110,9 @@ impl Render for TerminalView {
         }
         if let Some(search_bar) = self.render_search_bar(&theme, cx) {
             terminal_surface = terminal_surface.child(search_bar);
+        }
+        if let Some(toast) = self.render_toast(&theme) {
+            terminal_surface = terminal_surface.child(toast);
         }
         if let Some(command_palette) = self.render_command_palette(&theme, cx) {
             terminal_surface = terminal_surface.child(command_palette);
