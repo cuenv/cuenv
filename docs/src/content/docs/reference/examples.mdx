@@ -243,6 +243,39 @@ tasks: {
 cuenv task render --path examples/file-references/app --package examples
 ```
 
+## Task references
+
+[`examples/task-references`](https://github.com/cuenv/cuenv/tree/main/examples/task-references)
+depends on a task of another project through its import, and reads the file
+that task declares in `outputs` through its `outputFiles`. The other project's
+task runs first, in its own project. Language: any version.
+
+```cue
+package examples
+
+import (
+	"github.com/cuenv/cuenv/schema"
+	content "github.com/cuenv/cuenv/examples/task-references/content:examples"
+)
+
+schema.#Project
+
+name: "task-references-app"
+
+tasks: {
+	show: schema.#Task & {
+		command: "cat"
+		args: ["../content/dist/hello.txt"]
+		dependsOn: [content.tasks.build]
+		inputs: ["env.cue", content.tasks.build.outputFiles]
+	}
+}
+```
+
+```bash
+cuenv task show --path examples/task-references/app --package examples
+```
+
 ## Hooks
 
 [`examples/hook`](https://github.com/cuenv/cuenv/tree/main/examples/hook) runs a

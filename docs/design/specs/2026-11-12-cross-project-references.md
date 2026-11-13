@@ -567,7 +567,9 @@ an `Instance.reference_errors` entry), never a failed evaluation.
     github.com/cuenv/cuenv@vX`". On a current schema (the R3 branch) the message is "defined in
     project p's directory: reference `p.tasks.<name>`".
   - Deferrable: it is a migration aid for old pinned schemas (`schema_compat.rs` already warns
-    on version skew); first item to move to a follow-up if PR-B2 grows.
+    on version skew); first item to move to a follow-up if PR-B2 grows. **Deferred in B2**:
+    the release note says to upgrade the schema before depending on imported tasks (§7);
+    filed in §8.
   - Best-effort and documented: `_source` is the `command`/`script` position, so two foreign
     and local tasks built from the same template remain indistinguishable on old schemas; groups
     carry no `_source`. Value equality was rejected (red-team r3 table: misses identical bodies,
@@ -976,7 +978,11 @@ from the checkout root, so the B2 failure does not wait for a change to touch th
 (api-designer r15 N2).
 
 Deferred from this plan: optional file references; CUE-text renderer hints for file
-references (the mistakes and their real error lines are in round-12-api-designer.md, N1).
+references (the mistakes and their real error lines are in round-12-api-designer.md, N1);
+the source check of §3 (B2 shipped without it: an old pinned schema without stamps
+can still bind an imported task to a same-named local one); R0's "unless p already
+imports the consumer" refinement (B2's R0 message names the holding project only when
+the evaluation knows it, and always gives the `schema.#ModuleFiles` form).
 
 Named outputs for built files (spelling chosen then, not `artifact(s)`; file references already
 cover files nobody builds); `outputFiles` on groups; cross-project

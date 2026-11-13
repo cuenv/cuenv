@@ -347,7 +347,11 @@ tasks: build: {
 }
 ```
 
-- A **plain string** is a path or glob relative to the task's own project.
+- A **plain string** is a path or glob relative to the task's own project, and
+  stays inside it. A string with a `..` segment is an error, which says how to
+  name the files instead: the schema rejects it, and on an older pinned schema
+  cuenv refuses the task. A string is never read from the root of the
+  repository either: `shared/**` in `app` means `app/shared/**`.
 - **`<pkg>.#Files & {paths: [...]}`** names files of the project you import as
   `<pkg>`, relative to that project's directory. Import a project by its
   directory and the package `cuenv`: `content "<module>/content:cuenv"`.
@@ -430,56 +434,79 @@ Things to know:
 The schema also stamps every task, group, service and image with the project it
 belongs to (a reserved `cuenvRef` field), and every output reference with its
 project. A task of another project reached through an import is therefore
-never mistaken for a task of yours with the same name. Depending on it
-(`dependsOn: [content.tasks.build]`) is an error for the task that does so,
-until cross-project task references through imports arrive in a later release;
-so is another project's task in a pipeline's `tasks`, in a matrix entry's
-`task`, in a service's `watch.rebuild`, in a service's or image's `dependsOn`,
-or in an output reference (`content.tasks.build.stdout`). Each is raised only
-where a graph, affected detection or CI compilation reaches the node that holds
-it. One case is not caught yet: a dependency on another project's sequence
-whose members are all nested sequences carries no project stamp and is still
-bound by its bare name. Re-labelling another project's task
-(`tasks: articles: content.tasks.articles`) conflicts on the stamp; put
-reusable task bodies in a definition of a package that is not a project.
+never mistaken for a task of yours with the same name: it is depended on as
+that project's task (see [Tasks of another project](#tasks-of-another-project)).
+Another project's task in a pipeline's `tasks`, in a matrix entry's `task`, in
+a service's `watch.rebuild`, in a service's or image's `dependsOn`, or in an
+output reference (`content.tasks.build.stdout`) is not supported across
+projects yet, and is an error for the node that holds it. Each is raised only
+where a graph, affected detection or CI compilation reaches that node.
+Re-labelling another project's task (`tasks: articles: content.tasks.articles`)
+conflicts on the stamp; put reusable task bodies in a definition of a package
+that is not a project.
 
 At language version `v0.18.0` a base is written `schema.#Base...`: embedding
 `schema.#Base` there closes the package and rejects every child's `name`. Below
 `v0.18.0` that spelling does not parse and plain `schema.#Base` works as
 before; a base that embeds no schema works at every version.
 
-### Inputs from another project
+### Tasks of another project
 
-An input may name another project's task instead of a path. cuenv hashes the
-files that project produced and records them under each mapping's `to` path,
-which is where the consuming task will read them:
+A task of another project is reached through that project's import, like its
+files. Depend on it in `dependsOn`, and read the files it declares in `outputs`
+through its `outputFiles`:
 
 ```cue
-tasks: {
-    bundle: schema.#Task & {
-        command: "esbuild"
-        inputs: [
-            "src/**/*.ts",
-            {
-                project: "design-system"
-                task:    "build"
-                map: [{from: "dist", to: "vendor/design-system"}]
-            },
-        ]
-        outputs: ["out/bundle.js"]
-        cache: mode: "read-write"
-    }
+// app/env.cue
+package cuenv
+
+import (
+	"github.com/cuenv/cuenv/schema"
+	content "example.com/mono/content:cuenv"
+)
+
+schema.#Project
+name: "app"
+
+tasks: build: {
+	command: "sh"
+	args: ["-c", "cat ../content/dist/articles.json > site.json"]
+	dependsOn: [content.tasks.articles]                    // a task of another project
+	inputs: [content.tasks.articles.outputFiles, "src/**"] // its declared outputs
+	outputs: ["site.json"]
 }
 ```
 
-The reference is also an implicit dependency, named `#design-system:build` in
-the task graph. cuenv follows it when the task that declares it is about to
-run: it loads the referenced project, runs the producer, and only then hashes
-and stages the mapped output for the consumer. A clean checkout therefore does
-not require the producer's output to exist before the task run starts.
-`cuenv task`, `cuenv ci` and `cuenv up` all follow the dependency the same way.
+- `outputFiles` stands for every path the task declares in `outputs`, and
+  reading it also makes the reader depend on the task: listing the producer in
+  both `dependsOn` and `inputs` is redundant. The files are staged where the
+  producer writes them (`content/dist/articles.json` from the module root), so
+  the consumer reads them at that path.
+- The same works within a project: `inputs: [tasks.docs.build.outputFiles]`.
+  New configurations should write that rather than `{task: "docs.build"}`.
+- A producer read through `outputFiles` must declare `outputs`.
+- A group can be depended on, and its tasks' `outputFiles` read; a group itself
+  cannot be an input yet. A whole sequence of another project, and a step of
+  one, cannot be depended on: depend on a named task or group of it.
+- Neither a task nor a group is an input itself: `inputs: [content.tasks.build]`
+  is a CUE error, and cuenv says to write `.outputFiles`.
+- The project is bound among what the reading project imports, by its
+  declaring directory, as for file references. A project that is not imported
+  is never bound in its place, even when the module has one of that name.
+- Mutual dependencies between two projects (an import cycle) need a third
+  project that both import.
+- `["src/**", ...content.tasks.build.outputFiles]` is not a reference: never
+  spread one.
 
-#### How a `#project:task` dependency runs
+In the task graph the dependency is named `#content:articles`. cuenv follows it
+when the task that declares it is about to run: it loads the referenced
+project, runs the producer, and only then hashes and stages its outputs for
+the consumer. A clean checkout therefore does not require the producer's output
+to exist before the run starts. `cuenv task`, `cuenv ci` and `cuenv up` all
+follow the dependency the same way; `cuenv sync ci` follows it for trigger
+paths (see [CI](/how-to/ci/)).
+
+#### How a task of another project runs
 
 A task of another project runs **in its own project**, exactly as it would if
 you had asked for it there:
@@ -495,29 +522,21 @@ you had asked for it there:
 - **Cache identity.** Its results are keyed with its own project's runtime, so
   they are shared with runs started in that project.
 - **Graph only.** It runs as a dependency and nothing else. It is not listed by
-  `cuenv task`, and cannot be asked for by name (`cuenv task '#design-system:build'`)
+  `cuenv task`, and cannot be asked for by name (`cuenv task '#content:articles'`)
   or by `--label` from another project.
 
-`project` may be written as the other project's `name`, or as a path: relative
-to the consuming project (`../design-system`), or with a leading `/`, which is
-VCS-workspace-relative, not host-root-relative. A name means the shallowest
-directory that carries it. Path references are canonicalized and must remain
-inside the VCS workspace. However a project is spelled, its tasks are one set of
-nodes in the graph, shown under the project's name (`#design-system:build`).
-A project reached only by a path, in a run that never had to list the module's
-names, is shown by its path from the workspace root instead
-(`#/packages/design-system:build`), as is a directory that only inherits its
-project's name.
+Only the referring project's imports are read to bind a name, and nothing else
+is evaluated: a directory of the module that does not evaluate cannot fail a
+task that does not import it. A reference that cannot be followed never fails a
+task that does not use it.
 
-Looking a project up **by name** needs every directory of the module to
-evaluate, because a directory that does not could be the one that carries the
-name. When one does not, the task that refers to a project by name fails and
-says which directory is at fault; tasks that reach no other project, and
-references written as paths, are unaffected. A reference that cannot be followed
-never fails a task that does not use it.
+The `{project, task, map}` input and the `#project:task:path` shorthand were
+removed. An older pinned schema still lets them through; cuenv refuses the task
+that holds one and says what to write instead. Run `cue mod get
+github.com/cuenv/cuenv@latest` to get `outputFiles`.
 
 Outputs referenced through `tasks.<name>.stdout` and the like stay within their
-project: a task of `design-system` that reads another of its tasks' output reads
+project: a task of `content` that reads another of its tasks' output reads
 that task's, never a task of the same name in the consuming project.
 
 #### Where consumed files are staged
@@ -526,14 +545,15 @@ A task under the default directory sandbox runs in an execution root that holds
 its declared inputs at the paths they have in the repository. Consumed task
 outputs are placed in that same frame:
 
-- **Without `map`** (`inputs: [{task: "generate"}]`), every declared output of
-  the producer is staged **where the producer writes it**. A producer that runs
-  in `tools/` and declares `outputs: ["data.txt"]` is read at `tools/data.txt`
-  below its project. When the producer runs in the consumer's own directory,
+- **`outputFiles`, or `{task}` without `map`** (`inputs: [tasks.generate.outputFiles]`),
+  every declared output of the producer is staged **where the producer writes
+  it**. A producer that runs in `tools/` and declares `outputs: ["data.txt"]` is
+  read at `tools/data.txt` below its project; one of another project at its
+  path in that project. When the producer runs in the consumer's own directory,
   which is the usual case, that is the path the consumer already expects.
-- **With `map`**, each `from` is read below the producer's working directory
-  (for a `project` reference, below that project's directory) and staged at
-  `to` **below the consuming task's project**.
+- **With `map`** (`{task: "generate", map: [...]}`, a task of the same project
+  only), each `from` is read below the producer's working directory and staged
+  at `to` **below the consuming task's project**.
 
 Both rules hold whether or not the CUE module is the root of its repository.
 
@@ -556,9 +576,9 @@ declaration, and its cache key, said it had read it. Drop the mapping and read
 the file where its task produces it, or run the task under the directory
 sandbox.
 
-A reference that resolves to neither a project nor a safe workspace path has
-nothing honest to hash. cuenv reports that configuration error, with the reason
-the project could not be loaded, instead of exposing the live checkout. Input
+A reference to a project that cannot be bound or loaded has nothing honest to
+hash. cuenv reports that configuration error, with the reason the project could
+not be loaded, instead of exposing the live checkout. Input
 hash failures include the underlying path or pattern error so the declaration
 can be corrected directly.
 

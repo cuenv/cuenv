@@ -17,6 +17,25 @@ instance say where `@embed` reads from, add `cue/provenance`, and stop the shari
 down from a comprehension, which panicked; see
 `2026-11-03-infrastructure-nested-output-references.md`.
 
+Since cuenv 0.75.0 the fork is pinned at
+[`806b303`](https://github.com/rawkode/cue/commit/806b30344b62), the head of
+its `share-imported-typed-refs` branch (`crates/cuengine/go.mod`). That commit
+extends typed-reference sharing to references into imported packages, so a
+chain of projects whose tasks depend on the tasks of the projects they import
+(`dependsOn: [content.tasks.articles]`, see
+`2026-11-12-cross-project-references.md`) evaluates in linear time, as a
+same-package chain already did. Measured on a chain of eight projects, each
+with two tasks depending on both tasks of the next project through its import:
+`cuenv task a --dry-run` in the first project, which loads and plans all eight,
+takes 1.2 seconds with a debug build, while stock CUE 0.17.1 does not finish
+`cue export` of that project within 120 seconds.
+`a_deep_chain_of_projects_evaluates_without_exploding`
+(`crates/cuenv/tests/task_references.rs`) generates that chain and fails on an
+exponential regression; it is never checked in as a fixture, since plain
+`cue export` of it is what explodes. `ci.schema-compat` exports a chain of
+three projects (`tests/schema-compat/testdata/modules/task-references`) under
+every supported CUE release.
+
 The schema keeps its types. `dependsOn` on `#Task`, `#TaskGroup`,
 `#ContainerImage` and `#Service`, `#Pipeline.tasks`, `#MatrixTask.task` and
 `#Watch.rebuild` are typed with `#TaskNode` unions. #515 had made `dependsOn`
