@@ -1051,9 +1051,11 @@ fn collect_task(
             requires_parameters: false,
         });
         for (child_name, child) in object {
+            // `cuenvRef` is what the schema stamps on a group (which project
+            // it belongs to), never a child, as cuenv itself reads it.
             if matches!(
                 child_name.as_str(),
-                "type" | "dependsOn" | "maxConcurrency" | "description"
+                "type" | "dependsOn" | "maxConcurrency" | "description" | "cuenvRef"
             ) || child_name.starts_with('_')
             {
                 continue;
@@ -2055,6 +2057,67 @@ mod tests {
         assert_eq!(tasks[1].kind, CuenvTaskKind::Group);
         assert_eq!(tasks[2].kind, CuenvTaskKind::Task);
         assert_eq!(tasks[3].kind, CuenvTaskKind::Sequence);
+    }
+
+    #[test]
+    fn task_catalog_reads_the_project_stamps_of_the_schema() {
+        // The schema stamps every task, group and output reference with its
+        // project; a stamp is never a task of its own.
+        let stamp = |kind: &str, name: &str| serde_json::json!({"kind": kind, "project": "cuenv", "name": name});
+        let output = |task: &str| {
+            serde_json::json!({
+                "cuenvOutputRef": true,
+                "cuenvProject": "cuenv",
+                "cuenvTask": task,
+                "cuenvOutput": "stdout"
+            })
+        };
+        let evaluation = parse_tasks(&serde_json::json!({
+            "tasks": {
+                "build": {
+                    "cuenvRef": stamp("task", "build"),
+                    "command": "cargo",
+                    "stdout": output("build"),
+                    "inputs": [
+                        "src/**",
+                        {"cuenvFiles": "project", "cuenvProject": "content", "paths": ["articles/**"]},
+                        {"cuenvFiles": "module", "paths": ["Cargo.lock"]}
+                    ]
+                },
+                "checks": {
+                    "cuenvRef": stamp("group", "checks"),
+                    "type": "group",
+                    "lint": {
+                        "cuenvRef": stamp("task", "checks.lint"),
+                        "command": "cargo",
+                        "args": [output("build")]
+                    },
+                    "nested": {
+                        "cuenvRef": stamp("group", "checks.nested"),
+                        "type": "group",
+                        "fmt": {"cuenvRef": stamp("task", "checks.nested.fmt"), "command": "cargo"}
+                    }
+                },
+                "release": [{"cuenvRef": stamp("task", ""), "command": "cargo"}]
+            }
+        }));
+        let Ok(tasks) = evaluation else {
+            panic!("expected a valid task catalog: {evaluation:?}");
+        };
+        assert_eq!(
+            tasks
+                .iter()
+                .map(|task| task.name.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "build",
+                "checks",
+                "checks.lint",
+                "checks.nested",
+                "checks.nested.fmt",
+                "release"
+            ]
+        );
     }
 
     #[test]
