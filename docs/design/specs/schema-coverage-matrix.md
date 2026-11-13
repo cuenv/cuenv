@@ -231,7 +231,14 @@ member's version, so a release does not rebuild any dependency. The Go bridge is
 built from its Go sources alone with no tests, and its tests are a flake check.
 
 CLI note: project discovery (`cuenv ci`, `cuenv sync`) accepts file attributes
-such as `@extern(embed)` or `@if(tag)` before an `env.cue` package clause.
+such as `@extern(embed)` or `@if(tag)` before an `env.cue` package clause. Every
+`env.cue` walk of a module (`cuenv ci`, the per-directory fallback of
+`cuenv task` and `cuenv sync`, `cuenv info`, completions) visits the directories
+CUE's `./...` loads: it leaves out the module's `cue.mod` (vendored packages
+under `cue.mod/pkg` included), directories whose name starts with `.` or `_`,
+`testdata`, and nested CUE modules (a directory with its own `cue.mod`), so none
+of them is a project of the module (`crates/core/src/cue/discovery.rs`,
+`crates/cuenv/tests/task_references.rs`).
 
 CI note: `schema.#GitHubConfig.trustedPublishing` supports `cratesIo` and
 `cueRegistry`. The CUE Registry path is implemented by the GitHub contributor

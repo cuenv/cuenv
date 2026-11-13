@@ -227,27 +227,22 @@ fn collect_ancestor_env_files(
 
 /// Discover all directories containing env.cue files with matching package.
 ///
-/// Uses the `ignore` crate to walk the filesystem while respecting `.gitignore`.
-/// Returns directories (not file paths) that contain env.cue files with the
-/// expected package declaration.
+/// Walks the directories CUE's `./...` pattern loads (see [`module_walk`]),
+/// respecting `.gitignore`, and returns the directories (not file paths)
+/// that contain env.cue files with the expected package declaration.
 ///
 /// # Arguments
 /// * `module_root` - The CUE module root directory (must contain cue.mod/)
 /// * `expected_package` - The CUE package name to filter for
 ///
 /// # Returns
-/// A vector of directory paths (relative to module_root) containing matching env.cue files.
+/// The canonical paths of the directories containing matching env.cue files.
 /// The paths are suitable for use with `cuengine::evaluate_module` with `TargetDir` option.
 #[must_use]
 pub fn discover_env_cue_directories(module_root: &Path, expected_package: &str) -> Vec<PathBuf> {
     let mut directories = Vec::new();
 
-    let walker = WalkBuilder::new(module_root)
-        .follow_links(false)
-        .standard_filters(true)
-        .build();
-
-    for result in walker {
+    for result in module_walk(module_root) {
         let Ok(entry) = result else {
             continue;
         };
@@ -273,20 +268,16 @@ pub fn discover_env_cue_directories(module_root: &Path, expected_package: &str) 
 
 /// Discover all directories containing an env.cue file, regardless of package.
 ///
-/// This scans the workspace for any `env.cue` files and returns their
-/// canonical parent directories. Use when a command intends to operate over the
-/// entire workspace scope (e.g., `sync -A`), independent of CUE package names.
+/// This scans the module for any `env.cue` files, in the directories CUE's
+/// `./...` pattern loads (see [`module_walk`]), and returns their canonical
+/// parent directories. Use when a command intends to operate over the entire
+/// workspace scope (e.g., `sync -A`), independent of CUE package names.
 #[must_use]
 pub fn discover_all_env_cue_directories(module_root: &Path) -> Vec<PathBuf> {
     let mut directories = Vec::new();
     let mut entries_visited: u64 = 0;
 
-    let walker = WalkBuilder::new(module_root)
-        .follow_links(false)
-        .standard_filters(true)
-        .build();
-
-    for result in walker {
+    for result in module_walk(module_root) {
         entries_visited += 1;
         let Ok(entry) = result else { continue };
         let path = entry.path();
@@ -309,6 +300,41 @@ pub fn discover_all_env_cue_directories(module_root: &Path) -> Vec<PathBuf> {
     );
 
     directories
+}
+
+/// Walk the files of the CUE module at `module_root` that CUE's `./...`
+/// pattern loads, respecting `.gitignore`.
+///
+/// Below the root, the walk leaves out what `./...` leaves out: the module's
+/// own `cue.mod` (its vendored and generated packages), every directory whose
+/// name starts with `.` or `_`, `testdata`, and every directory that holds its
+/// own `cue.mod` (another CUE module). An `env.cue` there is never a project
+/// of this module, and the recursive evaluation `cuenv task` makes would not
+/// load it either.
+fn module_walk(module_root: &Path) -> ignore::Walk {
+    WalkBuilder::new(module_root)
+        .follow_links(false)
+        .standard_filters(true)
+        .filter_entry(|entry| entry.depth() == 0 || !is_left_out_of_module_walk(entry))
+        .build()
+}
+
+/// Whether CUE's `./...` walk leaves out `entry`, which is below the walk
+/// root. A `cue.mod` below the module's own lies in a nested module, which is
+/// left out already, so its name alone identifies the module's own.
+fn is_left_out_of_module_walk(entry: &ignore::DirEntry) -> bool {
+    if !entry
+        .file_type()
+        .is_some_and(|file_type| file_type.is_dir())
+    {
+        return false;
+    }
+    let name = entry.file_name().as_encoded_bytes();
+    name == b"cue.mod"
+        || name.starts_with(b".")
+        || name.starts_with(b"_")
+        || name == b"testdata"
+        || entry.path().join("cue.mod").exists()
 }
 
 fn matches_package(path: &Path, expected_package: &str) -> bool {
@@ -601,5 +627,57 @@ package cuenv // inline
         assert!(result.contains("/repo/a: syntax error"));
         assert!(result.contains("/repo/b: missing field"));
         assert!(result.contains('\n'));
+    }
+
+    /// A module whose root is named like a directory the walk leaves out
+    /// (a `.tmp` temporary directory), with one project of its own and an
+    /// `env.cue` everywhere CUE's `./...` does not load.
+    fn module_with_left_out_env_files() -> TempDir {
+        let temp_dir = TempDir::new().unwrap();
+        let root = temp_dir.path();
+        fs::create_dir_all(root.join("cue.mod")).unwrap();
+        for directory in [
+            "app",
+            "cue.mod/pkg/example.com/other/web",
+            "cue.mod/gen/example.com/generated",
+            "tools",
+            "tools/nested",
+            "_drafts",
+            ".hidden",
+            "fixtures/testdata/case",
+        ] {
+            fs::create_dir_all(root.join(directory)).unwrap();
+            fs::write(root.join(directory).join("env.cue"), "package cuenv\n").unwrap();
+        }
+        fs::create_dir_all(root.join("tools/cue.mod")).unwrap();
+        temp_dir
+    }
+
+    #[test]
+    fn discover_env_cue_directories_walks_what_cue_loads() {
+        let temp_dir = module_with_left_out_env_files();
+        let root = temp_dir.path();
+
+        let discovered = super::discover_env_cue_directories(root, "cuenv");
+
+        assert_eq!(discovered, [root.join("app").canonicalize().unwrap()]);
+    }
+
+    #[test]
+    fn discover_all_env_cue_directories_walks_what_cue_loads() {
+        let temp_dir = module_with_left_out_env_files();
+        let root = temp_dir.path();
+        fs::write(root.join("env.cue"), "package other\n").unwrap();
+
+        let mut discovered = super::discover_all_env_cue_directories(root);
+        discovered.sort();
+
+        assert_eq!(
+            discovered,
+            [
+                root.canonicalize().unwrap(),
+                root.join("app").canonicalize().unwrap()
+            ]
+        );
     }
 }
