@@ -113,7 +113,10 @@ fn snapshot_survives_source_deletion_and_preserves_unknown_provenance() -> TestR
         value: ScalarValue::from_json(&serde_json::from_str::<Box<RawValue>>("true")?)?,
     });
     let concrete = snapshot.specialize(&options)?;
-    assert!(concrete.unresolved.is_empty());
+    assert_eq!(
+        concrete.unresolved,
+        [] as [cuengine::frozen::DeferredValue; 0]
+    );
     assert!(concrete.value.get().contains(exact_number));
 
     options.fills.clear();

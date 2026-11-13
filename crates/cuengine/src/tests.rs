@@ -124,7 +124,7 @@ fn test_evaluate_cue_package_invalid_package_name() {
 fn test_evaluate_cue_package_nonexistent_directory() {
     let nonexistent = Path::new("/definitely/does/not/exist/12345");
     let error = super::evaluate_cue_package(nonexistent, "env").unwrap_err();
-    assert!(!error.to_string().is_empty());
+    assert_ne!(error.to_string(), "");
 }
 
 #[test]
@@ -152,7 +152,7 @@ fn test_evaluate_cue_error_handling() {
     )
     .unwrap();
     let error = super::evaluate_cue_package(temp_dir.path(), "cuenv").unwrap_err();
-    assert!(!error.to_string().is_empty());
+    assert_ne!(error.to_string(), "");
 }
 
 #[test]
@@ -207,7 +207,7 @@ fn test_error_message_parsing() {
     )
     .unwrap();
     let error = super::evaluate_cue_package(temp_dir.path(), "nonexistent_package").unwrap_err();
-    assert!(!error.to_string().is_empty());
+    assert_ne!(error.to_string(), "");
 }
 
 #[test]

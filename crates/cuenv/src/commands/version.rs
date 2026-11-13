@@ -80,7 +80,7 @@ mod tests {
     #[test]
     fn test_get_version_info_not_empty() {
         let version_info = get_version_info();
-        assert!(!version_info.is_empty());
+        assert_ne!(version_info, "");
         assert!(version_info.len() > 100); // Should be reasonably long
     }
 

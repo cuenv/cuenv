@@ -11,7 +11,7 @@ pub struct OutputRefResolver<'resolver> {
     pub results: &'resolver HashMap<String, TaskResult>,
 }
 
-impl<'resolver> OutputRefResolver<'resolver> {
+impl OutputRefResolver<'_> {
     /// Resolve all output ref placeholder strings in a task's args and env.
     ///
     /// Called just before task execution. Replaces placeholder strings with

@@ -315,7 +315,7 @@ fn test_providers_for_pipeline_override() {
 #[test]
 fn test_providers_for_pipeline_empty() {
     let ci = CI::default();
-    assert!(ci.providers_for_pipeline("any").is_empty());
+    assert_eq!(ci.providers_for_pipeline("any"), [] as [String; 0]);
 }
 
 #[test]

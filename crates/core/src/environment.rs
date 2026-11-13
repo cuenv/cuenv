@@ -96,11 +96,13 @@ pub enum ActionEnvironment {
 
 impl Environment {
     /// Create a new empty environment
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Create environment from a map
+    #[must_use]
     pub fn from_map(vars: HashMap<String, String>) -> Self {
         Self {
             vars,
@@ -109,6 +111,7 @@ impl Environment {
     }
 
     /// Get an environment variable value
+    #[must_use]
     pub fn get(&self, key: &str) -> Option<&str> {
         self.vars.get(key).map(|s| s.as_str())
     }
@@ -142,11 +145,13 @@ impl Environment {
     }
 
     /// Check if an environment variable exists
+    #[must_use]
     pub fn contains(&self, key: &str) -> bool {
         self.vars.contains_key(key)
     }
 
     /// Get all environment variables as a vector of key=value strings
+    #[must_use]
     pub fn to_env_vec(&self) -> Vec<String> {
         self.vars
             .iter()
@@ -156,6 +161,7 @@ impl Environment {
 
     /// Merge with system environment variables
     /// CUE environment variables take precedence
+    #[must_use]
     pub fn merge_with_system(&self) -> HashMap<String, String> {
         let mut merged: HashMap<String, String> = env::vars().collect();
 
@@ -218,6 +224,7 @@ impl Environment {
     /// - Locale: LANG, LC_* variables
     /// - Temp directories: TMPDIR, TMP, TEMP
     /// - XDG directories: XDG_RUNTIME_DIR, XDG_CONFIG_HOME, etc.
+    #[must_use]
     pub fn merge_with_system_hermetic(&self) -> HashMap<String, String> {
         let mut merged: HashMap<String, String> = HashMap::new();
 
@@ -365,6 +372,7 @@ impl Environment {
     }
 
     /// Convert to a vector of key=value strings including system environment
+    #[must_use]
     pub fn to_full_env_vec(&self) -> Vec<String> {
         self.merge_with_system()
             .iter()
@@ -373,11 +381,13 @@ impl Environment {
     }
 
     /// Get the number of environment variables
+    #[must_use]
     pub fn len(&self) -> usize {
         self.vars.len()
     }
 
     /// Check if the environment is empty
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.vars.is_empty()
     }
@@ -505,6 +515,7 @@ impl Environment {
     }
 
     /// Build environment for a task, filtering based on policies
+    #[must_use]
     pub fn build_for_task(
         task_name: &str,
         env_vars: &HashMap<String, EnvValue>,
@@ -521,6 +532,11 @@ impl Environment {
     /// No policy filtering is applied - all variables are resolved.
     /// Secrets are resolved in parallel using a shared `SecretRegistry` and
     /// `tokio::task::JoinSet` for concurrent I/O.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a secret referenced by any variable cannot be
+    /// resolved by its provider.
     pub async fn resolve_all_with_secrets(
         env_vars: &HashMap<String, EnvValue>,
     ) -> crate::Result<(HashMap<String, String>, Vec<String>)> {
@@ -535,6 +551,11 @@ impl Environment {
     ///
     /// Resolves all environment variables including secrets via the
     /// trait-based resolver system.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a secret referenced by a variable the task may
+    /// access cannot be resolved by its provider.
     pub async fn resolve_for_task(
         task_name: &str,
         env_vars: &HashMap<String, EnvValue>,
@@ -552,6 +573,11 @@ impl Environment {
     ///
     /// Secrets are resolved in parallel using a shared `SecretRegistry` and
     /// `tokio::task::JoinSet` for concurrent I/O.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a secret referenced by a variable the task may
+    /// access cannot be resolved by its provider.
     pub async fn resolve_for_task_with_secrets(
         task_name: &str,
         env_vars: &HashMap<String, EnvValue>,
@@ -631,6 +657,11 @@ impl Environment {
     ///
     /// Returns `(resolved_env_vars, secret_values)` where `secret_values`
     /// contains the resolved values of any secrets for log redaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a secret referenced by any variable cannot be
+    /// resolved by its provider.
     pub async fn resolve_for_service_with_secrets(
         service_name: &str,
         env_vars: &HashMap<String, EnvValue>,
@@ -652,6 +683,7 @@ impl Environment {
     }
 
     /// Build environment for exec command, filtering based on policies
+    #[must_use]
     pub fn build_for_exec(
         command: &str,
         env_vars: &HashMap<String, EnvValue>,
@@ -667,6 +699,11 @@ impl Environment {
     ///
     /// Resolves all environment variables including secrets via the
     /// trait-based resolver system.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a secret referenced by a variable the command may
+    /// access cannot be resolved by its provider.
     pub async fn resolve_for_exec(
         command: &str,
         env_vars: &HashMap<String, EnvValue>,
@@ -684,6 +721,11 @@ impl Environment {
     ///
     /// Secrets are resolved in parallel using a shared `SecretRegistry` and
     /// `tokio::task::JoinSet` for concurrent I/O.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a secret referenced by a variable the command may
+    /// access cannot be resolved by its provider.
     pub async fn resolve_for_exec_with_secrets(
         command: &str,
         env_vars: &HashMap<String, EnvValue>,
@@ -702,6 +744,11 @@ impl Environment {
     /// Filtering precedes secret resolution, so restricted secrets are never
     /// requested from a resolver. The returned secret parts can be registered
     /// for redaction by the command that owns the output surface.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a secret referenced by a variable the action may
+    /// access cannot be resolved by its provider.
     pub async fn resolve_for_infrastructure_with_secrets(
         action: InfrastructurePolicyAction,
         environment_variables: &HashMap<String, EnvValue>,
@@ -728,15 +775,16 @@ impl Environment {
     async fn resolve_filtered_with_secrets(
         accessible: &[(&str, &EnvValue)],
     ) -> crate::Result<(HashMap<String, String>, Vec<String>)> {
-        let mut resolved = HashMap::new();
-        let mut all_secrets = Vec::new();
-
-        // Phase 1: Separate non-secret vars (instant) from secret vars (need resolution)
         type SecretVarEntry<'environment> = (
             &'environment str,
             &'environment EnvValue,
             Vec<(usize, crate::secrets::Secret)>,
         );
+
+        let mut resolved = HashMap::new();
+        let mut all_secrets = Vec::new();
+
+        // Phase 1: Separate non-secret vars (instant) from secret vars (need resolution)
         let mut secret_vars: Vec<SecretVarEntry<'_>> = Vec::new();
 
         for (key, value) in accessible {

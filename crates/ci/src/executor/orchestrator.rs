@@ -823,8 +823,7 @@ async fn execute_project_pipeline(
     let resolved_annotations = ci
         .pipelines
         .get(pipeline_name)
-        .map(|p| super::reporting::resolve_annotations(&p.annotations, &all_captures))
-        .unwrap_or_default();
+        .map_or_default(|p| super::reporting::resolve_annotations(&p.annotations, &all_captures));
 
     // Generate report
     let report = PipelineReport {

@@ -241,7 +241,7 @@ nix flake check -L --accept-flake-config
 
 ## Requirements
 
-- **Rust**: MSRV 1.90.0 (Edition 2024)
+- **Rust**: MSRV 1.100.0 (Edition 2024)
 - **Go**: 1.26+ with CGO enabled (for cuengine FFI; see `crates/cuengine/go.mod`)
 - **Nix**: Optional but recommended for reproducible builds
 
@@ -273,4 +273,4 @@ nix flake check -L --accept-flake-config
 - **Build appears frozen**: Expected, builds take 90+ seconds initially.
 - **Go FFI tests fail**: Expected without CGO environment.
 - **cargo-audit/cargo-deny not found**: both ship in the Nix devShell (`nix develop`).
-- **Rust edition errors**: Requires Rust 1.90.0+ (Edition 2024).
+- **Rust edition errors**: Requires Rust 1.100.0+ (Edition 2024).

@@ -14,13 +14,13 @@ fn facts(ci: Option<CiFacts>) -> Facts {
     }
 }
 
-fn pull_request() -> Option<CiFacts> {
-    Some(CiFacts {
+fn pull_request() -> CiFacts {
+    CiFacts {
         provider: "github".to_string(),
         event: Some("pull_request".to_string()),
         reference: Some("refs/pull/1/merge".to_string()),
         actor: Some("ada".to_string()),
-    })
+    }
 }
 
 fn definition(filter: Value) -> ContextDefinition {
@@ -120,7 +120,7 @@ fn ci_facts_read_github_variables() {
         "GITHUB_ACTOR" => Some("ada".to_string()),
         _ => None,
     });
-    assert_eq!(ci, pull_request());
+    assert_eq!(ci, Some(pull_request()));
 }
 
 #[test]
@@ -140,8 +140,8 @@ fn document_has_every_fact_for_every_consumer() {
     assert_eq!(document["user"]["email"], "ada@example.com");
     assert_eq!(document["vcs"]["branch"], "main");
 
-    let document =
-        facts(pull_request()).document(Consumer::Infrastructure(InfrastructurePolicyAction::Plan));
+    let document = facts(Some(pull_request()))
+        .document(Consumer::Infrastructure(InfrastructurePolicyAction::Plan));
     assert_eq!(document["consumer"], "infrastructure");
     assert_eq!(document["infrastructure"], "plan");
     assert_eq!(document["ci"]["event"], "pull_request");
@@ -199,7 +199,7 @@ fn a_string_must_match_the_whole_value() {
 fn a_when_matches_the_facts_it_names() {
     let labels = [];
     let local_task = (facts(None), task("deploy.production", Some("bun"), &labels));
-    let ci_exec = (facts(pull_request()), Consumer::Exec("wrangler"));
+    let ci_exec = (facts(Some(pull_request())), Consumer::Exec("wrangler"));
     let cases = [
         (json!({"ci": null}), true, false),
         (json!({"consumer": "task"}), true, false),

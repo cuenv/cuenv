@@ -85,7 +85,7 @@ fn spawn_reader(
                     return Ok(output);
                 }
                 budget
-                    .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
+                    .try_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
                         used.checked_add(count)
                             .filter(|total| *total <= MAX_OUTPUT_BYTES)
                     })

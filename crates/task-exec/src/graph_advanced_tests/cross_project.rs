@@ -7,12 +7,12 @@ fn test_dag_with_multiple_project_references() {
     let mut graph = TaskGraph::new();
 
     // Project A tasks
-    let task_a1 = test_utils::create_task("projectA.build", vec![], vec![]);
-    let task_a2 = test_utils::create_task("projectA.test", vec!["projectA.build"], vec![]);
+    let a_build = test_utils::create_task("projectA.build", vec![], vec![]);
+    let a_test = test_utils::create_task("projectA.test", vec!["projectA.build"], vec![]);
 
     // Project B tasks
-    let task_b1 = test_utils::create_task("projectB.build", vec![], vec![]);
-    let task_b2 = test_utils::create_task("projectB.test", vec!["projectB.build"], vec![]);
+    let b_build = test_utils::create_task("projectB.build", vec![], vec![]);
+    let b_test = test_utils::create_task("projectB.test", vec!["projectB.build"], vec![]);
 
     // Cross-project integration task
     let integration = test_utils::create_task(
@@ -21,10 +21,10 @@ fn test_dag_with_multiple_project_references() {
         vec![],
     );
 
-    graph.add_task("projectA.build", task_a1).unwrap();
-    graph.add_task("projectA.test", task_a2).unwrap();
-    graph.add_task("projectB.build", task_b1).unwrap();
-    graph.add_task("projectB.test", task_b2).unwrap();
+    graph.add_task("projectA.build", a_build).unwrap();
+    graph.add_task("projectA.test", a_test).unwrap();
+    graph.add_task("projectB.build", b_build).unwrap();
+    graph.add_task("projectB.test", b_test).unwrap();
     graph.add_task("integration", integration).unwrap();
     graph.add_dependency_edges().unwrap();
 

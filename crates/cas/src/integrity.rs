@@ -163,7 +163,10 @@ mod tests {
         let digest = cas.put_bytes(b"present").await.unwrap();
 
         let result = result_with_output(digest);
-        assert!(missing_blobs(&cas, &result).await.unwrap().is_empty());
+        assert_eq!(
+            missing_blobs(&cas, &result).await.unwrap(),
+            [] as [Digest; 0]
+        );
     }
 
     #[tokio::test]

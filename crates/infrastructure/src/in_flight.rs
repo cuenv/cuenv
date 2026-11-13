@@ -143,11 +143,8 @@ pub fn separate(
                 .map_or_else(|| "change".to_string(), |content| content.step.clone()),
             started_at: content
                 .as_ref()
-                .map(|content| content.started_at.clone())
-                .unwrap_or_default(),
-            lock_identifier: content
-                .map(|content| content.lock_identifier)
-                .unwrap_or_default(),
+                .map_or_default(|content| content.started_at.clone()),
+            lock_identifier: content.map_or_default(|content| content.lock_identifier),
         });
     }
     (resources, in_flight)

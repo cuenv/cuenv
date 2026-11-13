@@ -216,7 +216,7 @@ version = "1.0.0"
         let manifest = CargoManifest::new(&root);
         let names = manifest.package_names().unwrap();
         // Should return empty since the member has no Cargo.toml
-        assert!(names.is_empty());
+        assert_eq!(names, [] as [String; 0]);
     }
 
     // ==========================================================================
@@ -429,7 +429,7 @@ lib = { workspace = true }
         assert!(deps.contains_key("app"));
         assert!(deps.contains_key("lib"));
         assert!(deps.get("app").unwrap().contains(&"lib".to_string()));
-        assert!(deps.get("lib").unwrap().is_empty());
+        assert_eq!(deps.get("lib").unwrap().as_slice(), [] as [String; 0]);
     }
 
     // ==========================================================================

@@ -643,10 +643,7 @@ mod tests {
 
         let result = DockerBuildInvocation::try_new(Path::new("/workspace/app"), "api", &image);
         assert!(result.is_err());
-        let message = result
-            .err()
-            .map(|error| error.to_string())
-            .unwrap_or_default();
+        let message = result.err().map_or_default(|error| error.to_string());
 
         assert!(message.contains("multiple platforms"));
     }
@@ -658,10 +655,7 @@ mod tests {
 
         let result = DockerBuildInvocation::try_new(Path::new("/workspace/app"), "api", &image);
         assert!(result.is_err());
-        let message = result
-            .err()
-            .map(|error| error.to_string())
-            .unwrap_or_default();
+        let message = result.err().map_or_default(|error| error.to_string());
 
         assert!(message.contains("no tags"));
     }
@@ -804,10 +798,7 @@ mod tests {
 
         let result = build_one_image(Path::new("/workspace/app"), "api", &image);
         assert!(result.is_err());
-        let message = result
-            .err()
-            .map(|error| error.to_string())
-            .unwrap_or_default();
+        let message = result.err().map_or_default(|error| error.to_string());
         assert!(message.contains("both"));
     }
 
@@ -819,10 +810,7 @@ mod tests {
 
         let result = build_one_image(Path::new("/workspace/app"), "api", &image);
         assert!(result.is_err());
-        let message = result
-            .err()
-            .map(|error| error.to_string())
-            .unwrap_or_default();
+        let message = result.err().map_or_default(|error| error.to_string());
         assert!(message.contains("either"));
     }
 }

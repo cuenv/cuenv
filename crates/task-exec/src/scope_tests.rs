@@ -82,8 +82,7 @@ impl ProjectSource for Module {
         }
         let written_in = origin
             .strip_prefix(&self.root)
-            .map(forward_slashes)
-            .unwrap_or_default();
+            .map_or_default(forward_slashes);
         if let Some(problem) = self.not_imported.get(&(written_in, name.to_string())) {
             return Err(problem.clone());
         }
@@ -104,8 +103,7 @@ impl ProjectSource for Module {
         self.evaluations.set(self.evaluations.get() + 1);
         let directory = root
             .strip_prefix(&self.root)
-            .map(forward_slashes)
-            .unwrap_or_default();
+            .map_or_default(forward_slashes);
         let manifest = self
             .projects
             .get(&directory)
@@ -830,7 +828,7 @@ fn output_files_of_a_project_outside_the_module_fail_the_reader() {
 
 /// `app` reads `inputs` in its task `build`; `content` holds an article
 /// and the module root a lockfile.
-fn reading_files(inputs: serde_json::Value) -> Module {
+fn reading_files(inputs: &serde_json::Value) -> Module {
     let module = Module::new()
         .project(
             "app",
@@ -851,7 +849,7 @@ fn reading_files(inputs: serde_json::Value) -> Module {
 
 #[test]
 fn a_file_reference_is_bound_to_its_anchor_and_loads_no_project() {
-    let module = reading_files(json!([
+    let module = reading_files(&json!([
         "src/**",
         {"cuenvFiles": "project", "cuenvProject": "content", "paths": ["articles/**"]},
         {"cuenvFiles": "module", "paths": ["bun.lock"]},
@@ -907,7 +905,7 @@ fn a_file_reference_that_does_not_bind_fails_only_the_graphs_that_reach_it() {
             "is not a path inside the module root",
         ),
     ] {
-        let module = reading_files(json!([reference]));
+        let module = reading_files(&json!([reference]));
         let mut scope = module.scope("app");
 
         scope.reach(["build", "lint"], &module);
@@ -925,7 +923,7 @@ fn a_file_reference_that_does_not_bind_fails_only_the_graphs_that_reach_it() {
 fn a_file_reference_never_matches_into_the_cache_store() {
     // The store lies in the repository, as `<project>/.cuenv-cache` does
     // without a platform cache directory, and holds the only JSON file.
-    let module = reading_files(json!([
+    let module = reading_files(&json!([
         {"cuenvFiles": "project", "cuenvProject": "content", "paths": ["**/*.json"]},
     ]));
     let store = module.directory("content/.cuenv-cache");
@@ -951,7 +949,7 @@ fn a_file_reference_never_matches_into_the_cache_store() {
 
 #[test]
 fn a_problem_recorded_against_a_reached_node_fails_the_graph() {
-    let mut module = reading_files(json!(["src/**"]));
+    let mut module = reading_files(&json!(["src/**"]));
     if let Some(app) = module.projects.get_mut("app") {
         app.diagnostics.tasks.insert(
             "build".to_string(),

@@ -205,7 +205,7 @@ impl CliError {
                 deleted_not_recreated,
                 details,
             } => {
-                let mut details = details.map(|boxed| *boxed).unwrap_or_default();
+                let mut details = details.map_or_default(|boxed| *boxed);
                 details.insert(name.to_string(), value);
                 Self::Infrastructure {
                     message,

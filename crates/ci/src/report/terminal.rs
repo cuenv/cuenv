@@ -45,8 +45,7 @@ impl TerminalReporter {
         let icon = progress.status.icon();
         let duration = progress
             .duration
-            .map(|d| format!(" ({:.2}s)", d.as_secs_f64()))
-            .unwrap_or_default();
+            .map_or_default(|d| format!(" ({:.2}s)", d.as_secs_f64()));
 
         format!("{} {}{}", icon, progress.name, duration)
     }

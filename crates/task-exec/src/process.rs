@@ -19,13 +19,13 @@ pub enum TaskAttempt {
     TimedOut(TaskResult),
 }
 
-pub(super) struct ProcessOptions {
+pub struct ProcessOptions {
     pub(super) capture_output: OutputCapture,
     pub(super) timeout: Option<Duration>,
 }
 
 /// Run a host task process in captured or inherited-output mode.
-pub(super) async fn run_task_process(
+pub async fn run_task_process(
     name: &str,
     command: Command,
     options: ProcessOptions,
@@ -219,16 +219,13 @@ async fn wait_or_terminate(
         return Ok(WaitOutcome::Exited(status));
     };
 
-    match tokio::time::timeout(timeout, child.wait()).await {
-        Ok(status) => {
-            let status = status.map_err(|e| Error::io(format!("wait for task {name}"), e))?;
-            Ok(WaitOutcome::Exited(status))
-        }
-        Err(_) => {
-            let child_pid = child.id();
-            terminate_child(child, child_pid).await?;
-            Ok(WaitOutcome::TimedOut(timeout))
-        }
+    if let Ok(status) = tokio::time::timeout(timeout, child.wait()).await {
+        let status = status.map_err(|e| Error::io(format!("wait for task {name}"), e))?;
+        Ok(WaitOutcome::Exited(status))
+    } else {
+        let child_pid = child.id();
+        terminate_child(child, child_pid).await?;
+        Ok(WaitOutcome::TimedOut(timeout))
     }
 }
 

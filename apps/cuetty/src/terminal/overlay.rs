@@ -72,8 +72,14 @@ fn range_spans(
     }
     let last_row = end.line.min(row_count - 1);
     let mut spans = Vec::new();
-    for row in start.line..=last_row {
-        let cells = &frame.rows[row].cells;
+    let selected_rows = frame
+        .rows
+        .iter()
+        .enumerate()
+        .take(last_row + 1)
+        .skip(start.line);
+    for (row, frame_row) in selected_rows {
+        let cells = &frame_row.cells;
         let mut from = if row == start.line { start.column } else { 0 }.min(cells.len());
         let mut to = if row == end.line {
             end.column.min(cells.len())

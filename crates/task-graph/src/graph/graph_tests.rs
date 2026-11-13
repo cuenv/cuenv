@@ -562,7 +562,7 @@ fn test_compute_affected_none() {
     // Nothing is directly affected
     let affected = graph.compute_affected(&["build", "test"], |_task| false, None);
 
-    assert!(affected.is_empty());
+    assert_eq!(affected, [] as [String; 0]);
 }
 
 #[test]
@@ -678,7 +678,7 @@ fn test_compute_affected_external_not_affected() {
     let affected =
         graph.compute_affected(&["build", "test"], |_task| false, Some(&|_dep: &str| false));
 
-    assert!(affected.is_empty());
+    assert_eq!(affected, [] as [String; 0]);
 }
 
 // ==========================================================================

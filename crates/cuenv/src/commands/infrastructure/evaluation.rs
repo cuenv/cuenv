@@ -612,8 +612,7 @@ fn export_if_evaluable(target_path: &Path, package: &str, path: &str) -> Option<
 /// named otherwise, and no warning or note can name them.
 fn declared_environments_if_evaluable(target_path: &Path, package: &str) -> Vec<String> {
     export_if_evaluable(target_path, package, "infrastructure.environments")
-        .map(|project| declared_environment_names(&project))
-        .unwrap_or_default()
+        .map_or_default(|project| declared_environment_names(&project))
 }
 
 /// What a state-only run without `--env` can tell of the top level: whether
@@ -635,8 +634,7 @@ fn declared_environment_names(project: &serde_json::Value) -> Vec<String> {
     project
         .pointer("/infrastructure/environments")
         .and_then(serde_json::Value::as_object)
-        .map(|environments| environments.keys().cloned().collect())
-        .unwrap_or_default()
+        .map_or_default(|environments| environments.keys().cloned().collect())
 }
 
 /// Names printed in messages never carry control characters, whatever was
@@ -1275,7 +1273,7 @@ infrastructure: {
         )?;
         let target = evaluate_native_fixture(directory.path(), None)?;
         assert!(target.project_environment.is_none());
-        assert!(target.remote_cache_credential_variables.is_empty());
+        assert_eq!(target.remote_cache_credential_variables, [] as [String; 0]);
         Ok(())
     }
 

@@ -357,9 +357,7 @@ fn plan_vcs_dependencies(request: VcsPlanRequest<'_>) -> Result<VcsPlanOutput> {
     let mut next_vcs = if scope.prunes_unconfigured() {
         BTreeMap::new()
     } else {
-        existing_lockfile
-            .map(|lockfile| lockfile.vcs.clone())
-            .unwrap_or_default()
+        existing_lockfile.map_or_default(|lockfile| lockfile.vcs.clone())
     };
     let mut plans = Vec::new();
     let cache_root = if options.mode == SyncMode::Write {

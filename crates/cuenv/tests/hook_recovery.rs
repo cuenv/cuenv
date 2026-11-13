@@ -119,7 +119,10 @@ async fn recovery_requires_the_current_run_identity_even_after_directory_removal
         "{}",
         String::from_utf8_lossy(&recovered.stderr)
     );
-    assert!(manager.reservations().await?.is_empty());
+    assert_eq!(
+        manager.reservations().await?,
+        [] as [cuenv_hooks::HookReservation; 0]
+    );
     let state = manager
         .load_state(&identity.instance_hash)
         .await?

@@ -116,8 +116,8 @@ mod tests {
     #[test]
     fn test_current_platform() {
         let p = current_platform();
-        assert!(!p.os.is_empty());
-        assert!(!p.arch.is_empty());
+        assert_ne!(p.os, "");
+        assert_ne!(p.arch, "");
     }
 
     #[test]

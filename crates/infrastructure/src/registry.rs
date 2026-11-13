@@ -1457,7 +1457,7 @@ mod tests {
             .filter(|(_, window)| *window == CENTRAL_DIRECTORY_SIGNATURE)
             .map(|(offset, _)| offset)
             .collect();
-        assert!(!offsets.is_empty());
+        assert_ne!(offsets, [] as [usize; 0]);
         for offset in offsets {
             // "Version made by" high byte: 3 = Unix.
             archive[offset + 5] = 3;
@@ -1811,8 +1811,7 @@ mod tests {
                     request.extend_from_slice(&chunk[..read]);
                 }
                 let length = declared_length
-                    .map(|length| format!("content-length: {length}\r\n"))
-                    .unwrap_or_default();
+                    .map_or_default(|length| format!("content-length: {length}\r\n"));
                 let reply = format!(
                     "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n{length}\
                      connection: close\r\n\r\n{body}"

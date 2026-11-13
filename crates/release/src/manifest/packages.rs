@@ -270,7 +270,7 @@ fn workspace_internal_dependencies(
     member_doc
         .get("dependencies")
         .and_then(|d| d.as_table())
-        .map(|dependencies| {
+        .map_or_default(|dependencies| {
             dependencies
                 .iter()
                 .filter(|(dep_name, dep_value)| {
@@ -279,7 +279,6 @@ fn workspace_internal_dependencies(
                 .map(|(dep_name, _)| dep_name.clone())
                 .collect()
         })
-        .unwrap_or_default()
 }
 
 fn is_internal_dependency(

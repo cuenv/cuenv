@@ -174,7 +174,7 @@ mod tests {
     #[test]
     fn test_tail_lines_zero_returns_empty_tail() {
         let lines = tail_lines("one\ntwo\n", 0);
-        assert!(lines.is_empty());
+        assert_eq!(lines, [] as [&str; 0]);
     }
 
     #[test]

@@ -120,7 +120,10 @@ async fn moving_infrastructure_to_a_separate_package_preserves_state() -> TestRe
     assert_eq!(plan["summary"]["delete"], 0);
     assert_eq!(store.list(&tenant).await?.len(), before.len());
     lifecycle.run(&["destroy", "--yes"])?;
-    assert!(store.list(&tenant).await?.is_empty());
+    assert_eq!(
+        store.list(&tenant).await?,
+        [] as [cuenv_infrastructure::ManagedResource; 0]
+    );
     Ok(())
 }
 
@@ -517,7 +520,10 @@ async fn random_provider_create_edit_destroy_stack() -> TestResult {
         lifecycle.run(&["state", "list"])?["resources"],
         serde_json::json!([])
     );
-    assert!(store.list(&tenant).await?.is_empty());
+    assert_eq!(
+        store.list(&tenant).await?,
+        [] as [cuenv_infrastructure::ManagedResource; 0]
+    );
     assert!(store.current_lock(&tenant).await?.is_none());
     let destroyed_again = lifecycle.run(&["destroy", "--yes"])?;
     assert!(destroyed_again["applied"].is_null());
@@ -545,7 +551,10 @@ async fn named_environment_passes_an_exec_secret_to_the_provider() -> TestResult
     let tenant = TenantKey::with_environment(MODULE, &project, "dev")?;
     // A fresh project name means the no-flag namespace holds no rows to migrate.
     let legacy = TenantKey::try_new(MODULE, &project)?;
-    assert!(store.list(&legacy).await?.is_empty());
+    assert_eq!(
+        store.list(&legacy).await?,
+        [] as [cuenv_infrastructure::ManagedResource; 0]
+    );
     let lifecycle = Lifecycle::with_environment_secret(&provider, &backend, &project)?;
 
     let plan = lifecycle.run(&["plan", "--env", "dev"])?;
@@ -577,7 +586,10 @@ async fn named_environment_passes_an_exec_secret_to_the_provider() -> TestResult
 
     let destroyed = lifecycle.run(&["destroy", "--env", "dev", "--yes"])?;
     assert_eq!(destroyed["applied"]["delete"], 1);
-    assert!(store.list(&tenant).await?.is_empty());
+    assert_eq!(
+        store.list(&tenant).await?,
+        [] as [cuenv_infrastructure::ManagedResource; 0]
+    );
     assert!(store.current_lock(&tenant).await?.is_none());
 
     let transcript = lifecycle.transcript()?;
@@ -703,8 +715,14 @@ async fn a_run_without_env_cannot_claim_what_an_environment_records() -> TestRes
     assert_eq!(store.list(&unselected).await?.len(), 1);
     lifecycle.run(&["destroy", "--yes"])?;
     lifecycle.run(&["destroy", "--env", "dev", "--yes"])?;
-    assert!(store.list(&unselected).await?.is_empty());
-    assert!(store.list(&dev).await?.is_empty());
+    assert_eq!(
+        store.list(&unselected).await?,
+        [] as [cuenv_infrastructure::ManagedResource; 0]
+    );
+    assert_eq!(
+        store.list(&dev).await?,
+        [] as [cuenv_infrastructure::ManagedResource; 0]
+    );
     Ok(())
 }
 
@@ -1334,7 +1352,10 @@ infrastructure: {{
     let before_destroy = runs_so_far();
     lifecycle.run(&["destroy", "--yes"])?;
     assert_eq!(runs_so_far(), before_destroy, "destroy resolved the secret");
-    assert!(store.list(&tenant).await?.is_empty());
+    assert_eq!(
+        store.list(&tenant).await?,
+        [] as [cuenv_infrastructure::ManagedResource; 0]
+    );
     assert!(!lifecycle.transcript()?.contains(ARGUMENT_SECRET));
     let journal = fs::read_to_string(lifecycle.directory.path().join("journal.log"))?;
     assert!(!journal.contains(ARGUMENT_SECRET));
@@ -1480,7 +1501,10 @@ infrastructure: {{
     let before_destroy = runs_so_far();
     lifecycle.run(&["destroy", "--yes"])?;
     assert_eq!(runs_so_far(), before_destroy, "destroy resolved the secret");
-    assert!(store.list(&tenant).await?.is_empty());
+    assert_eq!(
+        store.list(&tenant).await?,
+        [] as [cuenv_infrastructure::ManagedResource; 0]
+    );
     assert!(!lifecycle.transcript()?.contains(ARGUMENT_SECRET));
     let journal = fs::read_to_string(lifecycle.directory.path().join("journal.log"))?;
     assert!(!journal.contains(ARGUMENT_SECRET));
@@ -1566,7 +1590,10 @@ infrastructure: {{
     );
     let lifecycle = Lifecycle::from_configuration(directory, configuration.clone(), &backend)?;
     assert_eq!(lifecycle.run(&["plan"])?["summary"]["create"], 3);
-    assert!(store.list(&tenant).await?.is_empty());
+    assert_eq!(
+        store.list(&tenant).await?,
+        [] as [cuenv_infrastructure::ManagedResource; 0]
+    );
     assert_eq!(lifecycle.run(&["apply", "--yes"])?["applied"]["create"], 3);
     let rows = store.list(&tenant).await?;
     assert_eq!(rows.len(), 3, "data sources must not create state rows");
@@ -1700,7 +1727,10 @@ infrastructure: {{
     assert_eq!(store.list(&tenant).await?, updated);
     fs::remove_file(lifecycle.directory.path().join("lookup-error"))?;
     lifecycle.run(&["destroy", "--yes"])?;
-    assert!(store.list(&tenant).await?.is_empty());
+    assert_eq!(
+        store.list(&tenant).await?,
+        [] as [cuenv_infrastructure::ManagedResource; 0]
+    );
     Ok(())
 }
 
@@ -1755,7 +1785,10 @@ infrastructure: {{
             "each invocation must read again: {journal}"
         );
         previous_reads = reads;
-        assert!(store.list(&tenant).await?.is_empty());
+        assert_eq!(
+            store.list(&tenant).await?,
+            [] as [cuenv_infrastructure::ManagedResource; 0]
+        );
         assert_eq!(
             lifecycle.run(&["state", "list"])?["resources"],
             serde_json::json!([])
@@ -1786,7 +1819,10 @@ infrastructure: {{
     );
     assert!(!diagnostic.contains(&secret_key), "{diagnostic}");
     assert!(!lifecycle.transcript()?.contains(&secret_key));
-    assert!(store.list(&tenant).await?.is_empty());
+    assert_eq!(
+        store.list(&tenant).await?,
+        [] as [cuenv_infrastructure::ManagedResource; 0]
+    );
     Ok(())
 }
 
@@ -1864,10 +1900,9 @@ infrastructure: {{
     let lifecycle = Lifecycle::from_configuration(directory, initial_configuration, &backend)?;
     assert_eq!(lifecycle.run(&["apply", "--yes"])?["applied"]["create"], 1);
     if matches!(source, SensitiveSource::MalformedUpdate) {
-        assert!(
-            store.list(&tenant).await?[0]
-                .sensitive_attributes
-                .is_empty()
+        assert_eq!(
+            store.list(&tenant).await?[0].sensitive_attributes,
+            [] as [String; 0]
         );
         fs::write(lifecycle.directory.path().join("env.cue"), &configuration)?;
         fs::write(
@@ -1984,7 +2019,10 @@ infrastructure: {{
             .count(),
         previous_reads
     );
-    assert!(store.list(&tenant).await?.is_empty());
+    assert_eq!(
+        store.list(&tenant).await?,
+        [] as [cuenv_infrastructure::ManagedResource; 0]
+    );
     Ok(())
 }
 
@@ -2165,7 +2203,7 @@ config: ci: cuenv: {source: "release", version: [if _o != _|_ {_o}, "0.63.1"][0]
     let producer = stack.record("producer").await?;
     assert_eq!(consumer.dependencies, ["fake_plain.producer"]);
     assert_eq!(consumer.state["name"], producer.state["id"]);
-    assert!(producer.dependencies.is_empty());
+    assert_eq!(producer.dependencies, [] as [String; 0]);
 
     stack.lifecycle.run(&["apply", "--yes"])?;
     assert_eq!(stack.mutations(), 2, "a converged stack must be a no-op");
@@ -2680,7 +2718,7 @@ async fn sensitive_nested_destinations_stay_masked_and_recorded() -> TestResult 
     let producer = stack.record("producer").await?;
     let consumer = stack.record("consumer").await?;
     let token = producer.state["token"].as_str().ok_or("no token")?;
-    assert!(!token.is_empty());
+    assert_ne!(token, "");
     assert_eq!(consumer.state["config"]["token"], token);
     assert_eq!(consumer.dependencies, ["fake_token_source.producer"]);
     assert_eq!(consumer.sensitive_attributes, ["config"]);

@@ -1156,7 +1156,7 @@ mod tests {
             resolve_api_key(Some(api_url)),
         )
         .await;
-        let message = result.err().map(|e| e.to_string()).unwrap_or_default();
+        let message = result.err().map_or_default(|e| e.to_string());
         assert!(
             message.contains("OIDC Auth login failed with HTTP 401"),
             "{message}"
@@ -1260,7 +1260,7 @@ mod tests {
             Ok::<_, Box<dyn Error>>(())
         })
         .await;
-        let message = result.err().map(|e| e.to_string()).unwrap_or_default();
+        let message = result.err().map_or_default(|e| e.to_string());
         assert!(message.contains("'API_KEY'"), "{message}");
         assert!(
             message.contains("OIDC Auth login at the start of the run failed"),
@@ -1294,7 +1294,7 @@ mod tests {
 
         let result =
             temp_env::async_with_vars(auth_env(&OIDC_ENV), resolve_api_key(Some(api_url))).await;
-        let message = result.err().map(|e| e.to_string()).unwrap_or_default();
+        let message = result.err().map_or_default(|e| e.to_string());
         assert!(message.contains("HTTP 401"), "{message}");
         assert!(message.contains("access_token_ttl"), "{message}");
         assert!(!message.contains("request failed"), "{message}");
@@ -1329,8 +1329,7 @@ mod tests {
                 .resolve("API_KEY", &spec)
                 .await
                 .err()
-                .map(|e| e.to_string())
-                .unwrap_or_default();
+                .map_or_default(|e| e.to_string());
             Ok::<_, Box<dyn Error>>((first, second))
         })
         .await?;
@@ -1406,7 +1405,7 @@ mod tests {
                 resolve_api_key(Some("http://127.0.0.1:9".to_string())),
             )
             .await;
-            let message = result.err().map(|e| e.to_string()).unwrap_or_default();
+            let message = result.err().map_or_default(|e| e.to_string());
             assert!(message.contains("INFISICAL_"), "{message}");
             assert!(!message.contains("request failed"), "{message}");
         }

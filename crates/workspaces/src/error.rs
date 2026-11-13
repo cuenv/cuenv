@@ -105,7 +105,7 @@ pub enum Error {
     },
 
     /// I/O error occurred.
-    #[error("I/O error during {operation}{}: {source}", path.as_ref().map(|p| format!(" at {}", p.display())).unwrap_or_default())]
+    #[error("I/O error during {operation}{}: {source}", path.as_ref().map_or_default(|p| format!(" at {}", p.display())))]
     #[diagnostic(
         code(cuenv::workspaces::io_error),
         help(
@@ -123,7 +123,7 @@ pub enum Error {
     },
 
     /// JSON parsing error.
-    #[error("JSON parsing error{}: {source}", path.as_ref().map(|p| format!(" in {}", p.display())).unwrap_or_default())]
+    #[error("JSON parsing error{}: {source}", path.as_ref().map_or_default(|p| format!(" in {}", p.display())))]
     #[diagnostic(
         code(cuenv::workspaces::json_error),
         help(
@@ -140,7 +140,7 @@ pub enum Error {
 
     /// YAML parsing error.
     #[cfg(feature = "serde_yaml")]
-    #[error("YAML parsing error{}: {source}", path.as_ref().map(|p| format!(" in {}", p.display())).unwrap_or_default())]
+    #[error("YAML parsing error{}: {source}", path.as_ref().map_or_default(|p| format!(" in {}", p.display())))]
     #[diagnostic(
         code(cuenv::workspaces::yaml_error),
         help(
@@ -157,7 +157,7 @@ pub enum Error {
 
     /// TOML parsing error.
     #[cfg(feature = "toml")]
-    #[error("TOML parsing error{}: {source}", path.as_ref().map(|p| format!(" in {}", p.display())).unwrap_or_default())]
+    #[error("TOML parsing error{}: {source}", path.as_ref().map_or_default(|p| format!(" in {}", p.display())))]
     #[diagnostic(
         code(cuenv::workspaces::toml_error),
         help(

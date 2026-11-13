@@ -143,11 +143,13 @@ impl RulesDiscovery {
     }
 
     /// Get all discovered .rules.cue configurations.
+    #[must_use]
     pub fn discovered(&self) -> &[DiscoveredRules] {
         &self.discovered
     }
 
     /// Get the root directory being searched.
+    #[must_use]
     pub fn root(&self) -> &Path {
         &self.root
     }

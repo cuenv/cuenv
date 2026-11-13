@@ -475,7 +475,10 @@ async fn cancellation_stops_a_blocking_source_evaluation_before_release() {
         .expect("worker must finish");
     assert_eq!(state.status, ExecutionStatus::Cancelled);
     assert!(state.environment_vars.is_empty());
-    assert!(manager.reservations().await.unwrap().is_empty());
+    assert_eq!(
+        manager.reservations().await.unwrap(),
+        [] as [crate::HookReservation; 0]
+    );
 }
 
 #[derive(Clone, Copy)]
@@ -562,7 +565,10 @@ async fn run_with_changed_input(mutation: InputMutation) -> HookExecutionState {
         .await
         .unwrap()
         .unwrap();
-    assert!(manager.reservations().await.unwrap().is_empty());
+    assert_eq!(
+        manager.reservations().await.unwrap(),
+        [] as [crate::HookReservation; 0]
+    );
     state
 }
 
@@ -1512,7 +1518,7 @@ async fn incomplete_and_failing_source_scripts_never_capture_an_environment() {
         let error = source_environment::evaluate_shell_environment(script, &prior, 10)
             .await
             .expect_err("incomplete or failed source evaluation must fail");
-        assert!(!error.to_string().is_empty());
+        assert_ne!(error.to_string(), "");
     }
 }
 

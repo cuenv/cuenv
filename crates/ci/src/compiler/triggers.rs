@@ -75,20 +75,17 @@ impl Compiler {
 
         let branches = when
             .and_then(|w| w.branch.as_ref())
-            .map(cuenv_core::ci::StringOrVec::to_vec)
-            .unwrap_or_default();
+            .map_or_default(cuenv_core::ci::StringOrVec::to_vec);
 
         let tags = when
             .and_then(|w| w.tag.as_ref())
-            .map(cuenv_core::ci::StringOrVec::to_vec)
-            .unwrap_or_default();
+            .map_or_default(cuenv_core::ci::StringOrVec::to_vec);
 
         let pull_request = when.and_then(|w| w.pull_request);
 
         let scheduled = when
             .and_then(|w| w.scheduled.as_ref())
-            .map(cuenv_core::ci::StringOrVec::to_vec)
-            .unwrap_or_default();
+            .map_or_default(cuenv_core::ci::StringOrVec::to_vec);
 
         let release = when.and_then(|w| w.release.clone()).unwrap_or_default();
 

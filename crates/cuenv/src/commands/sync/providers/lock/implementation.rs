@@ -521,42 +521,30 @@ fn reconcile_empty_lockfile_state(
     existing_lockfile: Option<&Lockfile>,
     mode: &SyncMode,
 ) -> Result<String> {
+    if existing_lockfile.is_none() {
+        return Ok("Lockfile is up to date.".to_string());
+    }
+
     match mode {
-        SyncMode::Check => {
-            if existing_lockfile.is_some() {
-                return Err(cuenv_core::Error::configuration(
-                    "Lockfile is out of date. Run 'cuenv sync lock' to remove the stale lockfile.",
-                ));
-            }
-
-            Ok("Lockfile is up to date.".to_string())
-        }
-        SyncMode::DryRun => {
-            if existing_lockfile.is_some() {
-                return Ok(format!(
-                    "Would remove stale lockfile at {}",
-                    lockfile_path.display()
-                ));
-            }
-
-            Ok("Lockfile is up to date.".to_string())
-        }
+        SyncMode::Check => Err(cuenv_core::Error::configuration(
+            "Lockfile is out of date. Run 'cuenv sync lock' to remove the stale lockfile.",
+        )),
+        SyncMode::DryRun => Ok(format!(
+            "Would remove stale lockfile at {}",
+            lockfile_path.display()
+        )),
         SyncMode::Write => {
-            if existing_lockfile.is_some() {
-                std::fs::remove_file(lockfile_path).map_err(|e| {
-                    cuenv_core::Error::configuration(format!(
-                        "Failed to remove stale lockfile at {}: {}",
-                        lockfile_path.display(),
-                        e
-                    ))
-                })?;
-                return Ok(format!(
-                    "Removed stale lockfile at {}",
-                    lockfile_path.display()
-                ));
-            }
-
-            Ok("Lockfile is up to date.".to_string())
+            std::fs::remove_file(lockfile_path).map_err(|e| {
+                cuenv_core::Error::configuration(format!(
+                    "Failed to remove stale lockfile at {}: {}",
+                    lockfile_path.display(),
+                    e
+                ))
+            })?;
+            Ok(format!(
+                "Removed stale lockfile at {}",
+                lockfile_path.display()
+            ))
         }
     }
 }

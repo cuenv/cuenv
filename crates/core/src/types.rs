@@ -46,8 +46,11 @@ impl OutputCapture {
 
 /// Configuration limits
 pub struct Limits {
+    /// Upper bound on a filesystem path's length, in bytes (4096 by default).
     pub max_path_length: usize,
+    /// Upper bound on a CUE package name's length, in bytes (256 by default).
     pub max_package_name_length: usize,
+    /// Upper bound on captured command output, in bytes (100 MiB by default).
     pub max_output_size: usize,
 }
 
@@ -152,7 +155,7 @@ impl TryFrom<&Path> for PackageDir {
         match std::fs::metadata(input) {
             Ok(meta) => {
                 if meta.is_dir() {
-                    Ok(PackageDir(input.to_path_buf()))
+                    Ok(Self(input.to_path_buf()))
                 } else {
                     Err(PackageDirError::NotADirectory(input.display().to_string()))
                 }
@@ -274,7 +277,7 @@ impl TryFrom<&str> for PackageName {
             }
         }
 
-        Ok(PackageName(s.to_string()))
+        Ok(Self(s.to_string()))
     }
 }
 

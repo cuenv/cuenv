@@ -105,7 +105,7 @@ mod tests {
         };
         assert_eq!(options.path, ".");
         assert_eq!(options.package, "cuenv");
-        assert!(options.services.is_empty());
+        assert_eq!(options.services, [] as [String; 0]);
     }
 
     #[test]

@@ -12,7 +12,7 @@ fn test_build_simple_job() {
 
     assert_eq!(job.name, Some("build".to_string()));
     assert!(matches!(job.runs_on, RunsOn::Label(ref l) if l == "ubuntu-latest"));
-    assert!(job.needs.is_empty()); // Caller sets needs
+    assert_eq!(job.needs, [] as [String; 0]); // Caller sets needs
     assert!(!job.steps.is_empty());
 
     // Should have checkout and task run steps

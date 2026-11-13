@@ -42,6 +42,7 @@ pub struct BaseDiscovery {
 
 impl BaseDiscovery {
     /// Create a new BaseDiscovery for the given workspace root
+    #[must_use]
     pub fn new(workspace_root: PathBuf) -> Self {
         Self {
             workspace_root,
@@ -51,6 +52,7 @@ impl BaseDiscovery {
     }
 
     /// Set the evaluation function for loading env.cue files
+    #[must_use]
     pub fn with_eval_fn(mut self, eval_fn: BaseEvalFn) -> Self {
         self.eval_fn = Some(eval_fn);
         self
@@ -63,6 +65,12 @@ impl BaseDiscovery {
     ///
     /// Configurations that fail to load are logged as warnings but don't stop discovery.
     /// A summary of failures is logged at the end if any occurred.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DiscoveryError::NoEvalFunction`] when no evaluation function
+    /// was set with [`Self::with_eval_fn`]. Configurations that fail to load
+    /// are skipped, not returned as errors.
     pub fn discover(&mut self) -> Result<(), DiscoveryError> {
         self.bases.clear();
 
@@ -156,6 +164,7 @@ impl BaseDiscovery {
     }
 
     /// Get all discovered Base configurations
+    #[must_use]
     pub fn bases(&self) -> &[DiscoveredBase] {
         &self.bases
     }
@@ -186,15 +195,20 @@ fn derive_synthetic_name(workspace_root: &Path, project_root: &Path) -> String {
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum DiscoveryError {
+    /// An `env.cue` path had no parent directory to use as the project root.
     #[error("Invalid path: {0}")]
     InvalidPath(PathBuf),
 
+    /// Evaluating the `env.cue` file at the path failed.
     #[error("Failed to evaluate {}: {}", .0.display(), .1)]
     EvalError(PathBuf, #[source] Box<crate::Error>),
 
+    /// Discovery ran without an evaluation function set via
+    /// [`BaseDiscovery::with_eval_fn`].
     #[error("No evaluation function provided - use with_eval_fn()")]
     NoEvalFunction,
 
+    /// An I/O error occurred during discovery.
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -241,7 +255,7 @@ mod tests {
         let other = PathBuf::from("/other/project");
         // When paths are unrelated, uses the full path as name
         let name = derive_synthetic_name(&workspace, &other);
-        assert!(!name.is_empty());
+        assert_ne!(name, "");
     }
 
     // ==========================================================================

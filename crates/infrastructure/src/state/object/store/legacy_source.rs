@@ -436,7 +436,10 @@ mod tests {
                 .await?,
             MigrationMutation::Applied
         );
-        assert!(fixture.store.list(&fixture.tenant).await?.is_empty());
+        assert_eq!(
+            fixture.store.list(&fixture.tenant).await?,
+            [] as [ManagedResource; 0]
+        );
         Ok(())
     }
 

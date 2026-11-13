@@ -96,13 +96,12 @@ pub fn run_main(hardening_error: Option<process_hardening::HardeningError>) {
     let cli = cli::parse();
 
     // Check if command needs async runtime
-    if requires_async_runtime(&cli) {
-        let exit_code = run_with_tokio(interrupt_policy(&cli));
-        std::process::exit(exit_code);
+    let exit_code = if requires_async_runtime(&cli) {
+        run_with_tokio(interrupt_policy(&cli))
     } else {
-        let exit_code = run_sync(cli);
-        std::process::exit(exit_code);
-    }
+        run_sync(cli)
+    };
+    std::process::exit(exit_code);
 }
 
 /// Who handles SIGINT (and, for commands that own them, SIGTERM, SIGHUP and SIGQUIT).

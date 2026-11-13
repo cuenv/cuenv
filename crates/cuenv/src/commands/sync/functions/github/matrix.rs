@@ -282,20 +282,16 @@ fn create_synthetic_aggregation_task(
 ) -> cuenv_ci::ir::Task {
     use cuenv_ci::ir::ArtifactDownload;
 
-    let artifact_downloads = matrix_task
-        .artifacts
-        .as_ref()
-        .map(|artifacts| {
-            artifacts
-                .iter()
-                .map(|a| ArtifactDownload {
-                    name: a.from.replace('.', "-"),
-                    path: a.to.clone(),
-                    filter: String::new(),
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    let artifact_downloads = matrix_task.artifacts.as_ref().map_or_default(|artifacts| {
+        artifacts
+            .iter()
+            .map(|a| ArtifactDownload {
+                name: a.from.replace('.', "-"),
+                path: a.to.clone(),
+                filter: String::new(),
+            })
+            .collect()
+    });
 
     let params: BTreeMap<String, String> = matrix_task
         .params

@@ -1,7 +1,7 @@
 use cuenv_workspaces::PackageManager;
 use std::path::{Component, Path, PathBuf};
 
-pub(super) fn find_workspace_root(manager: PackageManager, start: &Path) -> PathBuf {
+pub fn find_workspace_root(manager: PackageManager, start: &Path) -> PathBuf {
     let mut current = start.canonicalize().unwrap_or_else(|_| start.to_path_buf());
 
     loop {
@@ -27,7 +27,7 @@ pub(super) fn find_workspace_root(manager: PackageManager, start: &Path) -> Path
     }
 }
 
-pub(super) fn normalize_join(base: &Path, path: &str) -> PathBuf {
+pub fn normalize_join(base: &Path, path: &str) -> PathBuf {
     let candidate = base.join(path);
     let mut normalized = PathBuf::new();
 
@@ -44,7 +44,7 @@ pub(super) fn normalize_join(base: &Path, path: &str) -> PathBuf {
     normalized
 }
 
-pub(super) fn package_json_has_workspaces(dir: &Path) -> bool {
+pub fn package_json_has_workspaces(dir: &Path) -> bool {
     let path = dir.join("package.json");
     let content = std::fs::read_to_string(&path);
     let Ok(json) = content.and_then(|s| {
@@ -64,7 +64,7 @@ pub(super) fn package_json_has_workspaces(dir: &Path) -> bool {
     }
 }
 
-pub(super) fn cargo_toml_has_workspace(dir: &Path) -> bool {
+pub fn cargo_toml_has_workspace(dir: &Path) -> bool {
     let path = dir.join("Cargo.toml");
     let Ok(content) = std::fs::read_to_string(&path) else {
         return false;
@@ -73,7 +73,7 @@ pub(super) fn cargo_toml_has_workspace(dir: &Path) -> bool {
     content.contains("[workspace]")
 }
 
-pub(super) fn deno_json_has_workspace(dir: &Path) -> bool {
+pub fn deno_json_has_workspace(dir: &Path) -> bool {
     let path = dir.join("deno.json");
     let content = std::fs::read_to_string(&path);
     let Ok(json) = content.and_then(|s| {

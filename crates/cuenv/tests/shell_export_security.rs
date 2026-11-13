@@ -251,7 +251,7 @@ hooks: onEnter: probe: {{command: "printf", args: ["%s\n", {hook}], source: true
         !unapproved.status.success(),
         "unapproved hook results must not be exported"
     );
-    assert!(unapproved.stdout.is_empty());
+    assert_eq!(unapproved.stdout, [] as [u8; 0]);
 
     let allow = fixture.command().args(["allow", "--yes"]).output()?;
     assert_success(&allow);
@@ -313,6 +313,6 @@ hooks: onEnter: probe: {{command: "printf", args: ["%s\n", {hook}], source: true
     assert_success(&deny);
     let revoked = fixture.command().args(["env", "check"]).output()?;
     assert!(!revoked.status.success());
-    assert!(revoked.stdout.is_empty());
+    assert_eq!(revoked.stdout, [] as [u8; 0]);
     Ok(())
 }

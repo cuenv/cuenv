@@ -237,7 +237,7 @@ mod tests {
     fn test_registry_names_empty() {
         let registry = ToolRegistry::new();
         let names = registry.names();
-        assert!(names.is_empty());
+        assert_eq!(names, [] as [&str; 0]);
     }
 
     #[test]

@@ -140,13 +140,13 @@ mod tests {
     #[test]
     fn test_registry_new() {
         let registry = SecretRegistry::new();
-        assert!(registry.providers().is_empty());
+        assert_eq!(registry.providers(), [] as [&str; 0]);
     }
 
     #[test]
     fn test_registry_default() {
         let registry = SecretRegistry::default();
-        assert!(registry.providers().is_empty());
+        assert_eq!(registry.providers(), [] as [&str; 0]);
     }
 
     #[test]

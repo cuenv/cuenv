@@ -9,6 +9,12 @@ use std::collections::HashMap;
 ///
 /// Task env values arrive as JSON because they may include runtime-only objects
 /// such as output references, host passthrough markers, or secret refs.
+///
+/// # Errors
+///
+/// Returns an error when a value that is not a string, number, boolean, or
+/// host passthrough is not a valid environment value, or when a secret it
+/// references cannot be resolved by its provider.
 pub async fn resolve_task_env(
     task_name: &str,
     task_env: &HashMap<String, Value>,

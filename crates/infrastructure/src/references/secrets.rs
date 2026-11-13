@@ -480,7 +480,7 @@ mod tests {
             "upstream": [{"resolver": "9.9.9.9"}],
             "object": {"inner": {"not": "a secret"}},
         });
-        assert!(found(&configuration)?.is_empty());
+        assert_eq!(found(&configuration)?, [] as [String; 0]);
         Ok(())
     }
 

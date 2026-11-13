@@ -9,8 +9,8 @@ fn test_ir_version() {
     let ir = IntermediateRepresentation::new("test-pipeline");
     assert_eq!(ir.version, "1.5");
     assert_eq!(ir.pipeline.name, "test-pipeline");
-    assert!(ir.runtimes.is_empty());
-    assert!(ir.tasks.is_empty());
+    assert_eq!(ir.runtimes, [] as [Runtime; 0]);
+    assert_eq!(ir.tasks, [] as [Task; 0]);
 }
 
 #[test]
@@ -370,7 +370,7 @@ fn test_phase_tasks_filters_by_phase() {
 
     // Success phase should be empty
     let success_tasks: Vec<_> = ir.phase_tasks(BuildStage::Success).collect();
-    assert!(success_tasks.is_empty());
+    assert_eq!(success_tasks, [] as [&Task; 0]);
 }
 
 #[test]

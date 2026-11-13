@@ -84,7 +84,7 @@ fn only_schema_marked_arguments_accept_write_only_secrets() {
 fn optional_write_only_null_is_absence_and_required_null_is_rejected() -> Result<()> {
     let configuration = json!({"value_wo":null});
     let references = references(&configuration)?;
-    assert!(references.secrets().is_empty());
+    assert_eq!(references.secrets(), []);
     let prepared =
         references.prepare(configuration.as_object().unwrap(), &block().implied_type())?;
     let absent = Value::from_configuration_json(&json!({}), &block().implied_type())?;
@@ -263,7 +263,7 @@ fn nested_write_only_arguments_keep_provider_paths() -> Result<()> {
                 &schema,
                 &[],
             )?;
-            assert!(null_references.secrets().is_empty());
+            assert_eq!(null_references.secrets(), []);
             let prepared = null_references
                 .prepare(optional_null.as_object().unwrap(), &schema.implied_type())?;
             assert!(
@@ -286,7 +286,7 @@ fn proposed_state_is_null_and_provider_echoes_are_errors() -> Result<()> {
     )?;
     let proposed = block.proposed_new(&Value::Null, &configuration);
     assert!(proposed.attribute("value_wo").is_some_and(Value::is_null));
-    assert!(
+    assert_eq!(
         crate::object_change::plan_problems(
             &block,
             crate::object_change::PlanValues {
@@ -294,8 +294,8 @@ fn proposed_state_is_null_and_provider_echoes_are_errors() -> Result<()> {
                 configuration: &configuration,
                 planned: &proposed,
             }
-        )
-        .is_empty()
+        ),
+        [] as [crate::object_change::PlanProblem; 0]
     );
     for value in [
         Value::String("test-write-only-secret-731".into()),
@@ -407,7 +407,7 @@ fn ordinary_provider_objects_keep_their_write_only_named_fields() -> Result<()> 
         &schema,
         &[],
     )?;
-    assert!(references.secrets().is_empty());
+    assert_eq!(references.secrets(), []);
     Ok(())
 }
 

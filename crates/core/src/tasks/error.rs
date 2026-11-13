@@ -29,65 +29,88 @@ pub struct TaskFailureWithHelp<'failure> {
 #[derive(ThisError, Debug, Diagnostic)]
 // Intentionally exhaustive: `cuenv`'s `From<cuenv_core::Error> for CliError` matches every variant so a new one forces an explicit exit-code decision.
 pub enum TaskError {
+    /// Task execution could not proceed, for a reason other than the task's
+    /// own command failing.
     #[error("Task execution failed: {message}")]
     #[diagnostic(code(cuenv::task::execution))]
     Execution {
+        /// Description of what went wrong.
         message: String,
+        /// Suggested remedy shown with the diagnostic, if any.
         #[help]
         help: Option<String>,
     },
 
+    /// A task ran and exited with a non-zero status.
     #[error("Task '{task_name}' failed with exit code {exit_code}")]
     #[diagnostic(code(cuenv::task::failed))]
     TaskFailed {
+        /// Name of the task that failed.
         task_name: String,
+        /// Exit status the task's process returned.
         exit_code: i32,
+        /// Standard output the task produced.
         stdout: String,
+        /// Standard error the task produced.
         stderr: String,
+        /// Suggested remedy shown with the diagnostic, if any.
         #[help]
         help: Option<String>,
     },
 
+    /// The task graph could not be built, for example because of a cycle or
+    /// a missing dependency.
     #[error("Task graph error: {message}")]
     #[diagnostic(code(cuenv::task::graph))]
     TaskGraph {
+        /// Description of the graph problem.
         message: String,
+        /// Suggested remedy shown with the diagnostic, if any.
         #[help]
         help: Option<String>,
     },
 
+    /// An operation did not finish within its time limit.
     #[error("Operation timed out after {seconds} seconds")]
     #[diagnostic(
         code(cuenv::timeout),
         help("Try increasing the timeout or check if the operation is stuck")
     )]
-    Timeout { seconds: u64 },
+    Timeout {
+        /// The time limit that was exceeded, in seconds.
+        seconds: u64,
+    },
 }
 
 impl TaskError {
+    /// Creates an [`Self::Execution`] error with a message and no help text.
     #[must_use]
     pub fn execution(msg: impl Into<String>) -> Self {
-        TaskError::Execution {
+        Self::Execution {
             message: msg.into(),
             help: None,
         }
     }
 
+    /// Creates an [`Self::Execution`] error with a message and a suggested
+    /// remedy.
     #[must_use]
     pub fn execution_with_help(msg: impl Into<String>, help: impl Into<String>) -> Self {
-        TaskError::Execution {
+        Self::Execution {
             message: msg.into(),
             help: Some(help.into()),
         }
     }
 
+    /// Creates a [`Self::TaskFailed`] error for `task_name`, which exited with
+    /// `exit_code` and produced `output`.
     #[must_use]
     pub fn task_failed(
         task_name: impl Into<String>,
         exit_code: i32,
         output: TaskFailureOutput<'_>,
     ) -> Self {
-        TaskError::TaskFailed {
+        Self::TaskFailed {
             task_name: task_name.into(),
             exit_code,
             stdout: output.stdout.to_string(),
@@ -96,13 +119,15 @@ impl TaskError {
         }
     }
 
+    /// Creates a [`Self::TaskFailed`] error for `task_name`, which exited with
+    /// `exit_code`, carrying its output and help text from `details`.
     #[must_use]
     pub fn task_failed_with_help(
         task_name: impl Into<String>,
         exit_code: i32,
         details: TaskFailureWithHelp<'_>,
     ) -> Self {
-        TaskError::TaskFailed {
+        Self::TaskFailed {
             task_name: task_name.into(),
             exit_code,
             stdout: details.output.stdout.to_string(),
@@ -111,17 +136,20 @@ impl TaskError {
         }
     }
 
+    /// Creates a [`Self::TaskGraph`] error with a message and no help text.
     #[must_use]
     pub fn graph(message: impl Into<String>) -> Self {
-        TaskError::TaskGraph {
+        Self::TaskGraph {
             message: message.into(),
             help: None,
         }
     }
 
+    /// Creates a [`Self::TaskGraph`] error with a message and a suggested
+    /// remedy.
     #[must_use]
     pub fn graph_with_help(message: impl Into<String>, help: impl Into<String>) -> Self {
-        TaskError::TaskGraph {
+        Self::TaskGraph {
             message: message.into(),
             help: Some(help.into()),
         }
@@ -160,7 +188,7 @@ impl From<cuenv_task_graph::Error> for TaskError {
             // TopologicalSortFailed and any future variants carry no specific help.
             _ => None,
         };
-        TaskError::TaskGraph {
+        Self::TaskGraph {
             message: err.to_string(),
             help,
         }

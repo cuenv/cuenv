@@ -303,7 +303,7 @@ react@^18.0.0:
         let parser = YarnClassicLockfileParser;
         let entries = parser.parse(file.path()).unwrap();
 
-        assert!(!entries.is_empty());
+        assert_ne!(entries, [] as [LockfileEntry; 0]);
 
         let left_pad = entries.iter().find(|e| e.name == "left-pad");
         assert!(left_pad.is_some());
@@ -333,7 +333,7 @@ react@^18.0.0:
         let parser = YarnClassicLockfileParser;
         let entries = parser.parse(file.path()).unwrap();
 
-        assert!(!entries.is_empty());
+        assert_ne!(entries, [] as [LockfileEntry; 0]);
         let babel = entries.iter().find(|e| e.name == "@babel/core");
         assert!(babel.is_some());
         let babel = babel.unwrap();

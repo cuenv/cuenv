@@ -13,13 +13,15 @@ pub(super) fn detailed_deserialize_error<T: DeserializeOwned>(
         Err(error) => {
             let path = error.path().to_string();
             let inner_message = error.into_inner().to_string();
-            let mut display_path = if path.is_empty() { None } else { Some(path) };
-
-            if should_include_env_value_hint(&inner_message)
+            let display_path = if should_include_env_value_hint(&inner_message)
                 && let Some(env_path) = find_invalid_env_value_path(value)
             {
-                display_path = Some(env_path);
-            }
+                Some(env_path)
+            } else if path.is_empty() {
+                None
+            } else {
+                Some(path)
+            };
 
             let mut message = match display_path {
                 Some(path) => format!("{inner_message} (at `{path}`)"),
@@ -74,7 +76,7 @@ mod tests {
     use crate::manifest::Project;
     use serde_json::json;
 
-    fn error_for(env: serde_json::Value) -> String {
+    fn error_for(env: &serde_json::Value) -> String {
         let value = json!({"name": "api", "env": env});
         let fallback = serde_json::from_str::<Project>("{").unwrap_err();
         detailed_deserialize_error::<Project>(&value, &fallback)
@@ -87,19 +89,20 @@ mod tests {
 
     #[test]
     fn invalid_interpolated_value_keeps_its_variable_path_and_hint() {
-        let message = error_for(json!({"A": ["a", {"command": "echo"}]}));
+        let message = error_for(&json!({"A": ["a", {"command": "echo"}]}));
         assert_names_variable(&message, "env.A");
     }
 
     #[test]
     fn invalid_interpolated_value_in_an_environment_override_keeps_its_path() {
-        let message = error_for(json!({"environment": {"dev": {"A": ["a", {"command": "echo"}]}}}));
+        let message =
+            error_for(&json!({"environment": {"dev": {"A": ["a", {"command": "echo"}]}}}));
         assert_names_variable(&message, "env.environment.dev.A");
     }
 
     #[test]
     fn project_passthrough_is_explained_not_reported_as_a_secret() {
-        let message = error_for(json!({"A": {"cuenvPassthrough": true, "name": "USER"}}));
+        let message = error_for(&json!({"A": {"cuenvPassthrough": true, "name": "USER"}}));
         assert_names_variable(&message, "env.A");
         assert!(message.contains("task's `env`"), "{message}");
         assert!(!message.contains("missing field"), "{message}");
@@ -107,7 +110,7 @@ mod tests {
 
     #[test]
     fn null_value_inside_a_policies_object_is_called_incomplete() {
-        let message = error_for(json!({"A": {"value": null, "policies": []}}));
+        let message = error_for(&json!({"A": {"value": null, "policies": []}}));
         assert_names_variable(&message, "env.A");
         assert!(message.contains("incomplete CUE value"), "{message}");
     }

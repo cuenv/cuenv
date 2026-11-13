@@ -235,7 +235,7 @@ fn test_multiple_tasks_same_project() {
     ];
 
     for (name, deps) in &tasks {
-        let task = test_utils::create_task(name, deps.to_vec(), vec![]);
+        let task = test_utils::create_task(name, deps.clone(), vec![]);
         graph.add_task(name, task).unwrap();
     }
 
@@ -258,23 +258,23 @@ fn test_deeply_nested_task_groups() {
     let mut graph = TaskGraph::new();
 
     // Create a chain: a -> (b1, b2) -> c -> (d1, d2, d3) -> e
-    let task_a = test_utils::create_task("a", vec![], vec![]);
-    let task_b1 = test_utils::create_task("b1", vec!["a"], vec![]);
-    let task_b2 = test_utils::create_task("b2", vec!["a"], vec![]);
-    let task_c = test_utils::create_task("c", vec!["b1", "b2"], vec![]);
-    let task_d1 = test_utils::create_task("d1", vec!["c"], vec![]);
-    let task_d2 = test_utils::create_task("d2", vec!["c"], vec![]);
-    let task_d3 = test_utils::create_task("d3", vec!["c"], vec![]);
-    let task_e = test_utils::create_task("e", vec!["d1", "d2", "d3"], vec![]);
+    let start = test_utils::create_task("a", vec![], vec![]);
+    let first_branch = test_utils::create_task("b1", vec!["a"], vec![]);
+    let second_branch = test_utils::create_task("b2", vec!["a"], vec![]);
+    let merge = test_utils::create_task("c", vec!["b1", "b2"], vec![]);
+    let first_leaf = test_utils::create_task("d1", vec!["c"], vec![]);
+    let second_leaf = test_utils::create_task("d2", vec!["c"], vec![]);
+    let third_leaf = test_utils::create_task("d3", vec!["c"], vec![]);
+    let finish = test_utils::create_task("e", vec!["d1", "d2", "d3"], vec![]);
 
-    graph.add_task("a", task_a).unwrap();
-    graph.add_task("b1", task_b1).unwrap();
-    graph.add_task("b2", task_b2).unwrap();
-    graph.add_task("c", task_c).unwrap();
-    graph.add_task("d1", task_d1).unwrap();
-    graph.add_task("d2", task_d2).unwrap();
-    graph.add_task("d3", task_d3).unwrap();
-    graph.add_task("e", task_e).unwrap();
+    graph.add_task("a", start).unwrap();
+    graph.add_task("b1", first_branch).unwrap();
+    graph.add_task("b2", second_branch).unwrap();
+    graph.add_task("c", merge).unwrap();
+    graph.add_task("d1", first_leaf).unwrap();
+    graph.add_task("d2", second_leaf).unwrap();
+    graph.add_task("d3", third_leaf).unwrap();
+    graph.add_task("e", finish).unwrap();
     graph.add_dependency_edges().unwrap();
 
     assert_eq!(graph.task_count(), 8);

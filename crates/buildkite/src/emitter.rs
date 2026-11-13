@@ -344,8 +344,7 @@ impl Emitter for BuildkiteEmitter {
             depends_on: ir
                 .sorted_phase_tasks(BuildStage::Setup)
                 .last()
-                .map(|t| vec![DependsOn::Key(t.id.clone())])
-                .unwrap_or_default(),
+                .map_or_default(|t| vec![DependsOn::Key(t.id.clone())]),
             concurrency_group: None,
             concurrency: None,
             retry: None,

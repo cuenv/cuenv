@@ -155,7 +155,7 @@ async fn execute_pipeline_task(request: PipelineTaskRequest<'_>) -> PipelineTask
     // is placed there before its inputs are compared with them.
     let inputs_matched = affected::CheckoutFrame::around(pipeline.project_path)
         .place(pipeline.project_path)
-        .map(|project_root| {
+        .map_or_default(|project_root| {
             affected::matched_inputs_for_task(
                 task_name,
                 pipeline.config,
@@ -165,8 +165,7 @@ async fn execute_pipeline_task(request: PipelineTaskRequest<'_>) -> PipelineTask
                     anchors: pipeline.projects.as_ref(),
                 },
             )
-        })
-        .unwrap_or_default();
+        });
     let outputs = task_outputs(pipeline.task_index, task_name);
 
     cuenv_events::emit_ci_task_executing!(pipeline.project_display, task_name);
@@ -276,8 +275,7 @@ fn task_outputs(task_index: &TaskIndex, task_name: &str) -> Vec<String> {
         .resolve(task_name)
         .ok()
         .and_then(|indexed| indexed.node.as_task())
-        .map(|task| task.outputs.clone())
-        .unwrap_or_default()
+        .map_or_default(|task| task.outputs.clone())
 }
 
 fn task_captures(
@@ -290,14 +288,13 @@ fn task_captures(
         .ok()
         .and_then(|indexed| indexed.node.as_task())
         .filter(|task| !task.captures.is_empty())
-        .map(|task| {
+        .map_or_default(|task| {
             cuenv_task_exec::captures::resolve_captures(
                 &task.captures,
                 &output.stdout,
                 &output.stderr,
             )
         })
-        .unwrap_or_default()
 }
 
 fn task_cache_key(output: &TaskOutput) -> String {
@@ -647,10 +644,7 @@ async fn compile_and_execute_ir(
                 .transpose()
         })
         .map_err(|e| ExecutorError::Compilation(e.to_string()))?;
-    let variables = task_env
-        .as_ref()
-        .map(TaskEnv::variables)
-        .unwrap_or_default();
+    let variables = task_env.as_ref().map_or_default(TaskEnv::variables);
     let (resolved, secrets) =
         cuenv_core::environment::Environment::resolve_all_with_secrets(&variables)
             .await

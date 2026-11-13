@@ -71,7 +71,7 @@ fn test_seed_lockfile_preserves_tools_activation_and_resets_generated_sections()
     assert_eq!(seeded.tools_activation, existing.tools_activation);
     assert_eq!(seeded.vcs, existing.vcs);
     assert!(seeded.tools.is_empty());
-    assert!(seeded.artifacts.is_empty());
+    assert_eq!(seeded.artifacts, [] as [LockedArtifact; 0]);
 }
 
 #[test]

@@ -7,6 +7,10 @@ use tracing::debug;
 
 impl TaskGraph {
     /// Build a graph from a task node.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a name it adds is already taken by a graph node that is not a task.
     pub fn build_from_node(
         &mut self,
         name: &str,
@@ -25,6 +29,11 @@ impl TaskGraph {
 
     /// Build a complete graph from tasks with proper dependency resolution.
     /// This performs a two-pass build: first adding all nodes, then all edges.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a name it adds is already taken by a graph node that is not a task, or when a task depends on a name
+    /// that is not a task in `tasks`.
     pub fn build_complete_graph(&mut self, tasks: &Tasks) -> Result<()> {
         // First pass: Add all tasks as nodes
         for (name, node) in &tasks.tasks {
@@ -44,6 +53,12 @@ impl TaskGraph {
     /// project, or a [`TaskScope`](crate::TaskScope) when a dependency may
     /// lead into another project. Either handles nested paths and group
     /// expansion.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a task reached from `task_name` depends on a
+    /// task or group that `all_tasks` cannot resolve, or when a name it adds
+    /// is already taken by a graph node that is not a task.
     pub fn build_for_task(
         &mut self,
         task_name: &str,

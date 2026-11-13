@@ -20,7 +20,13 @@ fn exit_code_of(status: std::process::ExitStatus) -> i32 {
 
 /// Execute an arbitrary command with the cuenv environment
 ///
-/// If `secrets` is provided, output will be captured and redacted before printing.
+/// Output is inherited, not redacted; use [`execute_command_with_redaction`]
+/// to redact secret values.
+///
+/// # Errors
+///
+/// Returns an error when the hermetic home directories cannot be created or
+/// the command cannot be started.
 pub async fn execute_command(
     command: &str,
     args: &[String],
@@ -50,6 +56,11 @@ pub struct CommandExecution<'command> {
 /// Execute a command with secret redaction
 ///
 /// Secret values in stdout/stderr are replaced with [REDACTED].
+///
+/// # Errors
+///
+/// Returns an error when the hermetic home directories cannot be created, or
+/// the command cannot be started or waited on.
 pub async fn execute_command_with_redaction(request: CommandExecution<'_>) -> Result<i32> {
     use tokio::io::{AsyncBufReadExt, BufReader};
 
@@ -148,13 +159,12 @@ pub async fn execute_command_with_redaction(request: CommandExecution<'_>) -> Re
 /// in that case, fall back to a private directory under the system temp root.
 fn hermetic_exec_environment(environment: &Environment) -> Result<HashMap<String, String>> {
     let mut merged = environment.merge_with_system_hermetic();
-    let home = match environment.get("HOME") {
-        Some(value) => PathBuf::from(value),
-        None => {
-            let path = default_exec_home()?;
-            merged.insert("HOME".to_string(), path.to_string_lossy().into_owned());
-            path
-        }
+    let home = if let Some(value) = environment.get("HOME") {
+        PathBuf::from(value)
+    } else {
+        let path = default_exec_home()?;
+        merged.insert("HOME".to_string(), path.to_string_lossy().into_owned());
+        path
     };
 
     for (name, relative_path) in [
@@ -193,8 +203,7 @@ fn default_exec_home() -> Result<PathBuf> {
 
 #[cfg(unix)]
 fn temporary_exec_home() -> PathBuf {
-    // SAFETY: `geteuid` reads the current process identity and has no preconditions.
-    let uid = unsafe { libc::geteuid() };
+    let uid = rustix::process::geteuid().as_raw();
     std::env::temp_dir()
         .join(format!("cuenv-{uid}"))
         .join("exec-home")

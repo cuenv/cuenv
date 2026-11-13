@@ -210,8 +210,7 @@ pub async fn execute_sync_ci(
         let providers = target_projects
             .first()
             .and_then(|p| p.config.ci.as_ref())
-            .map(|ci| ci.providers.clone())
-            .unwrap_or_default();
+            .map_or_default(|ci| ci.providers.clone());
 
         if providers.is_empty() {
             // No providers configured = emit nothing (explicit configuration required)

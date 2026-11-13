@@ -308,7 +308,7 @@ fn export_paths_and_presence_paths_project_every_instance() -> TestResult {
     assert_eq!(result.instances["a:app"], serde_json::json!({"name": "a"}));
     assert_eq!(result.instances["b:app"], serde_json::json!({"name": "b"}));
     assert_eq!(result.present["a:app"], vec!["infrastructure".to_string()]);
-    assert!(result.present["b:app"].is_empty());
+    assert_eq!(result.present["b:app"], [] as [String; 0]);
     Ok(())
 }
 
@@ -355,7 +355,10 @@ fn skipped_directories_are_reported_on_request() -> TestResult {
     );
 
     let silent = cuengine::evaluate_module(module.path(), "", Some(&all_packages()))?;
-    assert!(silent.skipped_directories.is_empty());
+    assert_eq!(
+        silent.skipped_directories,
+        [] as [cuengine::SkippedDirectory; 0]
+    );
     Ok(())
 }
 

@@ -603,8 +603,7 @@ impl TaskScope {
             shared: owner
                 .key
                 .and_then(|key| self.external.get(key))
-                .map(|external| external.shared.clone())
-                .unwrap_or_default(),
+                .map_or_default(|external| external.shared.clone()),
         })
     }
 
@@ -648,13 +647,12 @@ impl TaskScope {
         if root == self.root.root {
             return Ok(ResolvedProject { key: None, root });
         }
-        let key = match self.keys.get(&root) {
-            Some(key) => key.clone(),
-            None => {
-                let key = self.key_for(declared);
-                self.merge(source.project_at(&root)?, &key)?;
-                key
-            }
+        let key = if let Some(key) = self.keys.get(&root) {
+            key.clone()
+        } else {
+            let key = self.key_for(declared);
+            self.merge(source.project_at(&root)?, &key)?;
+            key
         };
         Ok(ResolvedProject {
             key: Some(key),
@@ -681,17 +679,14 @@ impl TaskScope {
         if let Some(workspace) = contributor_workspace(&root) {
             for name in tasks.tasks.keys().filter(|name| is_contributor(name)) {
                 let step = (workspace.clone(), name.clone());
-                match self.contributors.get(&step) {
-                    Some(owner) => {
-                        shared.insert(name.clone(), owner.clone());
-                    }
-                    None => {
-                        let task = ExternalTaskName {
-                            project: key,
-                            task: name,
-                        };
-                        self.contributors.insert(step, task.qualified());
-                    }
+                if let Some(owner) = self.contributors.get(&step) {
+                    shared.insert(name.clone(), owner.clone());
+                } else {
+                    let task = ExternalTaskName {
+                        project: key,
+                        task: name,
+                    };
+                    self.contributors.insert(step, task.qualified());
                 }
             }
         }
@@ -735,7 +730,9 @@ impl TaskScope {
         if !self.external.contains_key(declared) {
             return declared.to_string();
         }
-        (2_usize..)
+        // `declared` is taken, so at most `len - 1` suffixed names are: one
+        // of these `len` candidates is always free.
+        (2..=self.external.len() + 1)
             .map(|attempt| format!("{declared}~{attempt}"))
             .find(|candidate| !self.external.contains_key(candidate))
             .unwrap_or_else(|| declared.to_string())
@@ -1137,9 +1134,10 @@ impl Rewrite<'_> {
     fn dependencies(&mut self, node: BindingTask<'_>, dependencies: &mut [crate::TaskDependency]) {
         for dependency in dependencies {
             let spelled = match ExternalTaskName::parse(&dependency.name) {
-                Some(external) => match self.projects.get(external.project) {
-                    Some(target) => Some(target.task(external.task)),
-                    None => {
+                Some(external) => {
+                    if let Some(target) = self.projects.get(external.project) {
+                        Some(target.task(external.task))
+                    } else {
                         let reason = self
                             .unbound
                             .get(external.project)
@@ -1155,7 +1153,7 @@ impl Rewrite<'_> {
                             .push(for_task(node.name, node.source, &problem));
                         None
                     }
-                },
+                }
                 None => Some(self.owner.task(&dependency.name)),
             };
             if let Some(spelled) = spelled {

@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// machines. Some runners provide that path read-only or with different
 /// ownership, so fall back to a Cuenv-managed directory and include its actual
 /// path in the action environment and cache key.
-pub(crate) fn writable_task_home() -> Result<PathBuf> {
+pub fn writable_task_home() -> Result<PathBuf> {
     let preferred = PathBuf::from(cuenv_core::environment::Environment::HERMETIC_DEFAULT_HOME);
     let mut fallbacks = Vec::with_capacity(2);
     if let Ok(cache_root) = cuenv_core::paths::cache_dir() {
@@ -61,9 +61,9 @@ fn select_writable_home(
 }
 
 fn ensure_writable_directory(path: &Path) -> io::Result<()> {
-    std::fs::create_dir_all(path)?;
-
     static PROBE_ID: AtomicU64 = AtomicU64::new(0);
+
+    std::fs::create_dir_all(path)?;
     loop {
         let suffix = PROBE_ID.fetch_add(1, Ordering::Relaxed);
         let probe = path.join(format!(
@@ -75,7 +75,8 @@ fn ensure_writable_directory(path: &Path) -> io::Result<()> {
                 std::fs::remove_dir(probe)?;
                 return Ok(());
             }
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            // A leftover probe holds this name; try the next suffix.
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
             Err(error) => return Err(error),
         }
     }
@@ -100,8 +101,7 @@ fn create_private_directory(path: &Path) -> io::Result<()> {
 
 #[cfg(unix)]
 fn temporary_task_home() -> PathBuf {
-    // SAFETY: `geteuid` reads the current process identity and has no preconditions.
-    let uid = unsafe { libc::geteuid() };
+    let uid = rustix::process::geteuid().as_raw();
     std::env::temp_dir()
         .join(format!("cuenv-{uid}"))
         .join("task-home")

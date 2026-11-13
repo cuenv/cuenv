@@ -560,21 +560,18 @@ impl ProviderLog {
     }
 
     fn render(&self) -> String {
-        self.lines
-            .lock()
-            .map(|lines| {
-                if lines.is_empty() {
-                    String::new()
-                } else {
-                    let joined = lines
-                        .iter()
-                        .map(|line| self.redaction.redact(line))
-                        .collect::<Vec<_>>()
-                        .join("\n  ");
-                    format!("\nrecent provider log:\n  {joined}")
-                }
-            })
-            .unwrap_or_default()
+        self.lines.lock().map_or_default(|lines| {
+            if lines.is_empty() {
+                String::new()
+            } else {
+                let joined = lines
+                    .iter()
+                    .map(|line| self.redaction.redact(line))
+                    .collect::<Vec<_>>()
+                    .join("\n  ");
+                format!("\nrecent provider log:\n  {joined}")
+            }
+        })
     }
 }
 

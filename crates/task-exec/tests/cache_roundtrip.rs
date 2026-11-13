@@ -38,10 +38,13 @@ fn host_path_environment() -> Environment {
     environment
 }
 
-fn build_executor(workspace: &Path, cache_root: &Path) -> TaskExecutor {
+/// An executor for `workspace` whose result cache lives in `cache_root`.
+///
+/// Fails when the cache stores cannot be opened there.
+fn build_executor(workspace: &Path, cache_root: &Path) -> cuenv_cas::Result<TaskExecutor> {
     let cache = TaskCacheConfig {
-        cas: Arc::new(LocalCas::open(cache_root).unwrap()),
-        action_cache: Arc::new(LocalActionCache::open(cache_root).unwrap()),
+        cas: Arc::new(LocalCas::open(cache_root)?),
+        action_cache: Arc::new(LocalActionCache::open(cache_root)?),
         vcs_hasher: Arc::new(WalkHasher::new(workspace)),
         vcs_hasher_root: workspace.to_path_buf(),
         action_semantics_version: 1,
@@ -59,7 +62,7 @@ fn build_executor(workspace: &Path, cache_root: &Path) -> TaskExecutor {
         environment: host_path_environment(),
         ..Default::default()
     };
-    TaskExecutor::new(config)
+    Ok(TaskExecutor::new(config))
 }
 
 /// A shell fragment that prints 16 random bytes as hex. `/dev/urandom` and
@@ -107,7 +110,7 @@ async fn second_run_with_unchanged_inputs_is_a_cache_hit() {
     let cache_root = TempDir::new().unwrap();
     fs::write(workspace.path().join("input.txt"), "v1").unwrap();
 
-    let executor = build_executor(workspace.path(), cache_root.path());
+    let executor = build_executor(workspace.path(), cache_root.path()).unwrap();
     let task = cached_task(cached_script());
 
     let result1 = executor.execute_task("touch", &task).await.unwrap();
@@ -143,7 +146,7 @@ async fn cache_invalidates_when_input_changes() {
     let cache_root = TempDir::new().unwrap();
     fs::write(workspace.path().join("input.txt"), "v1").unwrap();
 
-    let executor = build_executor(workspace.path(), cache_root.path());
+    let executor = build_executor(workspace.path(), cache_root.path()).unwrap();
     let task = cached_task(cached_script());
 
     let result1 = executor.execute_task("t", &task).await.unwrap();
@@ -171,7 +174,7 @@ async fn task_without_inputs_is_never_cached() {
     let workspace = TempDir::new().unwrap();
     let cache_root = TempDir::new().unwrap();
 
-    let executor = build_executor(workspace.path(), cache_root.path());
+    let executor = build_executor(workspace.path(), cache_root.path()).unwrap();
     let task = Task {
         command: "sh".to_string(),
         args: vec!["-c".to_string(), format!("{PRINT_NONCE}; touch marker.txt")],
@@ -205,7 +208,7 @@ async fn an_unsandboxed_task_without_inputs_always_reruns_in_the_workspace() {
     let workspace = TempDir::new().unwrap();
     let cache_root = TempDir::new().unwrap();
 
-    let executor = build_executor(workspace.path(), cache_root.path());
+    let executor = build_executor(workspace.path(), cache_root.path()).unwrap();
     let task = unsandboxed(Task {
         command: "sh".to_string(),
         args: vec!["-c".to_string(), format!("{PRINT_NONCE}; touch marker.txt")],
@@ -241,7 +244,7 @@ async fn an_unsandboxed_task_still_hits_the_cache_without_spawning() {
     let cache_root = TempDir::new().unwrap();
     fs::write(workspace.path().join("input.txt"), "v1").unwrap();
 
-    let executor = build_executor(workspace.path(), cache_root.path());
+    let executor = build_executor(workspace.path(), cache_root.path()).unwrap();
     let task = unsandboxed(cached_task(cached_script()));
 
     let result1 = executor.execute_task("live", &task).await.unwrap();
@@ -286,7 +289,7 @@ async fn changing_the_sandbox_tier_is_a_cache_miss() {
     let cache_root = TempDir::new().unwrap();
     fs::write(workspace.path().join("input.txt"), "v1").unwrap();
 
-    let executor = build_executor(workspace.path(), cache_root.path());
+    let executor = build_executor(workspace.path(), cache_root.path()).unwrap();
     let sandboxed = cached_task(cached_script());
 
     let result1 = executor

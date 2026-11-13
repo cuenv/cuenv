@@ -45,8 +45,8 @@ impl TaskCommandExt for Task {
             } else if self.args.is_empty() {
                 resolve_command(&self.command)
             } else {
-                let resolved_command = resolve_command(&self.command);
-                format!("{} {}", resolved_command, self.args.join(" "))
+                let program = resolve_command(&self.command);
+                format!("{} {}", program, self.args.join(" "))
             };
 
             return Ok(TaskCommandSpec {
@@ -79,13 +79,12 @@ fn effective_script_shell(task: &Task) -> EffectiveScriptShell {
         let command = shell.command.clone().unwrap_or_else(|| "bash".to_string());
         let flag = shell.flag.clone().unwrap_or_else(|| "-c".to_string());
         let (supports_shell_options, supports_pipefail) = ScriptShell::from_command(&command)
-            .map(|script_shell| {
+            .map_or((false, false), |script_shell| {
                 (
                     script_shell.supports_shell_options(),
                     script_shell.supports_pipefail(),
                 )
-            })
-            .unwrap_or((false, false));
+            });
 
         return EffectiveScriptShell {
             display_name: command.clone(),

@@ -23,6 +23,7 @@ pub enum Shell {
 
 impl Shell {
     /// Detect shell from environment or argument
+    #[must_use]
     pub fn detect(target: Option<&str>) -> Self {
         if let Some(t) = target {
             return Self::parse(t);
@@ -31,41 +32,44 @@ impl Shell {
         // Try to detect from environment
         if let Ok(shell) = std::env::var("SHELL") {
             if shell.contains("fish") {
-                return Shell::Fish;
+                return Self::Fish;
             } else if shell.contains("zsh") {
-                return Shell::Zsh;
+                return Self::Zsh;
             } else if shell.contains("bash") {
-                return Shell::Bash;
+                return Self::Bash;
             }
         }
 
         // Default to bash
-        Shell::Bash
+        Self::Bash
     }
 
     /// Parse shell from string
+    #[must_use]
     pub fn parse(s: &str) -> Self {
         match s.to_lowercase().as_str() {
-            "zsh" => Shell::Zsh,
-            "fish" => Shell::Fish,
-            "powershell" | "pwsh" => Shell::PowerShell,
-            _ => Shell::Bash,
+            "zsh" => Self::Zsh,
+            "fish" => Self::Fish,
+            "powershell" | "pwsh" => Self::PowerShell,
+            _ => Self::Bash,
         }
     }
 
     /// Get the name of the shell
+    #[must_use]
     pub fn name(&self) -> &'static str {
         match self {
-            Shell::Bash => "bash",
-            Shell::Zsh => "zsh",
-            Shell::Fish => "fish",
-            Shell::PowerShell => "powershell",
+            Self::Bash => "bash",
+            Self::Zsh => "zsh",
+            Self::Fish => "fish",
+            Self::PowerShell => "powershell",
         }
     }
 
     /// Check if this shell is supported for integration
+    #[must_use]
     pub fn is_supported(&self) -> bool {
-        matches!(self, Shell::Bash | Shell::Zsh | Shell::Fish)
+        matches!(self, Self::Bash | Self::Zsh | Self::Fish)
     }
 }
 

@@ -1385,7 +1385,10 @@ async fn nothing_to_apply_asks_nothing() {
         })
         .await
         .unwrap();
-    assert!(harness.answers.locks_while_asked().is_empty());
+    assert_eq!(
+        harness.answers.locks_while_asked(),
+        [] as [Option<cuenv_infrastructure::LockInformation>; 0]
+    );
 }
 
 #[tokio::test]
@@ -1435,15 +1438,14 @@ async fn an_interrupted_no_work_apply_reports_failure_and_releases_the_lock() {
         assert!(lock_of(&error).unwrap().released);
         assert_eq!(harness.acquisitions(), 1);
         assert!(harness.current_lock().await.is_none());
-        assert!(
-            harness
-                .store
-                .list(&harness.tenant)
-                .await
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            harness.store.list(&harness.tenant).await.unwrap(),
+            [] as [ManagedResource; 0]
         );
-        assert!(harness.answers.locks_while_asked().is_empty());
+        assert_eq!(
+            harness.answers.locks_while_asked(),
+            [] as [Option<cuenv_infrastructure::LockInformation>; 0]
+        );
         assert!(matches!(harness.output.finish(), Finish::Report(None)));
     }
 }
@@ -1534,7 +1536,10 @@ async fn state_remove_and_recover_work_from_a_moved_directory() {
             .unwrap();
         let recorded = harness.store.list(&harness.tenant).await.unwrap();
         assert!(recorded.iter().any(|record| record.same_content(&saved)));
-        assert!(unrecorded.list(&harness.tenant).unwrap().is_empty());
+        assert_eq!(
+            unrecorded.list(&harness.tenant).unwrap(),
+            [] as [cuenv_infrastructure::UnrecordedRecord; 0]
+        );
         assert_eq!(harness.last_writer().await, Some(harness.instance.clone()));
 
         harness
@@ -1650,7 +1655,10 @@ async fn state_recover_records_and_deletes_unrecorded_files() {
         .map(|resource| resource.address.to_string())
         .collect();
     assert_eq!(recorded, vec!["random_pet.pet".to_string()]);
-    assert!(unrecorded.list(&harness.tenant).unwrap().is_empty());
+    assert_eq!(
+        unrecorded.list(&harness.tenant).unwrap(),
+        [] as [cuenv_infrastructure::UnrecordedRecord; 0]
+    );
     assert!(harness.current_lock().await.is_none());
     assert_eq!(
         harness.result()["recovered"],
@@ -1704,7 +1712,10 @@ async fn state_recover_refuses_to_overwrite_a_newer_record_unless_forced() {
         .unwrap();
     let stored = harness.store.list(&harness.tenant).await.unwrap();
     assert_eq!(stored[0].state, serde_json::json!({"id": "x"}));
-    assert!(unrecorded.list(&harness.tenant).unwrap().is_empty());
+    assert_eq!(
+        unrecorded.list(&harness.tenant).unwrap(),
+        [] as [cuenv_infrastructure::UnrecordedRecord; 0]
+    );
 }
 
 #[tokio::test]
@@ -2496,13 +2507,9 @@ async fn named_environment_state_does_not_block_data_only_top_level() {
         },
         configured: &[],
     };
-    assert!(
-        harness
-            .store
-            .list(&harness.tenant)
-            .await
-            .unwrap()
-            .is_empty()
+    assert_eq!(
+        harness.store.list(&harness.tenant).await.unwrap(),
+        [] as [ManagedResource; 0]
     );
     for action in [InfrastructureAction::Plan, apply_action(), destroy_action()] {
         case.guard(&action).await.unwrap();
@@ -2943,13 +2950,9 @@ async fn recover_refuses_an_unreadable_sibling_before_writing_current_state() {
         .unwrap_err();
     assert!(error.to_string().contains("directory"));
     assert!(own_file.exists());
-    assert!(
-        harness
-            .store
-            .list(&harness.tenant)
-            .await
-            .unwrap()
-            .is_empty()
+    assert_eq!(
+        harness.store.list(&harness.tenant).await.unwrap(),
+        [] as [ManagedResource; 0]
     );
     assert_eq!(harness.acquisitions(), 0);
     assert!(matches!(harness.output.finish(), Finish::Report(None)));
@@ -3144,13 +3147,13 @@ infrastructure: {
         InfrastructureState::Turso(turso) if turso.url == "http://127.0.0.1:8080"
     ));
     assert!(target.infrastructure.providers.is_empty());
-    assert!(target.warnings.is_empty());
+    assert_eq!(target.warnings, [] as [String; 0]);
     let target = evaluate_state_only(&project, Some("dev"));
     assert_eq!(
         target.tenant,
         TenantKey::with_environment("example.com/infrastructure", "app", "dev").unwrap()
     );
-    assert!(target.warnings.is_empty());
+    assert_eq!(target.warnings, [] as [String; 0]);
 }
 
 /// A project with infrastructure, a `dev`
@@ -3219,7 +3222,7 @@ fn a_cache_block_that_is_not_a_complete_cache_never_stops_an_infrastructure_comm
     // A cache without credentials names no variable.
     let plain = module_with_cache("cache: remote: endpoint: \"grpcs://cache.example.com\"");
     let target = evaluate_at(&plain.path().join("app"), NameCheck::TargetOnly).unwrap();
-    assert!(target.remote_cache_credential_variables.is_empty());
+    assert_eq!(target.remote_cache_credential_variables, [] as [String; 0]);
 }
 
 #[test]
@@ -3445,11 +3448,11 @@ async fn showing_the_lock_without_env_mentions_locks_in_declared_environments() 
         siblings: &siblings,
         ..harness.context()
     };
-    assert!(
+    assert_eq!(
         super::state_actions::locks_in_other_environments(&context)
             .await
-            .unwrap()
-            .is_empty()
+            .unwrap(),
+        [] as [crate::commands::infrastructure::output::OtherEnvironment; 0]
     );
 }
 
@@ -3792,7 +3795,10 @@ async fn state_locks_lists_every_tenants_lock_and_unlock_names_a_project_that_ne
         )))
         .await
         .unwrap();
-    assert!(harness.result()["locks"].as_array().unwrap().is_empty());
+    assert_eq!(
+        harness.result()["locks"].as_array().unwrap().as_slice(),
+        [] as [serde_json::Value; 0]
+    );
     // `--all` lists every lock of the backend.
     let harness = Harness::new(OutputFormat::Json, Script::Line("yes"));
     let held = harness.store.lock(&other, "apply by ci").await.unwrap();

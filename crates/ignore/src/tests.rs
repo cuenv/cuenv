@@ -7,7 +7,7 @@ use super::{
 fn test_ignore_file_new() {
     let file = IgnoreFile::new("git");
     assert_eq!(file.tool(), "git");
-    assert!(file.patterns_list().is_empty());
+    assert_eq!(file.patterns_list(), [] as [String; 0]);
     assert_eq!(file.output_filename(), ".gitignore");
 }
 

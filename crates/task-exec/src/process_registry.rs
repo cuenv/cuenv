@@ -148,38 +148,20 @@ impl ProcessRegistry {
     /// Sends SIGTERM to a process group (Unix) or terminates process (Windows).
     #[cfg(unix)]
     fn send_term_signal(pid: u32) {
-        // SAFETY: libc::kill with negative pid sends signal to entire process group.
-        // The pid was obtained from a spawned child process and is valid.
-        // SIGTERM is a safe signal that requests graceful termination.
-        #[expect(unsafe_code, reason = "Required for POSIX signal handling")]
-        unsafe {
-            // Use negative PID to send to entire process group
-            libc::kill(-(pid as i32), libc::SIGTERM);
-        }
+        signal_process_group(pid, rustix::process::Signal::TERM);
     }
 
     /// Sends SIGKILL to a process group (Unix) or terminates process (Windows).
     #[cfg(unix)]
     fn send_kill_signal(pid: u32) {
-        // SAFETY: libc::kill with negative pid sends signal to entire process group.
-        // The pid was obtained from a spawned child process and is valid.
-        // SIGKILL forces immediate termination.
-        #[expect(unsafe_code, reason = "Required for POSIX signal handling")]
-        unsafe {
-            // Use negative PID to kill entire process group
-            libc::kill(-(pid as i32), libc::SIGKILL);
-        }
+        signal_process_group(pid, rustix::process::Signal::KILL);
     }
 
     /// Checks if a process is still alive.
     #[cfg(unix)]
     fn is_process_alive(pid: u32) -> bool {
-        // SAFETY: libc::kill with signal 0 checks if process exists without sending a signal.
-        // This is a standard POSIX idiom for checking process existence.
-        #[expect(unsafe_code, reason = "Required for POSIX process existence check")]
-        unsafe {
-            libc::kill(pid as i32, 0) == 0
-        }
+        // Signal 0 checks that the process exists without signalling it.
+        unix_pid(pid).is_some_and(|pid| rustix::process::test_kill_process(pid).is_ok())
     }
 
     /// Windows implementation: terminate process using sysinfo crate.
@@ -232,6 +214,32 @@ impl ProcessRegistry {
         );
 
         system.process(process_pid).is_some()
+    }
+}
+
+/// The Unix process id a registered `pid` names, or `None` when it names no
+/// process: zero, or too large for the platform's process id type.
+#[cfg(unix)]
+fn unix_pid(pid: u32) -> Option<rustix::process::Pid> {
+    i32::try_from(pid)
+        .ok()
+        .and_then(rustix::process::Pid::from_raw)
+}
+
+/// Send `signal` to the process group led by `pid`, which every task process
+/// leads (see the module docs).
+#[cfg(unix)]
+fn signal_process_group(pid: u32, signal: rustix::process::Signal) {
+    let Some(group) = unix_pid(pid) else {
+        warn!(
+            pid,
+            "not signalling a process group with an invalid process id"
+        );
+        return;
+    };
+    if let Err(error) = rustix::process::kill_process_group(group, signal) {
+        // The group has usually exited already; there is nothing left to stop.
+        debug!(pid, %error, "could not signal process group");
     }
 }
 

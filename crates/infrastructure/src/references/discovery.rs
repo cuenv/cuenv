@@ -145,7 +145,7 @@ mod tests {
             json!({"fromResource": "literal", "fromDataSource": "ordinary", "attribute": "value"}),
         )]);
         let references = ConfigurationReferences::extract_with_schema(&configuration, &block, &[])?;
-        assert!(references.references().is_empty());
+        assert_eq!(references.references(), []);
         assert_eq!(
             references
                 .prepare(&configuration, &block.implied_type())?
@@ -163,7 +163,7 @@ mod tests {
             json!({"fromResource": "fake_obj.source", "attribute": "id"}),
         )]);
         let references = ConfigurationReferences::extract_with_schema(&configuration, &block, &[])?;
-        assert!(references.references().is_empty());
+        assert_eq!(references.references(), []);
         assert!(
             references
                 .prepare(&configuration, &block.implied_type())

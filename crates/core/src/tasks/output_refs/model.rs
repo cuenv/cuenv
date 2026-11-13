@@ -1,20 +1,23 @@
 /// Prefix for placeholder strings that represent task output references.
 /// Format: `cuenv:ref:<task_name>:<output_field>`
-pub(crate) const OUTPUT_REF_PREFIX: &str = "cuenv:ref:";
+pub(super) const OUTPUT_REF_PREFIX: &str = "cuenv:ref:";
 
 /// Prefix for placeholder strings that represent image output references.
 /// Format: `cuenv:image-ref:<image_name>:<ref|digest>`
-pub(crate) const IMAGE_REF_PREFIX: &str = "cuenv:image-ref:";
+pub(super) const IMAGE_REF_PREFIX: &str = "cuenv:image-ref:";
 
 /// Prefix for placeholder strings that represent host env passthrough.
 /// Format: `cuenv:passthrough:<var_name>`
-pub(crate) const PASSTHROUGH_PREFIX: &str = "cuenv:passthrough:";
+pub(super) const PASSTHROUGH_PREFIX: &str = "cuenv:passthrough:";
 
 /// Which output field of a task is being referenced.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TaskOutputField {
+    /// The task's captured standard output.
     Stdout,
+    /// The task's captured standard error.
     Stderr,
+    /// The exit code of the task's process.
     ExitCode,
 }
 

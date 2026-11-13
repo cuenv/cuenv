@@ -515,7 +515,10 @@ async fn mismatched_embedded_address_fails_list_but_keeps_key_removable()
         .await?;
     store.delete(&tenant(), &lock, &address).await?;
     assert!(store.unlock(&tenant(), &lock).await?);
-    assert!(store.addresses(&tenant()).await?.is_empty());
+    assert_eq!(
+        store.addresses(&tenant()).await?,
+        [] as [ResourceAddress; 0]
+    );
     Ok(())
 }
 
@@ -1394,7 +1397,10 @@ async fn history_is_pruned_by_numeric_serial() {
         .await
         .unwrap();
     store.unlock(&tenant(), &lock).await.unwrap();
-    assert!(store.history(&tenant()).await.unwrap().is_empty());
+    assert_eq!(
+        store.history(&tenant()).await.unwrap(),
+        [] as [super::HistoryEntry; 0]
+    );
 }
 
 #[tokio::test]
@@ -1403,7 +1409,10 @@ async fn a_lock_without_changes_writes_no_history() {
     let store = store(&server);
     let lock = take(&store, None).await;
     store.unlock(&tenant(), &lock).await.unwrap();
-    assert!(store.history(&tenant()).await.unwrap().is_empty());
+    assert_eq!(
+        store.history(&tenant()).await.unwrap(),
+        [] as [super::HistoryEntry; 0]
+    );
 }
 
 #[tokio::test]
@@ -1420,7 +1429,10 @@ async fn stale_markers_are_ignored_and_markers_never_name_a_lock_by_themselves()
         "_locks/example.com/infra/_cuenv/absent/_default/stale.json",
         Vec::new(),
     );
-    assert!(store.locks().await.unwrap().is_empty());
+    assert_eq!(
+        store.locks().await.unwrap(),
+        [] as [crate::state::TenantLock; 0]
+    );
     let lock = take(&store, None).await;
     let locks = store.locks().await.unwrap();
     assert_eq!(locks.len(), 1);
@@ -1520,7 +1532,10 @@ async fn a_newer_write_format_is_never_written_over() {
         "{error}"
     );
     // Reading is still allowed: only the read format gates readers.
-    assert!(store.list(&tenant()).await.unwrap().is_empty());
+    assert_eq!(
+        store.list(&tenant()).await.unwrap(),
+        [] as [ManagedResource; 0]
+    );
 }
 
 #[tokio::test]
@@ -1559,7 +1574,10 @@ async fn rename_moves_state_and_leaves_a_tombstone() {
     let ops = ObjectStateStore::try_new(configuration(&server, "ops")).unwrap();
     assert_eq!(ops.list(&renamed).await.unwrap().len(), 1);
     assert_eq!(ops.current_lock(&renamed).await.unwrap(), None);
-    assert!(store.locks().await.unwrap().is_empty());
+    assert_eq!(
+        store.locks().await.unwrap(),
+        [] as [crate::state::TenantLock; 0]
+    );
     // A rename never overwrites.
     let error = ops
         .rename(
@@ -2545,7 +2563,10 @@ async fn tenant_enumeration_rejects_malformed_state_keys_but_ignores_unrelated_o
     let server = FakeS3::start().await?;
     let store = ObjectStateStore::try_new(configuration(&server, "cuenv"))?;
     server.put_object(BUCKET, "example.com/infra/_cuenv/unrelated.txt", Vec::new());
-    assert!(store.tenants("example.com/infra").await?.is_empty());
+    assert_eq!(
+        store.tenants("example.com/infra").await?,
+        [] as [super::StoredTenant; 0]
+    );
     let invalid = format!("example.com/infra/_cuenv/{SECRET} invalid/_default/state.json");
     server.put_object(BUCKET, &invalid, b"{}".to_vec());
     let error = store.tenants("example.com/infra").await.unwrap_err();

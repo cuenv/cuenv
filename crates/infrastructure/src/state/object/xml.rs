@@ -199,7 +199,7 @@ mod tests {
              <IsTruncated>false</IsTruncated></ListBucketResult>",
         )
         .unwrap();
-        assert!(last.keys.is_empty());
+        assert_eq!(last.keys, [] as [String; 0]);
         assert_eq!(last.next_continuation_token, None);
     }
 

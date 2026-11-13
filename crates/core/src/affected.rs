@@ -100,14 +100,13 @@ pub fn match_pattern(files: &[PathBuf], project_root: &Path, pattern: &str) -> P
     let mut from_checkout_root = false;
 
     for file in files {
-        let matched = match within_project(file, project_root) {
-            Some(relative) => reader.matches(relative),
-            None => {
-                // Outside the project. The empty pattern is the project
-                // directory and nothing else.
-                from_checkout_root |= !pattern.is_empty() && reader.matches(file);
-                false
-            }
+        let matched = if let Some(relative) = within_project(file, project_root) {
+            reader.matches(relative)
+        } else {
+            // Outside the project. The empty pattern is the project
+            // directory and nothing else.
+            from_checkout_root |= !pattern.is_empty() && reader.matches(file);
+            false
         };
 
         tracing::trace!(

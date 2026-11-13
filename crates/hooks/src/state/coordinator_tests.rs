@@ -375,7 +375,10 @@ async fn automatic_start_does_not_replace_a_new_generation_after_a_stale_miss() 
         snapshot.environment_vars.get("VALUE").map(String::as_str),
         Some("new")
     );
-    assert!(manager.reservations().await.unwrap().is_empty());
+    assert_eq!(
+        manager.reservations().await.unwrap(),
+        [] as [HookReservation; 0]
+    );
 
     let mut changed = new_state(directory.path(), "changed");
     let started = manager
@@ -768,7 +771,10 @@ async fn completed_foreign_broker_can_be_listed_and_recovered_after_drain() {
         manager.recover_drained(&identity).await.unwrap(),
         HookRecoveryOutcome::Recovered
     );
-    assert!(manager.reservations().await.unwrap().is_empty());
+    assert_eq!(
+        manager.reservations().await.unwrap(),
+        [] as [HookReservation; 0]
+    );
     assert!(
         manager
             .state_for_instance(directory.path(), "foreign", state.session_id)
@@ -949,7 +955,10 @@ async fn recovery_preserves_prior_terminal_state_after_partial_begin() {
             .unwrap();
         assert_eq!(retained.run_id, old.run_id);
         assert_eq!(retained.status, ExecutionStatus::Completed);
-        assert!(manager.reservations().await.unwrap().is_empty());
+        assert_eq!(
+            manager.reservations().await.unwrap(),
+            [] as [HookReservation; 0]
+        );
     }
 }
 
@@ -988,7 +997,10 @@ async fn a_registered_child_prevents_cancellation_acknowledgement_until_reaped()
         manager.acknowledge_cancellation(&identity).await.unwrap(),
         HookRunUpdate::Applied
     );
-    assert!(manager.reservations().await.unwrap().is_empty());
+    assert_eq!(
+        manager.reservations().await.unwrap(),
+        [] as [HookReservation; 0]
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -1124,7 +1136,10 @@ async fn exact_recovery_works_when_the_project_directory_disappears() {
         manager.recover_drained(&identity).await.unwrap(),
         HookRecoveryOutcome::Recovered
     );
-    assert!(manager.reservations().await.unwrap().is_empty());
+    assert_eq!(
+        manager.reservations().await.unwrap(),
+        [] as [HookReservation; 0]
+    );
 }
 
 #[test]

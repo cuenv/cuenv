@@ -394,8 +394,7 @@ impl Infrastructure {
             let declared: Vec<String> = object
                 .get("environments")
                 .and_then(serde_json::Value::as_object)
-                .map(|environments| environments.keys().cloned().collect())
-                .unwrap_or_default();
+                .map_or_default(|environments| environments.keys().cloned().collect());
             if !declared.iter().any(|declared_name| declared_name == name) {
                 return Err(InfrastructureSelectionError::UnknownEnvironment {
                     requested: name.to_owned(),

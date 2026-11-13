@@ -173,6 +173,7 @@ struct SandboxStore {
 
 impl TaskExecutor {
     /// Create a new executor.
+    #[must_use]
     pub fn new(mut config: ExecutorConfig) -> Self {
         if let Some(cache) = &config.cache {
             config
@@ -244,7 +245,22 @@ impl TaskExecutor {
     /// 3. Otherwise run the task directly on the host.
     /// 4. On a successful miss, project declared outputs back into the
     ///    workspace and persist outputs + result to the cache.
-    #[instrument(name = "execute_task", skip(self, task), fields(task_name = %name))]
+    ///
+    /// A task that runs and fails is not an error: its exit code and output
+    /// are in the returned [`TaskResult`], and a failed cache write is only
+    /// logged.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the task passes host `HOME` through explicitly,
+    /// belongs to a project this run has not loaded, or declares inputs it
+    /// cannot read where it runs (an unbound file reference, or a relocating
+    /// mapping without directory isolation); when its environment or secrets,
+    /// command, working directory, timeout or retry delay cannot be resolved;
+    /// when a
+    /// sandboxed task's inputs cannot be resolved or staged; when its process
+    /// cannot be started or waited on; or when its outputs cannot be
+    /// collected or projected back into the workspace., skip(self, task), fields(task_name = %name))]
     pub async fn execute_task(&self, name: &str, task: &Task) -> Result<TaskResult> {
         if task.has_host_home_passthrough() {
             return Err(Error::configuration(
@@ -269,7 +285,7 @@ impl TaskExecutor {
             None => None,
         };
         let mut cache_handle: Option<CacheHandle> = if let Some(cache) = cache {
-            let workdir = self.workdir_in(frame, task)?;
+            let workdir = Self::workdir_in(frame, task)?;
             let outcome = super::cache::build_action(BuildActionInput {
                 task,
                 task_name: name,
@@ -289,39 +305,7 @@ impl TaskExecutor {
                     // In inherited-output mode the process result has empty
                     // stdout/stderr, while capture mode for the same action
                     // has real bytes. They cannot share an action result.
-                    if !self.config.capture_output.should_capture() {
-                        cuenv_events::emit_task_cache_skipped!(
-                            name,
-                            cuenv_events::CacheSkipReason::Disabled {
-                                reason: Some(
-                                    "streamed output cannot be reproduced from the action cache"
-                                        .to_string()
-                                )
-                            }
-                        );
-                        let exec_root = self.prepare_exec_root(PrepareExecRootInput {
-                            name,
-                            task,
-                            cache: &cache,
-                            root_key: &root_key,
-                            inputs: &inputs,
-                        })?;
-                        let run_workdir = exec_root
-                            .as_ref()
-                            .map(|root| root.workdir(&working_directory))
-                            .transpose()?
-                            .unwrap_or_else(|| workdir.clone());
-                        Some(CacheHandle {
-                            cache,
-                            action_digest: None,
-                            workdir,
-                            exec_root,
-                            run_workdir,
-                            root_key,
-                            inputs,
-                            working_directory,
-                        })
-                    } else {
+                    if self.config.capture_output.should_capture() {
                         // Cache lookup. On a hit, short-circuit execution.
                         if let Some(cached) =
                             super::cache::lookup(&cache, &eligible.digest, task).await?
@@ -356,7 +340,7 @@ impl TaskExecutor {
                         }
                         tracing::debug!(task = %name, "action cache miss");
                         cuenv_events::emit_task_cache_miss!(name);
-                        let exec_root = self.prepare_exec_root(PrepareExecRootInput {
+                        let exec_root = Self::prepare_exec_root(PrepareExecRootInput {
                             name,
                             task,
                             cache: &cache,
@@ -378,13 +362,43 @@ impl TaskExecutor {
                             inputs,
                             working_directory,
                         })
+                    } else {
+                        cuenv_events::emit_task_cache_skipped!(
+                            name,
+                            cuenv_events::CacheSkipReason::Disabled {
+                                reason: Some(
+                                    "streamed output cannot be reproduced from the action cache"
+                                        .to_string()
+                                )
+                            }
+                        );
+                        let exec_root = Self::prepare_exec_root(PrepareExecRootInput {
+                            name,
+                            task,
+                            cache: &cache,
+                            root_key: &root_key,
+                            inputs: &inputs,
+                        })?;
+                        let run_workdir = exec_root
+                            .as_ref()
+                            .map(|root| root.workdir(&working_directory))
+                            .transpose()?
+                            .unwrap_or_else(|| workdir.clone());
+                        Some(CacheHandle {
+                            cache,
+                            action_digest: None,
+                            workdir,
+                            exec_root,
+                            run_workdir,
+                            root_key,
+                            inputs,
+                            working_directory,
+                        })
                     }
                 }
                 super::cache::CacheOutcome::Skipped { reason, execution } => {
                     cuenv_events::emit_task_cache_skipped!(name, reason.clone());
-                    if !task.sandbox().uses_exec_root() {
-                        None
-                    } else {
+                    if task.sandbox().uses_exec_root() {
                         // Fail closed, as documented: running against the
                         // live checkout would hand back a result that looks
                         // isolated and is not, and any input mapped from
@@ -399,7 +413,7 @@ impl TaskExecutor {
                         let root_key = cuenv_cas::Digest::of_bytes(
                             format!("{name}:{}", workdir.display()).as_bytes(),
                         );
-                        let exec_root = self.prepare_exec_root(PrepareExecRootInput {
+                        let exec_root = Self::prepare_exec_root(PrepareExecRootInput {
                             name,
                             task,
                             cache: &cache,
@@ -421,6 +435,8 @@ impl TaskExecutor {
                             inputs: execution.inputs,
                             working_directory: execution.working_directory,
                         })
+                    } else {
+                        None
                     }
                 }
             }
@@ -519,7 +535,6 @@ impl TaskExecutor {
     ///
     /// Returns `None` for a task that opted out of isolation.
     fn prepare_exec_root(
-        &self,
         input: PrepareExecRootInput<'_>,
     ) -> Result<Option<super::exec_root::ExecRoot>> {
         let PrepareExecRootInput {
@@ -542,7 +557,7 @@ impl TaskExecutor {
         Ok(Some(exec_root))
     }
 
-    fn reset_exec_root(&self, name: &str, task: &Task, handle: &mut CacheHandle) -> Result<()> {
+    fn reset_exec_root(name: &str, task: &Task, handle: &mut CacheHandle) -> Result<()> {
         if !task.sandbox().uses_exec_root() {
             return Ok(());
         }
@@ -551,7 +566,7 @@ impl TaskExecutor {
         // it left behind. The next attempt starts from the same verified input
         // snapshot as the action key.
         handle.exec_root.take();
-        let exec_root = self.prepare_exec_root(PrepareExecRootInput {
+        let exec_root = Self::prepare_exec_root(PrepareExecRootInput {
             name,
             task,
             cache: &handle.cache,
@@ -604,7 +619,7 @@ impl TaskExecutor {
                 tokio::time::sleep(delay).await;
             }
             if let Some(handle) = cache_handle.as_deref_mut() {
-                self.reset_exec_root(name, task, handle)?;
+                Self::reset_exec_root(name, task, handle)?;
             }
         }
     }
@@ -722,7 +737,7 @@ impl TaskExecutor {
     /// the run's own project.
     #[cfg(test)]
     fn workdir_for_task(&self, task: &Task) -> Result<PathBuf> {
-        self.workdir_in(self.own_frame(task), task)
+        Self::workdir_in(self.own_frame(task), task)
     }
 
     /// Compute the working directory the executor would use for a task.
@@ -734,7 +749,7 @@ impl TaskExecutor {
     /// A task runs in its `dir`, else in the directory of the file that
     /// defines it, else in its project. That is the same directory whether
     /// the task is run in its own project or as a dependency of another's.
-    fn workdir_in(&self, frame: TaskFrame<'_>, task: &Task) -> Result<PathBuf> {
+    fn workdir_in(frame: TaskFrame<'_>, task: &Task) -> Result<PathBuf> {
         if let Some(ref dir) = task.directory {
             return resolve_task_directory(frame.module_root, task, dir);
         }
@@ -774,7 +789,7 @@ impl TaskExecutor {
         // working directory the usual way (see `workdir_in`).
         let workdir = match workdir_override {
             Some(path) => path.to_path_buf(),
-            None => self.workdir_in(self.frame_for(name, task)?, task)?,
+            None => Self::workdir_in(self.frame_for(name, task)?, task)?,
         };
 
         tracing::info!(
@@ -1318,6 +1333,7 @@ struct CacheHandle {
     working_directory: PathBuf,
 }
 
+#[derive(Clone, Copy)]
 struct PrepareExecRootInput<'input> {
     name: &'input str,
     task: &'input Task,

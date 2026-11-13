@@ -459,7 +459,7 @@ mod tests {
         let err = FlakeLockError::strict_violation(vec![]);
         if let FlakeLockError::StrictModeViolation { count, inputs } = err {
             assert_eq!(count, 0);
-            assert!(inputs.is_empty());
+            assert_eq!(inputs, [] as [String; 0]);
         } else {
             panic!("Expected StrictModeViolation");
         }

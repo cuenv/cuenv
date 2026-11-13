@@ -132,6 +132,7 @@ fn process_task_node(
 /// Try to extract an `#EnvPassthrough` from a JSON value.
 /// Returns the passthrough placeholder string if the value is a passthrough object.
 /// `env_key` is the map key, used as fallback when `name` is absent.
+#[must_use]
 pub fn try_extract_passthrough(value: &serde_json::Value, env_key: &str) -> Option<String> {
     let obj = value.as_object()?;
 
@@ -157,7 +158,7 @@ pub fn parse_passthrough(s: &str) -> Option<&str> {
 
 /// Try to extract a `#TaskOutputRef` or `#ImageOutputRef` from a JSON value.
 /// Returns the placeholder string if the value is a ref object, None otherwise.
-pub(crate) fn try_extract_output_ref(value: &serde_json::Value) -> Option<String> {
+pub(super) fn try_extract_output_ref(value: &serde_json::Value) -> Option<String> {
     let obj = value.as_object()?;
 
     // Check discriminator field

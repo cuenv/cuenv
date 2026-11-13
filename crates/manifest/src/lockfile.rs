@@ -857,12 +857,11 @@ fn str_list_field(source: &serde_json::Value, key: &str) -> Vec<String> {
     source
         .get(key)
         .and_then(|v| v.as_array())
-        .map(|arr| {
+        .map_or_default(|arr| {
             arr.iter()
                 .filter_map(|v| v.as_str().map(String::from))
                 .collect()
         })
-        .unwrap_or_default()
 }
 
 /// Parse the typed `extract` list from a lockfile source, falling back to a

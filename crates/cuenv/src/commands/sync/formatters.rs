@@ -783,7 +783,10 @@ mod tests {
             enabled_formatter_commands(&formatters),
             ["rustfmt", "alejandra"]
         );
-        assert!(enabled_formatter_commands(&Formatters::default()).is_empty());
+        assert_eq!(
+            enabled_formatter_commands(&Formatters::default()),
+            [] as [&str; 0]
+        );
     }
 
     #[cfg(unix)]

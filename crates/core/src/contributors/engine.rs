@@ -23,6 +23,11 @@ impl<'engine> ContributorEngine<'engine> {
     ///
     /// Loops until no contributor makes changes (stable DAG).
     /// Returns the number of tasks injected.
+    ///
+    /// # Errors
+    ///
+    /// Injection itself cannot fail today, so this always returns `Ok`; the
+    /// `Result` lets callers propagate failures without an API change.
     pub fn apply(&self, tasks: &mut HashMap<String, TaskNode>) -> Result<usize> {
         let mut total_injected = 0;
         let max_iterations = 10;
@@ -32,7 +37,7 @@ impl<'engine> ContributorEngine<'engine> {
 
             for contributor in self.contributors {
                 if self.is_active(contributor) {
-                    let injected = self.inject_tasks(contributor, tasks);
+                    let injected = Self::inject_tasks(contributor, tasks);
                     if injected > 0 {
                         changed = true;
                         total_injected += injected;
@@ -44,7 +49,7 @@ impl<'engine> ContributorEngine<'engine> {
                     }
 
                     if let Some(auto_assoc) = &contributor.auto_associate {
-                        self.apply_auto_association(auto_assoc, tasks);
+                        Self::apply_auto_association(auto_assoc, tasks);
                     }
                 }
             }
@@ -116,11 +121,7 @@ impl<'engine> ContributorEngine<'engine> {
     /// Inject tasks from a contributor into the DAG
     ///
     /// Returns the number of tasks injected
-    fn inject_tasks(
-        &self,
-        contributor: &Contributor,
-        tasks: &mut HashMap<String, TaskNode>,
-    ) -> usize {
+    fn inject_tasks(contributor: &Contributor, tasks: &mut HashMap<String, TaskNode>) -> usize {
         let mut injected = 0;
 
         for contrib_task in &contributor.tasks {
@@ -172,11 +173,7 @@ impl<'engine> ContributorEngine<'engine> {
     }
 
     /// Apply auto-association rules to existing tasks
-    fn apply_auto_association(
-        &self,
-        auto_assoc: &AutoAssociate,
-        tasks: &mut HashMap<String, TaskNode>,
-    ) {
+    fn apply_auto_association(auto_assoc: &AutoAssociate, tasks: &mut HashMap<String, TaskNode>) {
         let Some(inject_dep) = &auto_assoc.inject_dependency else {
             return;
         };

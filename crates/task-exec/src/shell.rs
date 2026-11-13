@@ -15,7 +15,7 @@ pub struct TaskCommandSpec {
 
 /// A script shell resolved to its concrete command, flag, and capabilities.
 #[derive(Debug, Clone)]
-pub(super) struct EffectiveScriptShell {
+pub struct EffectiveScriptShell {
     pub(super) command: String,
     pub(super) flag: String,
     pub(super) display_name: String,

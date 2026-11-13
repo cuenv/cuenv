@@ -158,7 +158,10 @@ fn nested_attribute_sets_allow_coalescing_unknown_elements() {
             rule("c", Value::Unknown),
         ],
     );
-    assert!(check(&block, [&Value::Null, &configuration, &unknown_elements]).is_empty());
+    assert_eq!(
+        check(&block, [&Value::Null, &configuration, &unknown_elements]),
+        [] as [PlanProblem; 0]
+    );
     let known_elements = resource(
         text("id"),
         vec![
@@ -207,7 +210,10 @@ fn nested_blocks_with_computed_children_are_valid_plans() {
         ("name", text("example")),
         ("rule", Value::List(vec![rule("a", Value::Unknown)])),
     ]);
-    assert!(check(&block, [&Value::Null, &configuration, &planned]).is_empty());
+    assert_eq!(
+        check(&block, [&Value::Null, &configuration, &planned]),
+        [] as [PlanProblem; 0]
+    );
 
     let too_many = object(&[
         ("name", text("example")),
@@ -241,7 +247,10 @@ fn a_semantically_equal_prior_value_may_replace_the_configured_one() {
     let block = named_block(Presence::Optional);
     let prior = object(&[("name", text("Hello"))]);
     let configuration = object(&[("name", text("HELLO"))]);
-    assert!(check(&block, [&prior, &configuration, &prior]).is_empty());
+    assert_eq!(
+        check(&block, [&prior, &configuration, &prior]),
+        [] as [PlanProblem; 0]
+    );
 
     let invented = object(&[("name", text("hello"))]);
     let problems = check(&block, [&prior, &configuration, &invented]);
@@ -263,7 +272,10 @@ fn providers_may_not_invent_values_for_non_computed_attributes() {
     assert!(problems[0].message.contains("non-computed"));
 
     let computed = named_block(Presence::OptionalComputed);
-    assert!(check(&computed, [&Value::Null, &configuration, &planned]).is_empty());
+    assert_eq!(
+        check(&computed, [&Value::Null, &configuration, &planned]),
+        [] as [PlanProblem; 0]
+    );
 }
 
 #[test]
@@ -313,7 +325,10 @@ fn set_counts_are_not_compared_with_a_configuration_holding_unknowns() {
         vec![rule("a", Value::Null), Value::Unknown, Value::Unknown],
     );
     let planned = resource(Value::Unknown, vec![rule("a", Value::Unknown)]);
-    assert!(check(&block, [&Value::Null, &configuration, &planned]).is_empty());
+    assert_eq!(
+        check(&block, [&Value::Null, &configuration, &planned]),
+        [] as [PlanProblem; 0]
+    );
 }
 
 fn compatible(block: &Block, planned: &Value, actual: &Value) -> Vec<String> {
@@ -380,7 +395,7 @@ fn apply_results_of_sets_and_blocks_are_correlated() {
         vec![rule("a", Value::Unknown), rule("b", Value::Unknown)],
     );
     let reordered = resource(text("id"), vec![rule("b", text("2")), rule("a", text("1"))]);
-    assert!(compatible(&block, &planned, &reordered).is_empty());
+    assert_eq!(compatible(&block, &planned, &reordered), [] as [String; 0]);
     let renamed = resource(text("id"), vec![rule("a", text("1")), rule("c", text("3"))]);
     let problems = compatible(&block, &planned, &renamed);
     assert_eq!(
@@ -437,7 +452,10 @@ fn dynamic_apply_results_keep_their_planned_type() {
         )
     };
     let planned = object(&[("data", list(&["a"]))]);
-    assert!(compatible(&block, &planned, &object(&[("data", list(&["a"]))])).is_empty());
+    assert_eq!(
+        compatible(&block, &planned, &object(&[("data", list(&["a"]))])),
+        [] as [String; 0]
+    );
     let tuple = Value::typed(
         Type::Tuple(vec![Type::String]),
         Value::List(vec![text("a")]),
@@ -448,7 +466,10 @@ fn dynamic_apply_results_keep_their_planned_type() {
     );
     // An unknown of no type may become anything.
     let unknown = object(&[("data", Value::Unknown)]);
-    assert!(compatible(&block, &unknown, &object(&[("data", list(&["x"]))])).is_empty());
+    assert_eq!(
+        compatible(&block, &unknown, &object(&[("data", list(&["x"]))])),
+        [] as [String; 0]
+    );
 }
 
 #[test]
@@ -611,7 +632,7 @@ fn paths_render_like_terraform() {
 }
 
 fn assert_map_keys_hidden(problems: &[PlanProblem], key: &str) {
-    assert!(!problems.is_empty());
+    assert_ne!(problems, []);
     for problem in problems {
         let message = problem.to_string();
         assert!(message.contains("[<hidden key>]"), "{message}");

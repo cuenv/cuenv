@@ -172,7 +172,10 @@ mod tests {
 
     #[test]
     fn distinct_names_pass() {
-        assert!(duplicate_project_names([named("api", "api"), named("web", "web")]).is_empty());
+        assert_eq!(
+            duplicate_project_names([named("api", "api"), named("web", "web")]),
+            [] as [DuplicateProjectName; 0]
+        );
     }
 
     #[test]
@@ -197,17 +200,17 @@ mod tests {
 
     #[test]
     fn an_inherited_name_is_the_same_project() {
-        assert!(
+        assert_eq!(
             duplicate_project_names([
                 named(".", "root"),
                 named("services", "root"),
                 named("services/web/assets", "root"),
-            ])
-            .is_empty()
+            ]),
+            [] as [DuplicateProjectName; 0]
         );
-        assert!(
-            duplicate_project_names([named("services/web", "web"), named("services/web/x", "web")])
-                .is_empty()
+        assert_eq!(
+            duplicate_project_names([named("services/web", "web"), named("services/web/x", "web")]),
+            [] as [DuplicateProjectName; 0]
         );
         // A sibling is not an ancestor.
         assert_eq!(

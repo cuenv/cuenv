@@ -650,8 +650,8 @@ mod tests {
         };
         assert_eq!(options.path, ".");
         assert_eq!(options.package, "cuenv");
-        assert!(options.services.is_empty());
-        assert!(options.labels.is_empty());
+        assert_eq!(options.services, [] as [String; 0]);
+        assert_eq!(options.labels, [] as [String; 0]);
         assert!(options.environment.is_none());
     }
 
@@ -692,8 +692,8 @@ mod tests {
         let result =
             DependencyPlanner::new(&HashMap::new(), &HashMap::new(), &services).plan(&services)?;
 
-        assert!(result.task_roots.is_empty());
-        assert!(result.image_roots.is_empty());
+        assert_eq!(result.task_roots, [] as [String; 0]);
+        assert_eq!(result.image_roots, [] as [String; 0]);
         Ok(())
     }
 
@@ -714,7 +714,7 @@ mod tests {
         let result = DependencyPlanner::new(&tasks, &HashMap::new(), &services).plan(&services)?;
 
         assert_eq!(result.task_roots, vec!["build"]);
-        assert!(result.image_roots.is_empty());
+        assert_eq!(result.image_roots, [] as [String; 0]);
         Ok(())
     }
 
