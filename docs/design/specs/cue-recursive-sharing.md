@@ -36,6 +36,19 @@ exponential regression; it is never checked in as a fixture, since plain
 three projects (`tests/schema-compat/testdata/modules/task-references`) under
 every supported CUE release.
 
+Plain `cue export` slows with what stands behind an imported task, not only
+with long chains. Take a project that depends on another project's task, where
+that task has one dependency of its own. Stock CUE v0.18.0-rc.1 exports it in
+about 3.4 seconds, and v0.17.1 did not finish within 280 seconds. The fork
+evaluates it at once.
+
+A lighter type for `dependsOn` entries, `{cuenvRef!: {kind!: ...}, ...} |
+[...]`, makes that project export in 0.05 seconds on every release, but loses
+the fork's sharing. The reference is then no longer constrained by the
+definition that constrains the task, so a same-package chain of depth 7 with
+fan-out 2 runs out of memory under the bridge, where it took 0.34 seconds.
+Stock CUE runs out of memory on that chain with either type.
+
 The schema keeps its types. `dependsOn` on `#Task`, `#TaskGroup`,
 `#ContainerImage` and `#Service`, `#Pipeline.tasks`, `#MatrixTask.task` and
 `#Watch.rebuild` are typed with `#TaskNode` unions. #515 had made `dependsOn`
