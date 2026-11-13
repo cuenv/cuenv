@@ -571,14 +571,12 @@ impl Compiler {
                 .ci
                 .as_ref()
                 .and_then(|ci| ci.github.as_ref())
-                .map(|gh| gh.tasks.clone())
-                .unwrap_or_default(),
+                .map_or_default(|gh| gh.tasks.clone()),
             github_permissions: contributor_task
                 .ci
                 .as_ref()
                 .and_then(|ci| ci.github.as_ref())
-                .map(|gh| gh.permissions.clone())
-                .unwrap_or_default(),
+                .map_or_default(|gh| gh.permissions.clone()),
             github_execution: None,
             provider_hints,
             external_dependencies: Vec::new(),

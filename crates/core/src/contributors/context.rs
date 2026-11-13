@@ -37,6 +37,7 @@ impl ContributorContext {
     }
 
     /// Add task commands from a project's tasks
+    #[must_use]
     pub fn with_task_commands(mut self, tasks: &HashMap<String, TaskNode>) -> Self {
         for node in tasks.values() {
             collect_commands_from_node(node, &mut self.task_commands);
@@ -45,6 +46,7 @@ impl ContributorContext {
     }
 
     /// Add service commands from a project's services
+    #[must_use]
     pub fn with_services(mut self, services: &HashMap<String, crate::manifest::Service>) -> Self {
         self.has_services = !services.is_empty();
         for service in services.values() {

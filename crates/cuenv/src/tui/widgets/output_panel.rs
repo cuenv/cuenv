@@ -192,6 +192,6 @@ mod tests {
     #[test]
     fn test_render_task_header() {
         let line = OutputPanelWidget::render_task_header("test_task", "✓", Color::Green);
-        assert!(!line.spans.is_empty());
+        assert_ne!(line.spans, [] as [Span<'_>; 0]);
     }
 }

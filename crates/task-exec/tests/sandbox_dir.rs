@@ -40,10 +40,13 @@ fn host_path_environment() -> Environment {
 /// the first run's stdout, so a repeated nonce proves no process ran.
 const PRINT_NONCE: &str = "od -An -N16 -tx1 /dev/urandom | tr -d ' \\n'; echo";
 
-fn build_executor(workspace: &Path, cache_root: &Path) -> TaskExecutor {
+/// An executor for `workspace` whose result cache lives in `cache_root`.
+///
+/// Fails when the cache stores cannot be opened there.
+fn build_executor(workspace: &Path, cache_root: &Path) -> cuenv_cas::Result<TaskExecutor> {
     let cache = TaskCacheConfig {
-        cas: Arc::new(LocalCas::open(cache_root).unwrap()),
-        action_cache: Arc::new(LocalActionCache::open(cache_root).unwrap()),
+        cas: Arc::new(LocalCas::open(cache_root)?),
+        action_cache: Arc::new(LocalActionCache::open(cache_root)?),
         vcs_hasher: Arc::new(WalkHasher::new(workspace)),
         vcs_hasher_root: workspace.to_path_buf(),
         action_semantics_version: 1,
@@ -54,13 +57,13 @@ fn build_executor(workspace: &Path, cache_root: &Path) -> TaskExecutor {
         cache_root: cache_root.to_path_buf(),
     };
 
-    TaskExecutor::new(ExecutorConfig {
+    Ok(TaskExecutor::new(ExecutorConfig {
         capture_output: OutputCapture::Capture,
         project_root: workspace.to_path_buf(),
         cache: Some(cache),
         environment: host_path_environment(),
         ..Default::default()
-    })
+    }))
 }
 
 /// A task that inherits whatever the default isolation tier is, rather than
@@ -99,7 +102,7 @@ async fn a_sandboxed_task_sees_its_declared_inputs() {
     let cache_root = TempDir::new().unwrap();
     fs::write(workspace.path().join("declared.txt"), "visible").unwrap();
 
-    let executor = build_executor(workspace.path(), cache_root.path());
+    let executor = build_executor(workspace.path(), cache_root.path()).unwrap();
     let task = sandboxed("cat declared.txt", &["declared.txt"], &[]);
 
     let result = executor.execute_task("read-declared", &task).await.unwrap();
@@ -117,7 +120,7 @@ async fn a_sandboxed_task_cannot_read_an_undeclared_file() {
     fs::write(workspace.path().join("declared.txt"), "visible").unwrap();
     fs::write(workspace.path().join("undeclared.txt"), "invisible").unwrap();
 
-    let executor = build_executor(workspace.path(), cache_root.path());
+    let executor = build_executor(workspace.path(), cache_root.path()).unwrap();
     let task = sandboxed("cat undeclared.txt", &["declared.txt"], &[]);
 
     let result = executor
@@ -134,7 +137,7 @@ async fn a_sandboxed_task_cannot_read_an_undeclared_file() {
 async fn a_hermetic_task_uses_a_writable_home_without_inheriting_host_identity() {
     let workspace = TempDir::new().unwrap();
     let cache_root = TempDir::new().unwrap();
-    let executor = build_executor(workspace.path(), cache_root.path());
+    let executor = build_executor(workspace.path(), cache_root.path()).unwrap();
     let task = sandboxed(
         r#"test -n "$HOME" && test "$USER" = "builder" && test "$LOGNAME" = "builder" && probe="$HOME/.cuenv-home-write-test-$$" && mkdir "$probe" && rmdir "$probe""#,
         &[],
@@ -151,7 +154,7 @@ async fn a_declared_output_is_projected_back_into_the_workspace() {
     let cache_root = TempDir::new().unwrap();
     fs::write(workspace.path().join("src.txt"), "source").unwrap();
 
-    let executor = build_executor(workspace.path(), cache_root.path());
+    let executor = build_executor(workspace.path(), cache_root.path()).unwrap();
     let task = sandboxed(
         "mkdir -p out && cp src.txt out/built.txt",
         &["src.txt"],
@@ -173,7 +176,7 @@ async fn an_undeclared_write_does_not_reach_the_workspace() {
     let cache_root = TempDir::new().unwrap();
     fs::write(workspace.path().join("src.txt"), "source").unwrap();
 
-    let executor = build_executor(workspace.path(), cache_root.path());
+    let executor = build_executor(workspace.path(), cache_root.path()).unwrap();
     let task = sandboxed("echo scratch > scratch.tmp", &["src.txt"], &[]);
 
     let result = executor.execute_task("scratch", &task).await.unwrap();
@@ -190,7 +193,7 @@ async fn the_exec_root_does_not_outlive_the_run() {
     let cache_root = TempDir::new().unwrap();
     fs::write(workspace.path().join("src.txt"), "source").unwrap();
 
-    let executor = build_executor(workspace.path(), cache_root.path());
+    let executor = build_executor(workspace.path(), cache_root.path()).unwrap();
     let task = sandboxed("true", &["src.txt"], &[]);
     executor.execute_task("noop", &task).await.unwrap();
 
@@ -209,7 +212,7 @@ async fn a_failing_sandboxed_task_still_cleans_up() {
     let cache_root = TempDir::new().unwrap();
     fs::write(workspace.path().join("src.txt"), "source").unwrap();
 
-    let executor = build_executor(workspace.path(), cache_root.path());
+    let executor = build_executor(workspace.path(), cache_root.path()).unwrap();
     let task = sandboxed("exit 1", &["src.txt"], &[]);
     let result = executor.execute_task("fails", &task).await.unwrap();
     assert!(!result.success);
@@ -231,7 +234,7 @@ async fn a_failing_task_does_not_replace_the_last_good_output() {
     fs::create_dir_all(workspace.path().join("dist")).unwrap();
     fs::write(workspace.path().join("dist/app.txt"), "last-good").unwrap();
 
-    let executor = build_executor(workspace.path(), cache_root.path());
+    let executor = build_executor(workspace.path(), cache_root.path()).unwrap();
     let task = sandboxed(
         "mkdir -p dist; echo partial > dist/app.txt; exit 1",
         &["src.txt"],
@@ -261,7 +264,7 @@ async fn a_symlinked_input_is_staged_as_the_file_it_points_at() {
     )
     .unwrap();
 
-    let executor = build_executor(workspace.path(), cache_root.path());
+    let executor = build_executor(workspace.path(), cache_root.path()).unwrap();
     let task = sandboxed(
         "test ! -L config.txt && cat config.txt",
         &["config.txt"],
@@ -278,7 +281,7 @@ async fn a_symlinked_input_is_staged_as_the_file_it_points_at() {
 async fn a_symlinked_output_ancestor_is_rejected() {
     let workspace = TempDir::new().unwrap();
     let cache_root = TempDir::new().unwrap();
-    let executor = build_executor(workspace.path(), cache_root.path());
+    let executor = build_executor(workspace.path(), cache_root.path()).unwrap();
     let task = sandboxed(
         "mkdir real; ln -s real link; echo built > link/app.txt",
         &[],
@@ -299,7 +302,7 @@ async fn an_explicit_sandbox_can_have_an_empty_input_root() {
     let workspace = TempDir::new().unwrap();
     let cache_root = TempDir::new().unwrap();
 
-    let executor = build_executor(workspace.path(), cache_root.path());
+    let executor = build_executor(workspace.path(), cache_root.path()).unwrap();
     let task = sandboxed("true", &[], &[]);
 
     let result = executor.execute_task("no-inputs", &task).await.unwrap();
@@ -312,7 +315,7 @@ async fn a_sandboxed_task_still_caches() {
     let cache_root = TempDir::new().unwrap();
     fs::write(workspace.path().join("src.txt"), "source").unwrap();
 
-    let executor = build_executor(workspace.path(), cache_root.path());
+    let executor = build_executor(workspace.path(), cache_root.path()).unwrap();
     let task = sandboxed(
         &format!("{PRINT_NONCE}; mkdir -p out && cp src.txt out/built.txt"),
         &["src.txt"],
@@ -348,7 +351,7 @@ async fn a_plain_hermetic_task_is_sandboxed_without_asking() {
     fs::write(workspace.path().join("declared.txt"), "declared").unwrap();
     fs::write(workspace.path().join("undeclared.txt"), "undeclared").unwrap();
 
-    let executor = build_executor(workspace.path(), cache_root.path());
+    let executor = build_executor(workspace.path(), cache_root.path()).unwrap();
     let task = defaulted("cat undeclared.txt", &["declared.txt"], &[]);
 
     let result = executor.execute_task("peek", &task).await.unwrap();
@@ -365,7 +368,7 @@ async fn the_default_uses_an_empty_input_root_when_no_inputs_are_declared() {
     let cache_root = TempDir::new().unwrap();
     fs::write(workspace.path().join("ambient.txt"), "ambient").unwrap();
 
-    let executor = build_executor(workspace.path(), cache_root.path());
+    let executor = build_executor(workspace.path(), cache_root.path()).unwrap();
     let task = defaulted("cat ambient.txt", &[], &[]);
 
     let result = executor.execute_task("no-inputs", &task).await.unwrap();
@@ -383,7 +386,7 @@ async fn sandboxing_is_independent_of_cache_mode() {
     fs::write(workspace.path().join("declared.txt"), "declared").unwrap();
     fs::write(workspace.path().join("undeclared.txt"), "undeclared").unwrap();
 
-    let executor = build_executor(workspace.path(), cache_root.path());
+    let executor = build_executor(workspace.path(), cache_root.path()).unwrap();
     let mut task = sandboxed("cat undeclared.txt", &["declared.txt"], &[]);
     task.cache = Some(TaskCachePolicy {
         mode: TaskCacheMode::Never,
@@ -401,7 +404,7 @@ async fn nested_task_directory_is_preserved_inside_the_exec_root() {
     fs::create_dir_all(workspace.path().join("sub")).unwrap();
     fs::write(workspace.path().join("sub/input.txt"), "nested").unwrap();
 
-    let executor = build_executor(workspace.path(), cache_root.path());
+    let executor = build_executor(workspace.path(), cache_root.path()).unwrap();
     let mut task = sandboxed(
         "cat input.txt > output.txt",
         &["sub/input.txt"],
@@ -428,7 +431,7 @@ async fn isolation_can_be_opted_out_of() {
     fs::write(workspace.path().join("declared.txt"), "declared").unwrap();
     fs::write(workspace.path().join("undeclared.txt"), "undeclared").unwrap();
 
-    let executor = build_executor(workspace.path(), cache_root.path());
+    let executor = build_executor(workspace.path(), cache_root.path()).unwrap();
     let task = Task {
         hermetic: Hermetic::Options(HermeticOptions {
             passthrough: Vec::new(),

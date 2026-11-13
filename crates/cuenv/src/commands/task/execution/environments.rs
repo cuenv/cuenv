@@ -101,9 +101,7 @@ impl ProjectTaskEnvironments {
     /// The environment with a task's project variables, built once for the
     /// tasks that select the same ones.
     pub(super) async fn environment(&self, task_env: Option<&TaskEnv>) -> Result<Environment> {
-        let key = task_env
-            .map(|task_env| task_env.key().clone())
-            .unwrap_or_default();
+        let key = task_env.map_or_default(|task_env| task_env.key().clone());
         let cell = Arc::clone(self.resolved.lock().await.entry(key).or_default());
         let environment = cell.get_or_try_init(|| self.build(task_env)).await?;
         Ok(environment.clone())
@@ -114,7 +112,7 @@ impl ProjectTaskEnvironments {
     async fn build(&self, task_env: Option<&TaskEnv>) -> Result<Environment> {
         let mut environment = self.runtime_env.clone();
 
-        let env_vars = task_env.map(TaskEnv::variables).unwrap_or_default();
+        let env_vars = task_env.map_or_default(TaskEnv::variables);
         let (resolved, secrets) = Environment::resolve_all_with_secrets(&env_vars).await?;
 
         cuenv_events::register_secrets(secrets);

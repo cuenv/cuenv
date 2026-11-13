@@ -1214,7 +1214,10 @@ mod tests {
         assert_eq!(listed[1].expected, replaced);
         // A record saved over an existing one keeps that insertion's identity.
         assert_eq!(listed[1].record.generation, uuid::Uuid::from_u128(4));
-        assert!(store.list(&tenant("elsewhere")).unwrap().is_empty());
+        assert_eq!(
+            store.list(&tenant("elsewhere")).unwrap(),
+            [] as [UnrecordedRecord; 0]
+        );
         assert!(store.has_pending(&web).unwrap());
         assert!(!store.has_pending(&tenant("elsewhere")).unwrap());
 
@@ -1279,7 +1282,10 @@ mod tests {
                     .await
                     .is_err()
             );
-            assert!(state.list(&tenant).await.unwrap().is_empty());
+            assert_eq!(
+                state.list(&tenant).await.unwrap(),
+                [] as [ManagedResource; 0]
+            );
             assert_eq!(std::fs::read_to_string(&file).unwrap(), invalid);
         }
         std::fs::write(&file, original).unwrap();
@@ -1458,8 +1464,14 @@ mod tests {
             assert!(!message.contains("--force"), "{message}");
             assert!(!message.contains("hunter2"), "{message}");
             assert!(file.exists());
-            assert!(state_b.list(&tenant).await.unwrap().is_empty());
-            assert!(state_a.list(&tenant).await.unwrap().is_empty());
+            assert_eq!(
+                state_b.list(&tenant).await.unwrap(),
+                [] as [ManagedResource; 0]
+            );
+            assert_eq!(
+                state_a.list(&tenant).await.unwrap(),
+                [] as [ManagedResource; 0]
+            );
 
             let recovered = backend_b
                 .recover(
@@ -1474,7 +1486,10 @@ mod tests {
                 .unwrap();
             assert_eq!(recovered, vec![saved.address.clone()]);
             assert!(state_b.list(&tenant).await.unwrap()[0].same_content(&saved));
-            assert!(state_a.list(&tenant).await.unwrap().is_empty());
+            assert_eq!(
+                state_a.list(&tenant).await.unwrap(),
+                [] as [ManagedResource; 0]
+            );
             assert!(!file.exists());
         }
     }
@@ -1539,7 +1554,10 @@ mod tests {
             );
             assert!(message.contains("random_pet.pet"), "{message}");
             assert!(message.contains(&file.display().to_string()), "{message}");
-            assert!(state.list(&tenant).await.unwrap().is_empty());
+            assert_eq!(
+                state.list(&tenant).await.unwrap(),
+                [] as [ManagedResource; 0]
+            );
             assert!(file.exists());
         }
         bound
@@ -1662,7 +1680,7 @@ mod tests {
             .ok_or("recovery resource is not an object")?
             .remove("sensitiveAttributes");
         let legacy: FileResource = serde_json::from_value(value.clone())?;
-        assert!(legacy.into_record().sensitive_attributes.is_empty());
+        assert_eq!(legacy.into_record().sensitive_attributes, [] as [String; 0]);
         value["sensitiveAttributes"] = serde_json::Value::Null;
         assert!(serde_json::from_value::<FileResource>(value).is_err());
         Ok(())
@@ -1688,11 +1706,9 @@ mod tests {
             .ok_or("resource is not an object")?
             .remove("sensitiveAttributes");
         std::fs::write(&file, serde_json::to_vec(&legacy)?)?;
-        assert!(
-            unrecorded.list(&tenant)?[0]
-                .record
-                .sensitive_attributes
-                .is_empty()
+        assert_eq!(
+            unrecorded.list(&tenant)?[0].record.sensitive_attributes,
+            [] as [String; 0]
         );
         unrecorded
             .recover(
@@ -1792,7 +1808,10 @@ mod tests {
             )
             .await
             .unwrap_err();
-        assert!(state.list(&tenant).await.unwrap().is_empty());
+        assert_eq!(
+            state.list(&tenant).await.unwrap(),
+            [] as [ManagedResource; 0]
+        );
         assert!(first.exists());
         assert!(second.exists());
     }
@@ -1824,7 +1843,10 @@ mod tests {
                 .to_string()
                 .contains("different state backend than the store in use")
         );
-        assert!(state_b.list(&tenant).await.unwrap().is_empty());
+        assert_eq!(
+            state_b.list(&tenant).await.unwrap(),
+            [] as [ManagedResource; 0]
+        );
         assert!(file.exists());
         backend_a
             .recover(
@@ -1861,7 +1883,10 @@ mod tests {
             .await
             .unwrap_err();
         assert!(error.to_string().contains("state backend"));
-        assert!(state.list(&tenant).await.unwrap().is_empty());
+        assert_eq!(
+            state.list(&tenant).await.unwrap(),
+            [] as [ManagedResource; 0]
+        );
         assert!(file.exists());
     }
 
@@ -2171,11 +2196,17 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(recovered, vec![ResourceAddress::new("random_pet", "pet")]);
-        assert!(unrecorded.list(&dev).unwrap().is_empty());
+        assert_eq!(unrecorded.list(&dev).unwrap(), [] as [UnrecordedRecord; 0]);
         assert!(unrecorded.has_pending(&legacy).unwrap());
         assert!(unrecorded.has_pending(&staging).unwrap());
-        assert!(state.list(&legacy).await.unwrap().is_empty());
-        assert!(state.list(&staging).await.unwrap().is_empty());
+        assert_eq!(
+            state.list(&legacy).await.unwrap(),
+            [] as [ManagedResource; 0]
+        );
+        assert_eq!(
+            state.list(&staging).await.unwrap(),
+            [] as [ManagedResource; 0]
+        );
         assert_eq!(state.list(&dev).await.unwrap()[0].state["id"], "dev");
     }
 
@@ -2336,7 +2367,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(recovered.len(), 2);
-        assert!(unrecorded.list(&web).unwrap().is_empty());
+        assert_eq!(unrecorded.list(&web).unwrap(), [] as [UnrecordedRecord; 0]);
         let rows = state.list(&web).await.unwrap();
         let pet = rows.iter().find(|row| row.address.name == "pet").unwrap();
         assert_eq!(pet.state["id"], "new");
@@ -2377,7 +2408,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(state.list(&web).await.unwrap()[0].state["id"], "saved");
-        assert!(unrecorded.list(&web).unwrap().is_empty());
+        assert_eq!(unrecorded.list(&web).unwrap(), [] as [UnrecordedRecord; 0]);
     }
 
     #[tokio::test]
@@ -2413,7 +2444,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(recovered.len(), 1);
-        assert!(unrecorded.list(&web).unwrap().is_empty());
+        assert_eq!(unrecorded.list(&web).unwrap(), [] as [UnrecordedRecord; 0]);
     }
 
     #[tokio::test]
@@ -2454,7 +2485,10 @@ mod tests {
         let saved = record("pet", "pending");
         let file = save(&package_a, &tenant, &saved);
 
-        assert!(package_b.list(&tenant).unwrap().is_empty());
+        assert_eq!(
+            package_b.list(&tenant).unwrap(),
+            [] as [UnrecordedRecord; 0]
+        );
         assert!(!package_b.has_pending(&tenant).unwrap());
         let lock = state_b.lock(&tenant, "recover").await.unwrap();
         let recovered = package_b
@@ -2468,8 +2502,11 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(recovered.is_empty());
-        assert!(state_b.list(&tenant).await.unwrap().is_empty());
+        assert_eq!(recovered, [] as [ResourceAddress; 0]);
+        assert_eq!(
+            state_b.list(&tenant).await.unwrap(),
+            [] as [ManagedResource; 0]
+        );
         assert!(file.exists(), "another package must never remove the file");
 
         assert!(package_a.has_pending(&tenant).unwrap());
@@ -2517,7 +2554,10 @@ mod tests {
         let message = error.to_string();
         assert!(message.contains("without a CUE package"), "{message}");
         assert!(file.exists());
-        assert!(state.list(&tenant).await.unwrap().is_empty());
+        assert_eq!(
+            state.list(&tenant).await.unwrap(),
+            [] as [ManagedResource; 0]
+        );
 
         scoped
             .recover(

@@ -146,7 +146,7 @@ mod tests {
     fn test_normalize_labels_all_empty_returns_empty() {
         let labels = vec![String::new(), "   ".to_string()];
         let normalized = normalize_labels(&labels);
-        assert!(normalized.is_empty());
+        assert_eq!(normalized, [] as [String; 0]);
     }
 
     #[test]

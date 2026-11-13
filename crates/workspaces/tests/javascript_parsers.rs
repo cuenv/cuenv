@@ -66,7 +66,10 @@ mod npm_tests {
             workspace_root.source,
             DependencySource::Workspace(_)
         ));
-        assert!(!workspace_root.dependencies.is_empty());
+        assert_ne!(
+            workspace_root.dependencies,
+            [] as [cuenv_workspaces::DependencyRef; 0]
+        );
 
         // Check workspace member
         let app = entry_named(&entries, "@test/app")?;
@@ -85,7 +88,10 @@ mod npm_tests {
         let react = entry_named(&entries, "react")?;
         assert!(!react.is_workspace_member);
         assert_eq!(react.version, "18.2.0");
-        assert!(!react.dependencies.is_empty());
+        assert_ne!(
+            react.dependencies,
+            [] as [cuenv_workspaces::DependencyRef; 0]
+        );
         assert_eq!(first_dependency_name(react)?, "loose-envify");
         Ok(())
     }
@@ -140,7 +146,10 @@ mod bun_tests {
         let react = entry_named(&entries, "react")?;
         assert!(!react.is_workspace_member);
         assert_eq!(react.version, "18.2.0");
-        assert!(!react.dependencies.is_empty());
+        assert_ne!(
+            react.dependencies,
+            [] as [cuenv_workspaces::DependencyRef; 0]
+        );
         Ok(())
     }
 
@@ -189,7 +198,10 @@ mod pnpm_tests {
         let react = entry_named(&entries, "react")?;
         assert!(!react.is_workspace_member);
         assert_eq!(react.version, "18.2.0");
-        assert!(!react.dependencies.is_empty());
+        assert_ne!(
+            react.dependencies,
+            [] as [cuenv_workspaces::DependencyRef; 0]
+        );
         assert_eq!(first_dependency_name(react)?, "loose-envify");
         Ok(())
     }
@@ -231,7 +243,10 @@ mod yarn_classic_tests {
         let react = entry_named(&entries, "react")?;
         assert!(!react.is_workspace_member);
         assert_eq!(react.version, "18.2.0");
-        assert!(!react.dependencies.is_empty());
+        assert_ne!(
+            react.dependencies,
+            [] as [cuenv_workspaces::DependencyRef; 0]
+        );
         assert_eq!(first_dependency_name(react)?, "loose-envify");
         Ok(())
     }
@@ -329,7 +344,10 @@ mod yarn_modern_tests {
         let react = entry_named(&entries, "react")?;
         assert!(!react.is_workspace_member);
         assert_eq!(react.version, "18.2.0");
-        assert!(!react.dependencies.is_empty());
+        assert_ne!(
+            react.dependencies,
+            [] as [cuenv_workspaces::DependencyRef; 0]
+        );
         Ok(())
     }
 

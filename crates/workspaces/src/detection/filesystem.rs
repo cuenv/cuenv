@@ -47,37 +47,26 @@ pub(super) fn validate_workspace_config(root: &Path, manager: PackageManager) ->
         operation: "reading workspace config".to_string(),
     })?;
 
-    match manager {
+    let parsed = match manager {
         PackageManager::Npm
         | PackageManager::Bun
         | PackageManager::YarnClassic
         | PackageManager::YarnModern
-        | PackageManager::Deno => {
-            serde_json::from_str::<serde_json::Value>(&content).map_err(|e| {
-                Error::InvalidWorkspaceConfig {
-                    path: config_path,
-                    message: format!("Invalid JSON: {e}"),
-                }
-            })?;
-            Ok(true)
-        }
-        PackageManager::Cargo => {
-            toml::from_str::<toml::Value>(&content).map_err(|e| Error::InvalidWorkspaceConfig {
-                path: config_path,
-                message: format!("Invalid TOML: {e}"),
-            })?;
-            Ok(true)
-        }
-        PackageManager::Pnpm => {
-            serde_yaml::from_str::<serde_yaml::Value>(&content).map_err(|e| {
-                Error::InvalidWorkspaceConfig {
-                    path: config_path,
-                    message: format!("Invalid YAML: {e}"),
-                }
-            })?;
-            Ok(true)
-        }
-    }
+        | PackageManager::Deno => serde_json::from_str::<serde_json::Value>(&content)
+            .map(drop)
+            .map_err(|e| format!("Invalid JSON: {e}")),
+        PackageManager::Cargo => toml::from_str::<toml::Value>(&content)
+            .map(drop)
+            .map_err(|e| format!("Invalid TOML: {e}")),
+        PackageManager::Pnpm => serde_yaml::from_str::<serde_yaml::Value>(&content)
+            .map(drop)
+            .map_err(|e| format!("Invalid YAML: {e}")),
+    };
+    parsed.map_err(|message| Error::InvalidWorkspaceConfig {
+        path: config_path,
+        message,
+    })?;
+    Ok(true)
 }
 
 /// Distinguishes between Yarn Classic (v1) and Yarn Modern (v2+).

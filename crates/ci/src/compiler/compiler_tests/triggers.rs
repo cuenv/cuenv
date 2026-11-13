@@ -262,7 +262,7 @@ fn test_pipeline_tags_reach_the_trigger() {
     let ir = Compiler::with_options(project, options).compile().unwrap();
     let trigger = ir.pipeline.trigger.expect("should have trigger");
     assert_eq!(trigger.tags, vec!["v*".to_string()]);
-    assert!(trigger.branches.is_empty());
+    assert_eq!(trigger.branches, [] as [String; 0]);
 }
 
 /// A pipeline of one task `build` in the project at `project_path`, reading

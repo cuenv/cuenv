@@ -149,16 +149,15 @@ impl EmulatedD1 {
 
     fn answer(&self, body: &Value) -> (u16, String) {
         let sql = body["sql"].as_str().unwrap();
-        let params: Vec<String> = body
-            .get("params")
-            .and_then(Value::as_array)
-            .map(|params| {
-                params
-                    .iter()
-                    .map(|param| param.as_str().expect("D1 binds text only").to_string())
-                    .collect()
-            })
-            .unwrap_or_default();
+        let params: Vec<String> =
+            body.get("params")
+                .and_then(Value::as_array)
+                .map_or_default(|params| {
+                    params
+                        .iter()
+                        .map(|param| param.as_str().expect("D1 binds text only").to_string())
+                        .collect()
+                });
         let statements: Vec<&str> = sql.split(";\n").collect();
         if statements.len() > 1 && !params.is_empty() {
             return error(
@@ -266,10 +265,16 @@ async fn reads_before_any_migration_are_empty_and_create_nothing() {
     let database = EmulatedD1::new();
     let server = database.serve().await;
     let store = store_at(&server);
-    assert!(store.list(&tenant()).await.unwrap().is_empty());
+    assert_eq!(
+        store.list(&tenant()).await.unwrap(),
+        [] as [ManagedResource; 0]
+    );
     assert_eq!(store.current_lock(&tenant()).await.unwrap(), None);
     assert_eq!(store.last_writer(&tenant()).await.unwrap(), None);
-    assert!(store.locks().await.unwrap().is_empty());
+    assert_eq!(
+        store.locks().await.unwrap(),
+        [] as [crate::state::TenantLock; 0]
+    );
     assert!(!store.force_unlock(&tenant(), "any").await.unwrap());
     assert!(store.lock(&tenant(), "test").await.is_err());
     assert!(
@@ -338,7 +343,7 @@ async fn version_two_preserves_existing_rows_and_owners_while_fencing_old_reader
     assert_eq!(migrated[0].pop(), Some(json!("[]")));
     assert_eq!(migrated, rows);
     let legacy = store.list(&tenant()).await.unwrap().remove(0);
-    assert!(legacy.sensitive_attributes.is_empty());
+    assert_eq!(legacy.sensitive_attributes, [] as [String; 0]);
     assert_eq!(legacy.serial, 7);
     let lock = store.lock(&tenant(), "new-client").await.unwrap();
     let sensitive = ManagedResource {
@@ -422,14 +427,9 @@ async fn a_version_one_reader_paused_before_select_cannot_read_version_two_state
             crate::state::sql::tenant_arguments(&tenant()),
         )
     };
-    assert!(
-        old_client
-            .inner
-            .execute(old_select())
-            .await
-            .unwrap()
-            .rows
-            .is_empty()
+    assert_eq!(
+        old_client.inner.execute(old_select()).await.unwrap().rows,
+        [] as [Vec<crate::state::sql::SqlValue>; 0]
     );
     // The old reader has passed its version check and pauses before SELECT.
     assert_eq!(old_client.inner.stored_version().await.unwrap(), 1);
@@ -477,9 +477,9 @@ async fn a_failed_state_column_rename_rolls_back_the_sensitivity_column() {
         Err(InfrastructureError::StateSchemaConflict { .. })
     ));
     assert_eq!(store.inner.schema_version().await.unwrap(), 1);
-    assert!(database.query(
+    assert_eq!(database.query(
         "SELECT name FROM pragma_table_info('cuenv_infrastructure_resources') WHERE name = 'sensitive_attributes'"
-    ).is_empty());
+    ), [] as [Vec<serde_json::Value>; 0]);
     assert_eq!(database.query(
         "SELECT name FROM pragma_table_info('cuenv_infrastructure_resources') WHERE name = 'state_json'"
     ), vec![vec![json!("state_json")]]);
@@ -641,7 +641,10 @@ async fn records_round_trip_through_d1() {
 
     // Another tenant sees none of it.
     let other = TenantKey::with_environment("example.com/d1", "web", "prod").unwrap();
-    assert!(store.list(&other).await.unwrap().is_empty());
+    assert_eq!(
+        store.list(&other).await.unwrap(),
+        [] as [ManagedResource; 0]
+    );
 
     store.delete(&tenant(), &lock, &bare.address).await.unwrap();
     // Deleting what is gone is not an error while the lock is held.
@@ -843,10 +846,9 @@ async fn a_migration_refuses_while_any_lock_is_held() {
         Some(lock.lock_identifier.as_str())
     );
     // The transaction left nothing behind: no table, no version.
-    assert!(
-        database
-            .query("SELECT name FROM sqlite_master WHERE name = 'cuenv_infrastructure_probe'")
-            .is_empty()
+    assert_eq!(
+        database.query("SELECT name FROM sqlite_master WHERE name = 'cuenv_infrastructure_probe'"),
+        [] as [Vec<serde_json::Value>; 0]
     );
     assert_eq!(
         store.inner.schema_version().await.unwrap(),

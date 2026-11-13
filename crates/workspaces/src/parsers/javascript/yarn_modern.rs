@@ -322,7 +322,7 @@ mod tests {
         let parser = YarnModernLockfileParser;
         let entries = parser.parse(file.path()).unwrap();
 
-        assert!(!entries.is_empty());
+        assert_ne!(entries, [] as [LockfileEntry; 0]);
 
         let left_pad = entries.iter().find(|e| e.name == "left-pad");
         assert!(left_pad.is_some());

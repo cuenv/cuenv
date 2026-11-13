@@ -312,8 +312,7 @@ fn infisical_oidc_token_step_writes_heredoc_entries_with_a_random_delimiter() ->
             .lines()
             .next()
             .and_then(|line| line.split_once("<<"))
-            .map(|(_, delimiter)| delimiter.to_string())
-            .unwrap_or_default()
+            .map_or_default(|(_, delimiter)| delimiter.to_string())
     };
     let second = run_token_step(&script, "identity-id", "header.payload.signature")?;
     assert!(delimiter(&first).starts_with("ghadelimiter_"));

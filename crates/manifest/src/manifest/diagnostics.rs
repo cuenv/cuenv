@@ -77,7 +77,7 @@ mod tests {
 
         assert!(!diagnostics.is_empty());
         assert_eq!(diagnostics.task("build"), ["broken"]);
-        assert!(diagnostics.task("test").is_empty());
-        assert!(diagnostics.pipeline("default").is_empty());
+        assert_eq!(diagnostics.task("test"), [] as [String; 0]);
+        assert_eq!(diagnostics.pipeline("default"), [] as [String; 0]);
     }
 }

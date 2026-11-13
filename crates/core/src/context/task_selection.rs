@@ -217,7 +217,7 @@ mod tests {
             json!({"build": {"name": "build"}}),
         );
         assert_eq!(variables_of(&selection, "build"), ["TOKEN"]);
-        assert!(variables_of(&selection, "deploy").is_empty());
+        assert_eq!(variables_of(&selection, "deploy"), [] as [String; 0]);
     }
 
     #[test]

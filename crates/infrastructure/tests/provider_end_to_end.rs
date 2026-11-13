@@ -283,7 +283,10 @@ async fn managed_resource_lifecycle() -> TestResult {
     assert_eq!(pet_identifier.split('-').count(), 2);
 
     // The same project name under another module sees nothing.
-    assert!(store.list(&neighbour).await?.is_empty());
+    assert_eq!(
+        store.list(&neighbour).await?,
+        [] as [cuenv_infrastructure::ManagedResource; 0]
+    );
 
     // Re-planning unchanged configuration is a no-op with nothing to write.
     let plan = plan_and_apply(&Convergence {
@@ -345,7 +348,10 @@ async fn managed_resource_lifecycle() -> TestResult {
         actions(&plan),
         vec![("random_pet.pet".to_string(), Action::Delete)]
     );
-    assert!(store.list(&tenant).await?.is_empty());
+    assert_eq!(
+        store.list(&tenant).await?,
+        [] as [cuenv_infrastructure::ManagedResource; 0]
+    );
     Ok(())
 }
 
@@ -915,7 +921,10 @@ async fn turso_store_round_trips_records() -> TestResult {
         store.put(&tenant, &lock, &updated).await,
         Err(InfrastructureError::LockLost { .. })
     ));
-    assert!(store.list(&tenant).await?.is_empty());
+    assert_eq!(
+        store.list(&tenant).await?,
+        [] as [cuenv_infrastructure::ManagedResource; 0]
+    );
     Ok(())
 }
 
@@ -975,7 +984,10 @@ async fn fake_removing_a_parent_and_detaching_its_dependent_in_one_change_stops_
     });
     let result = fake.converge(&kept, PlanMode::Apply).await?.applied?;
     assert_eq!(result.update, 1);
-    assert!(fake.record("dependent").await?.dependencies.is_empty());
+    assert_eq!(
+        fake.record("dependent").await?.dependencies,
+        [] as [String; 0]
+    );
     // Step two: remove the parent.
     std::fs::write(fake.directory.path().join("journal.log"), "")?;
     let result = fake.converge(&detached, PlanMode::Apply).await?.applied?;
@@ -985,7 +997,10 @@ async fn fake_removing_a_parent_and_detaching_its_dependent_in_one_change_stops_
         vec!["ordered: Delete name=parent-old"]
     );
     fake.converge(&detached, PlanMode::Destroy).await?.applied?;
-    assert!(fake.store.list(&fake.tenant).await?.is_empty());
+    assert_eq!(
+        fake.store.list(&fake.tenant).await?,
+        [] as [cuenv_infrastructure::ManagedResource; 0]
+    );
     Ok(())
 }
 
@@ -1007,8 +1022,8 @@ async fn fake_replacing_a_parent_and_detaching_its_dependent_in_one_change_stops
     assert_eq!(failed_addresses(&error), ["fake_ordered.parent"]);
     // The parent was not deleted, so it is not reported as deleted and not
     // recreated, and its create did not run.
-    assert!(uncreated_in_error(&error).is_empty());
-    assert!(uncreated_addresses(&run.events).is_empty());
+    assert_eq!(uncreated_in_error(&error), [] as [String; 0]);
+    assert_eq!(uncreated_addresses(&run.events), [] as [String; 0]);
     assert!(fake.journal().is_empty(), "{}", fake.journal());
     assert_eq!(fake.record("parent").await?.state["name"], "parent-old");
 
@@ -1030,7 +1045,10 @@ async fn fake_replacing_a_parent_and_detaching_its_dependent_in_one_change_stops
         ]
     );
     fake.converge(&detached, PlanMode::Destroy).await?.applied?;
-    assert!(fake.store.list(&fake.tenant).await?.is_empty());
+    assert_eq!(
+        fake.store.list(&fake.tenant).await?,
+        [] as [cuenv_infrastructure::ManagedResource; 0]
+    );
     Ok(())
 }
 
@@ -1069,7 +1087,10 @@ async fn fake_failed_detachment_retains_old_edges_for_safe_destroy() -> TestResu
             "ordered: Delete name=parent-old",
         ]
     );
-    assert!(fake.store.list(&fake.tenant).await?.is_empty());
+    assert_eq!(
+        fake.store.list(&fake.tenant).await?,
+        [] as [cuenv_infrastructure::ManagedResource; 0]
+    );
     Ok(())
 }
 
@@ -1105,7 +1126,10 @@ async fn fake_dependent_replacements_destroy_in_reverse_and_create_forward() -> 
     fake.converge(&ordered_resources("new"), PlanMode::Destroy)
         .await?
         .applied?;
-    assert!(fake.store.list(&fake.tenant).await?.is_empty());
+    assert_eq!(
+        fake.store.list(&fake.tenant).await?,
+        [] as [cuenv_infrastructure::ManagedResource; 0]
+    );
     Ok(())
 }
 
@@ -1717,14 +1741,20 @@ async fn fake_data_sources_are_read_fresh_without_persisting_rows() -> TestResul
             fake.journal().matches("lookup: Read name=outside").count(),
             expected_reads
         );
-        assert!(fake.store.list(&fake.tenant).await?.is_empty());
+        assert_eq!(
+            fake.store.list(&fake.tenant).await?,
+            [] as [cuenv_infrastructure::ManagedResource; 0]
+        );
     }
     engine.shutdown().await;
     fake.converge_configuration(&configuration, PlanMode::Apply)
         .await?
         .applied?;
     assert!(fake.journal().matches("lookup: Read name=outside").count() >= 3);
-    assert!(fake.store.list(&fake.tenant).await?.is_empty());
+    assert_eq!(
+        fake.store.list(&fake.tenant).await?,
+        [] as [cuenv_infrastructure::ManagedResource; 0]
+    );
     Ok(())
 }
 
@@ -1786,7 +1816,10 @@ async fn fake_data_source_resource_data_resource_chain_defers_reads_until_apply(
     });
     fake.plan_configuration(&configuration).await?;
     assert!(!fake.journal().contains("lookup: Read"));
-    assert!(fake.store.list(&fake.tenant).await?.is_empty());
+    assert_eq!(
+        fake.store.list(&fake.tenant).await?,
+        [] as [cuenv_infrastructure::ManagedResource; 0]
+    );
     fake.converge_configuration(&configuration, PlanMode::Apply)
         .await?
         .applied?;
@@ -1975,7 +2008,10 @@ async fn fake_data_source_managed_ancestry_survives_lookup_removal_for_destroy()
         .find("ordered: Delete name=parent-a")
         .ok_or("parent not deleted")?;
     assert!(dependent < parent, "{journal}");
-    assert!(fake.store.list(&fake.tenant).await?.is_empty());
+    assert_eq!(
+        fake.store.list(&fake.tenant).await?,
+        [] as [cuenv_infrastructure::ManagedResource; 0]
+    );
     Ok(())
 }
 
@@ -2000,7 +2036,10 @@ async fn fake_destroy_does_not_start_an_unrelated_data_source_provider() -> Test
     fake.converge_configuration(&configuration, PlanMode::Destroy)
         .await?
         .applied?;
-    assert!(fake.store.list(&fake.tenant).await?.is_empty());
+    assert_eq!(
+        fake.store.list(&fake.tenant).await?,
+        [] as [cuenv_infrastructure::ManagedResource; 0]
+    );
     Ok(())
 }
 
@@ -2130,7 +2169,10 @@ async fn fake_data_source_malformed_result_redacts_sensitive_diagnostics() -> Te
         !cuenv_events::redact(&secret).contains(&secret),
         "valid sensitive scalar was not registered before rejecting malformed state"
     );
-    assert!(fake.store.list(&fake.tenant).await?.is_empty());
+    assert_eq!(
+        fake.store.list(&fake.tenant).await?,
+        [] as [cuenv_infrastructure::ManagedResource; 0]
+    );
     Ok(())
 }
 
@@ -2206,7 +2248,10 @@ async fn fake_data_source_validation_happens_before_reading() -> TestResult {
         .expect_err("provider must validate data configuration");
     assert!(error.to_string().contains("invalid lookup name"), "{error}");
     assert!(!fake.journal().contains("lookup: Read"));
-    assert!(fake.store.list(&fake.tenant).await?.is_empty());
+    assert_eq!(
+        fake.store.list(&fake.tenant).await?,
+        [] as [cuenv_infrastructure::ManagedResource; 0]
+    );
     Ok(())
 }
 
@@ -2324,7 +2369,10 @@ async fn fake_import_rejects_unsupported_provider_responses_without_recording_st
             .await?
             .expect_err("unsupported import result must be refused");
         assert!(error.to_string().contains(expected), "{error}");
-        assert!(fake.store.list(&fake.tenant).await?.is_empty());
+        assert_eq!(
+            fake.store.list(&fake.tenant).await?,
+            [] as [cuenv_infrastructure::ManagedResource; 0]
+        );
     }
 
     let fake = Fake::new().await?;
@@ -2342,7 +2390,10 @@ async fn fake_import_rejects_unsupported_provider_responses_without_recording_st
             .contains("found no existing object during refresh"),
         "{error}"
     );
-    assert!(fake.store.list(&fake.tenant).await?.is_empty());
+    assert_eq!(
+        fake.store.list(&fake.tenant).await?,
+        [] as [cuenv_infrastructure::ManagedResource; 0]
+    );
     Ok(())
 }
 
@@ -3426,7 +3477,10 @@ async fn fake_destroys_are_planned_and_can_be_refused() -> TestResult {
         journal.contains(r#"protect: Delete name=p private="planned""#),
         "{journal}"
     );
-    assert!(fake.store.list(&fake.tenant).await?.is_empty());
+    assert_eq!(
+        fake.store.list(&fake.tenant).await?,
+        [] as [cuenv_infrastructure::ManagedResource; 0]
+    );
     Ok(())
 }
 
@@ -3558,7 +3612,10 @@ async fn fake_stop_between_the_halves_of_a_replacement_skips_the_create() -> Tes
     assert!(!journal.contains("repl: Create name=b"), "{journal}");
     assert_eq!(uncreated_addresses(&events), ["fake_repl.thing"]);
     // The delete is recorded; the next apply creates the replacement.
-    assert!(fake.store.list(&fake.tenant).await?.is_empty());
+    assert_eq!(
+        fake.store.list(&fake.tenant).await?,
+        [] as [cuenv_infrastructure::ManagedResource; 0]
+    );
     fake.store.unlock(&fake.tenant, &lock).await?;
     engine.shutdown().await;
     Ok(())
@@ -3678,8 +3735,8 @@ async fn fake_an_unrelated_failure_does_not_leave_a_replacement_destroyed() -> T
     assert_eq!(fake.record("zzz").await?.state["version"], "2");
     assert_eq!(fake.record("aaa").await?.state["mode"], "x");
     assert_eq!(failed_addresses(&error), ["fake_obj.aaa"]);
-    assert!(uncreated_in_error(&error).is_empty());
-    assert!(uncreated_addresses(&run.events).is_empty());
+    assert_eq!(uncreated_in_error(&error), [] as [String; 0]);
+    assert_eq!(uncreated_addresses(&run.events), [] as [String; 0]);
 
     fake.clear_flag("fail-update-aaa")?;
     fake.converge(&second, PlanMode::Apply).await?.applied?;
@@ -3743,10 +3800,10 @@ async fn fake_a_replacement_whose_new_prerequisite_fails_to_create_is_left_delet
     assert!(!fake.exists("R"), "R was not deleted before P2's create");
     assert!(!fake.exists("P2"));
     assert_eq!(failed_addresses(&error), ["fake_obj.p2"]);
-    assert!(skipped_addresses(&error).is_empty());
+    assert_eq!(skipped_addresses(&error), [] as [String; 0]);
     assert_eq!(uncreated_in_error(&error), ["fake_obj.r"]);
     assert_eq!(uncreated_addresses(&run.events), ["fake_obj.r"]);
-    assert!(fake.addresses().await?.is_empty());
+    assert_eq!(fake.addresses().await?, [] as [String; 0]);
 
     // The next successful apply creates what is missing.
     fake.clear_flag("fail-create-P2")?;
@@ -3925,7 +3982,10 @@ async fn fake_a_type_change_does_not_create_a_false_dependency_cycle() -> TestRe
     fake.converge(&json!({}), PlanMode::Destroy)
         .await?
         .applied?;
-    assert!(fake.store.list(&fake.tenant).await?.is_empty());
+    assert_eq!(
+        fake.store.list(&fake.tenant).await?,
+        [] as [cuenv_infrastructure::ManagedResource; 0]
+    );
     assert!(!fake.exists("X") && !fake.exists("X2") && !fake.exists("Y"));
     Ok(())
 }
@@ -3961,7 +4021,10 @@ async fn fake_a_dependency_cycle_in_state_does_not_wedge_destroy() -> TestResult
     );
     let run = fake.converge(&json!({}), PlanMode::Destroy).await?;
     run.applied?;
-    assert!(fake.store.list(&fake.tenant).await?.is_empty());
+    assert_eq!(
+        fake.store.list(&fake.tenant).await?,
+        [] as [cuenv_infrastructure::ManagedResource; 0]
+    );
     assert!(!fake.exists("A") && !fake.exists("B"));
     Ok(())
 }
@@ -4081,13 +4144,16 @@ async fn fake_a_partial_failure_leaves_no_dependency_cycle_that_wedges_destroy()
     skipped.sort();
     assert_eq!(skipped, ["fake_obj.x", "fake_obj.y"]);
     assert_eq!(fake.record("x").await?.dependencies, ["fake_obj.y"]);
-    assert!(fake.record("y").await?.dependencies.is_empty());
+    assert_eq!(fake.record("y").await?.dependencies, [] as [String; 0]);
 
     // The project can still be destroyed.
     fake.converge(&json!({}), PlanMode::Destroy)
         .await?
         .applied?;
-    assert!(fake.store.list(&fake.tenant).await?.is_empty());
+    assert_eq!(
+        fake.store.list(&fake.tenant).await?,
+        [] as [cuenv_infrastructure::ManagedResource; 0]
+    );
     Ok(())
 }
 
@@ -4590,7 +4656,10 @@ async fn fake_secret_argument_is_resolved_once_masked_and_recorded_sensitive() -
     let destroyed = fake.converge(&resources, PlanMode::Destroy).await?;
     destroyed.applied?;
     assert_eq!(untouched.calls(), 0);
-    assert!(fake.store.list(&fake.tenant).await?.is_empty());
+    assert_eq!(
+        fake.store.list(&fake.tenant).await?,
+        [] as [cuenv_infrastructure::ManagedResource; 0]
+    );
     Ok(())
 }
 
@@ -4612,7 +4681,10 @@ async fn fake_secret_argument_echoed_by_validation_is_redacted() -> TestResult {
         !rendered.contains("fake-echoed-secret-value-0b4e"),
         "{rendered}"
     );
-    assert!(fake.store.list(&fake.tenant).await?.is_empty());
+    assert_eq!(
+        fake.store.list(&fake.tenant).await?,
+        [] as [cuenv_infrastructure::ManagedResource; 0]
+    );
     Ok(())
 }
 
@@ -4667,7 +4739,10 @@ async fn fake_marked_ordinary_argument_fails_before_resolution_or_provider_calls
     );
     assert_eq!(resolver.calls(), 0);
     assert!(fake.journal().is_empty(), "{}", fake.journal());
-    assert!(fake.store.list(&fake.tenant).await?.is_empty());
+    assert_eq!(
+        fake.store.list(&fake.tenant).await?,
+        [] as [cuenv_infrastructure::ManagedResource; 0]
+    );
     Ok(())
 }
 
@@ -4728,7 +4803,10 @@ async fn fake_write_only_value_lifecycle_and_manual_rotation() -> TestResult {
         .await?
         .applied?;
     assert_eq!(untouched.calls(), 0);
-    assert!(fake.store.list(&fake.tenant).await?.is_empty());
+    assert_eq!(
+        fake.store.list(&fake.tenant).await?,
+        [] as [cuenv_infrastructure::ManagedResource; 0]
+    );
     Ok(())
 }
 
@@ -4767,7 +4845,10 @@ async fn fake_write_only_provider_echo_never_enters_state_or_recovery() -> TestR
                 assert!(!marker.state.to_string().contains(ROOT_TOKEN));
             }
             let engine = fake.engine(&write_only_resource(1), &Cancellation::default())?;
-            assert!(engine.unrecorded_store()?.list(&fake.tenant)?.is_empty());
+            assert_eq!(
+                engine.unrecorded_store()?.list(&fake.tenant)?,
+                [] as [cuenv_infrastructure::UnrecordedRecord; 0]
+            );
             engine.shutdown().await;
         }
     }
@@ -4801,7 +4882,10 @@ async fn fake_write_only_short_and_escaped_diagnostics_are_redacted() -> TestRes
             .expect_err("validation must reject");
         assert!(!error.to_string().contains(secret));
         assert!(!error.to_string().contains("\nq\n"));
-        assert!(fake.store.list(&fake.tenant).await?.is_empty());
+        assert_eq!(
+            fake.store.list(&fake.tenant).await?,
+            [] as [cuenv_infrastructure::ManagedResource; 0]
+        );
     }
     Ok(())
 }
@@ -4822,7 +4906,10 @@ async fn fake_write_only_bad_update_retains_exact_prior_record() -> TestResult {
     assert!(run.applied.is_err());
     assert_eq!(fake.record("thing").await?, before);
     let engine = fake.engine(&write_only_resource(1), &Cancellation::default())?;
-    assert!(engine.unrecorded_store()?.list(&fake.tenant)?.is_empty());
+    assert_eq!(
+        engine.unrecorded_store()?.list(&fake.tenant)?,
+        [] as [cuenv_infrastructure::UnrecordedRecord; 0]
+    );
     engine.shutdown().await;
     Ok(())
 }
@@ -4880,8 +4967,14 @@ async fn fake_write_only_import_never_resolves_and_refuses_echoes() -> TestResul
         assert_eq!(untouched.calls(), 0);
         if echo.is_some() {
             assert!(imported.is_err());
-            assert!(fake.store.list(&fake.tenant).await?.is_empty());
-            assert!(engine.unrecorded_store()?.list(&fake.tenant)?.is_empty());
+            assert_eq!(
+                fake.store.list(&fake.tenant).await?,
+                [] as [cuenv_infrastructure::ManagedResource; 0]
+            );
+            assert_eq!(
+                engine.unrecorded_store()?.list(&fake.tenant)?,
+                [] as [cuenv_infrastructure::UnrecordedRecord; 0]
+            );
         } else {
             imported?;
             assert!(fake.record("thing").await?.state["value_wo"].is_null());

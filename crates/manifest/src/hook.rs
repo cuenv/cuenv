@@ -91,7 +91,7 @@ mod tests {
         assert_eq!(hook.command, "echo");
         assert_eq!(hook.args, vec!["hello"]);
         assert_eq!(hook.dir, None);
-        assert!(hook.inputs.is_empty());
+        assert_eq!(hook.inputs, [] as [String; 0]);
         assert_eq!(hook.source, None); // default
     }
 }

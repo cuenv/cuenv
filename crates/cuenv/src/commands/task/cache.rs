@@ -274,31 +274,27 @@ pub(super) fn resolve_runtime_cache_identity(
                 "runtime.nix.lockfile".to_string(),
                 locked_nix.lockfile.clone(),
             );
-            identity
         }
         Runtime::Devenv(_) => {
             identity
                 .properties
                 .insert("runtime.kind".to_string(), "devenv".to_string());
-            identity
         }
         Runtime::Container(_) => {
             identity
                 .properties
                 .insert("runtime.kind".to_string(), "container".to_string());
-            identity
         }
         Runtime::Oci(_) => {
             identity
                 .properties
                 .insert("runtime.kind".to_string(), "oci".to_string());
-            identity
         }
         Runtime::Tools(_) => {
             identity
                 .properties
                 .insert("runtime.kind".to_string(), "tools".to_string());
-            identity
         }
     }
+    identity
 }

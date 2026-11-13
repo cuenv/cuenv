@@ -176,8 +176,7 @@ async fn prepare_task_runtime(
         own,
         shared: requested_env
             .as_ref()
-            .map(|env| env.key().clone())
-            .unwrap_or_default(),
+            .map_or_default(|env| env.key().clone()),
         scope: &resolution.scope,
         environment: input.environment,
     });

@@ -107,7 +107,7 @@ fn test_build_trigger_paths_empty_input() {
 
     let result = GitHubActionsEmitter::build_trigger_paths(&paths, "ci.yml");
 
-    assert!(result.is_empty());
+    assert_eq!(result, [] as [String; 0]);
 }
 
 #[test]
@@ -147,6 +147,6 @@ fn push_trigger_includes_tags_without_branches() {
 
     let triggers = emitter.build_triggers(&ir, "ci.yml");
     let push = triggers.push.expect("tag pushes trigger the workflow");
-    assert!(push.branches.is_empty());
+    assert_eq!(push.branches, [] as [String; 0]);
     assert_eq!(push.tags, vec!["v*".to_string()]);
 }

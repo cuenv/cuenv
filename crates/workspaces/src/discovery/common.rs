@@ -78,10 +78,7 @@ pub fn resolve_glob_patterns(
         .filter_entry(|e| {
             let name = e.file_name().to_str().unwrap_or("");
             // Standard directory ignores to prune search tree
-            if name == "node_modules" || name == ".git" || name == "target" || name == "dist" {
-                return false;
-            }
-            true
+            !(name == "node_modules" || name == ".git" || name == "target" || name == "dist")
         })
         .filter_map(std::result::Result::ok)
     {

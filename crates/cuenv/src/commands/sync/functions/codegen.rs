@@ -668,7 +668,7 @@ mod tests {
 
         let result = sync_codegen_files(&request).expect("sync check");
 
-        assert!(!result.drift_paths.is_empty());
+        assert_ne!(result.drift_paths, [] as [String; 0]);
         assert!(result.output.contains("Missing: generated.json"));
     }
 
@@ -686,7 +686,7 @@ mod tests {
 
         let result = sync_codegen_files(&request).expect("sync check");
 
-        assert!(!result.drift_paths.is_empty());
+        assert_ne!(result.drift_paths, [] as [String; 0]);
         assert!(result.output.contains("Out of sync: generated.txt"));
     }
 
@@ -749,7 +749,7 @@ mod tests {
 
         let result = sync_codegen_files(&request).expect("sync check");
 
-        assert!(!result.drift_paths.is_empty());
+        assert_ne!(result.drift_paths, [] as [String; 0]);
         assert!(result.output.contains("Out of sync: .gitignore"));
     }
 
@@ -772,7 +772,7 @@ mod tests {
 
         let result = sync_codegen_files(&request).expect("sync check");
 
-        assert!(!result.drift_paths.is_empty());
+        assert_ne!(result.drift_paths, [] as [String; 0]);
         assert!(result.output.contains("Out of sync: .gitignore"));
     }
 

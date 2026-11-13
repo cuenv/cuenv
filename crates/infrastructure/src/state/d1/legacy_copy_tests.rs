@@ -211,7 +211,10 @@ async fn s3_sql_s3_copy_preserves_exact_state_and_refuses_unsafe_numbers() -> Te
             LegacyMigrationSnapshotRead::Indeterminate
         ));
         assert_eq!(server.object("state", &key), Some(unsafe_body));
-        assert!(sql.list(&unsafe_tenant).await?.is_empty());
+        assert_eq!(
+            sql.list(&unsafe_tenant).await?,
+            [] as [crate::state::ManagedResource; 0]
+        );
     }
     Ok(())
 }

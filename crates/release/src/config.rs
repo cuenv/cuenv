@@ -382,7 +382,7 @@ mod tests {
         assert_eq!(config.path, "CHANGELOG.md");
         assert!(config.per_package);
         assert!(config.workspace);
-        assert!(config.categories.is_empty());
+        assert_eq!(config.categories, [] as [ChangelogCategory; 0]);
     }
 
     #[test]

@@ -74,7 +74,7 @@ fn test_matched_inputs_for_task_no_match() {
         },
     );
 
-    assert!(matched.is_empty());
+    assert_eq!(matched, [] as [String; 0]);
 }
 
 #[test]
@@ -93,7 +93,7 @@ fn test_matched_inputs_for_task_nonexistent_task() {
         },
     );
 
-    assert!(matched.is_empty());
+    assert_eq!(matched, [] as [String; 0]);
 }
 
 #[test]
@@ -173,7 +173,7 @@ fn test_compute_affected_tasks_no_match() {
         },
     );
 
-    assert!(affected.is_empty());
+    assert_eq!(affected, [] as [String; 0]);
 }
 
 #[test]
@@ -374,7 +374,7 @@ fn test_compute_affected_tasks_empty_pipeline() {
         },
     );
 
-    assert!(affected.is_empty());
+    assert_eq!(affected, [] as [String; 0]);
 }
 
 #[test]
@@ -1148,7 +1148,7 @@ fn a_group_child_with_an_external_dependency_selects_the_group() {
         ),
         ["check"]
     );
-    assert!(
+    assert_eq!(
         affected_in(
             &Change {
                 project: &project,
@@ -1156,8 +1156,8 @@ fn a_group_child_with_an_external_dependency_selects_the_group() {
                 files: &[PathBuf::from("content/other.md")]
             },
             &["check"]
-        )
-        .is_empty()
+        ),
+        [] as [String; 0]
     );
 }
 
@@ -1301,7 +1301,7 @@ fn a_parent_directory_input_selects_its_task_whenever_anything_changed() {
         ),
         ["build"]
     );
-    assert!(
+    assert_eq!(
         affected_in(
             &Change {
                 project: &project,
@@ -1309,8 +1309,8 @@ fn a_parent_directory_input_selects_its_task_whenever_anything_changed() {
                 files: &[]
             },
             &["build"]
-        )
-        .is_empty()
+        ),
+        [] as [String; 0]
     );
     assert_eq!(
         super::matched_inputs_for_task(
@@ -1426,7 +1426,7 @@ fn an_input_read_only_from_the_checkout_root_fails_the_run_with_its_rewrite() {
         },
     );
 
-    assert!(affected.is_empty());
+    assert_eq!(affected, [] as [String; 0]);
     let found = super::root_relative_inputs(inputs, checkout.path(), &project.tasks["build"]);
     assert_eq!(found.relied_on, ["shared/**"]);
     let failures = super::fail_on_root_relative_inputs().expect_err("the run fails");
@@ -1471,7 +1471,7 @@ fn a_correct_project_whose_root_has_files_of_the_same_name_is_not_selected_by_th
             },
         );
 
-        assert!(affected.is_empty());
+        assert_eq!(affected, [] as [String; 0]);
         let found = super::root_relative_inputs(inputs, checkout.path(), &project.tasks["build"]);
         assert!(found.relied_on.is_empty(), "never a failure");
     }
@@ -1541,7 +1541,10 @@ fn a_project_whose_configuration_changed_has_every_pipeline_task_selected() {
 
     assert_eq!(select(Some(&changed_configuration)), ["build", "test"]);
     // The `.cue` file is not a declared input of either task.
-    assert!(select(Some(&std::collections::HashSet::new())).is_empty());
+    assert_eq!(
+        select(Some(&std::collections::HashSet::new())),
+        [] as [String; 0]
+    );
 }
 
 #[test]
@@ -1673,7 +1676,7 @@ fn a_dependency_on_another_project_is_compared_with_that_projects_inputs() {
     assert_eq!(affected_by("sources/feeds/a.xml"), ["build"]);
     // The project was found, so a change to nothing it reads leaves the
     // task out: it is not selected for want of a comparison.
-    assert!(affected_by("docs/readme.md").is_empty());
+    assert_eq!(affected_by("docs/readme.md"), [] as [String; 0]);
 }
 
 #[test]
@@ -1787,9 +1790,15 @@ fn a_file_reference_selects_its_task_for_a_change_beneath_its_anchor() {
         affected_reading_files(&project, &all_projects, "docs/guides/a.md"),
         ["build"]
     );
-    assert!(affected_reading_files(&project, &all_projects, "docs/api/a.md").is_empty());
+    assert_eq!(
+        affected_reading_files(&project, &all_projects, "docs/api/a.md"),
+        [] as [String; 0]
+    );
     // The same path in the consumer's own directory is another file.
-    assert!(affected_reading_files(&project, &all_projects, "app/guides/a.md").is_empty());
+    assert_eq!(
+        affected_reading_files(&project, &all_projects, "app/guides/a.md"),
+        [] as [String; 0]
+    );
 }
 
 #[test]
@@ -1910,7 +1919,10 @@ fn every_path_a_reached_reference_names_must_match_a_file() {
     );
     let project = make_project(vec![("build", consumer)]);
 
-    assert!(problems_reached(&project, &["docs/guides/a.md", "bun.lock"]).is_empty());
+    assert_eq!(
+        problems_reached(&project, &["docs/guides/a.md", "bun.lock"]),
+        [] as [String; 0]
+    );
 
     let problems = problems_reached(&project, &["docs/api/a.md", "bun.lock"]);
     assert_eq!(problems.len(), 1, "{problems:?}");
@@ -1957,7 +1969,7 @@ fn only_what_the_pipeline_reaches_is_checked() {
         .tasks
         .insert("lint".to_string(), vec!["task 'lint': broken".to_string()]);
 
-    assert!(problems_reached(&project, &[]).is_empty());
+    assert_eq!(problems_reached(&project, &[]), [] as [String; 0]);
 
     project.diagnostics.pipelines.insert(
         "default".to_string(),

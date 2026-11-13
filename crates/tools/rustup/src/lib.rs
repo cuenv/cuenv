@@ -209,22 +209,20 @@ impl ToolProvider for RustupToolProvider {
         let components: Vec<String> = config
             .get("components")
             .and_then(|v| v.as_array())
-            .map(|arr| {
+            .map_or_default(|arr| {
                 arr.iter()
                     .filter_map(|v| v.as_str().map(String::from))
                     .collect()
-            })
-            .unwrap_or_default();
+            });
 
         let targets: Vec<String> = config
             .get("targets")
             .and_then(|v| v.as_array())
-            .map(|arr| {
+            .map_or_default(|arr| {
                 arr.iter()
                     .filter_map(|v| v.as_str().map(String::from))
                     .collect()
-            })
-            .unwrap_or_default();
+            });
 
         info!(
             %tool_name,
@@ -634,8 +632,8 @@ mod tests {
             } => {
                 assert_eq!(toolchain, "1.83.0");
                 assert!(profile.is_none());
-                assert!(components.is_empty());
-                assert!(targets.is_empty());
+                assert_eq!(components.as_slice(), [] as [String; 0]);
+                assert_eq!(targets.as_slice(), [] as [String; 0]);
             }
             _ => panic!("Expected Rustup source"),
         }

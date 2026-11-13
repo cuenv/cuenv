@@ -107,6 +107,10 @@ pub fn runtime_dir() -> Result<PathBuf> {
 /// Get the path to the hook state directory.
 ///
 /// This is where hook execution state files are stored.
+///
+/// # Errors
+///
+/// Returns an error if [`state_dir`] cannot determine the state directory.
 pub fn hook_state_dir() -> Result<PathBuf> {
     Ok(state_dir()?.join("state"))
 }
@@ -114,6 +118,10 @@ pub fn hook_state_dir() -> Result<PathBuf> {
 /// Get the path to the approvals file.
 ///
 /// This file tracks which configurations have been approved for hook execution.
+///
+/// # Errors
+///
+/// Returns an error if [`state_dir`] cannot determine the state directory.
 pub fn approvals_file() -> Result<PathBuf> {
     Ok(state_dir()?.join("approved.json"))
 }
@@ -121,6 +129,10 @@ pub fn approvals_file() -> Result<PathBuf> {
 /// Get the path to the task cache directory.
 ///
 /// This is where hermetic task execution results are cached.
+///
+/// # Errors
+///
+/// Returns an error if [`cache_dir`] cannot determine the cache directory.
 pub fn task_cache_dir() -> Result<PathBuf> {
     Ok(cache_dir()?.join("tasks"))
 }
@@ -128,16 +140,28 @@ pub fn task_cache_dir() -> Result<PathBuf> {
 /// Get the path to the coordinator socket.
 ///
 /// The coordinator socket enables multi-UI support (CLI, TUI, Web).
+///
+/// # Errors
+///
+/// Returns an error if [`runtime_dir`] cannot determine the runtime directory.
 pub fn coordinator_socket() -> Result<PathBuf> {
     Ok(runtime_dir()?.join("coordinator.sock"))
 }
 
 /// Get the path to the coordinator PID file.
+///
+/// # Errors
+///
+/// Returns an error if [`runtime_dir`] cannot determine the runtime directory.
 pub fn coordinator_pid() -> Result<PathBuf> {
     Ok(runtime_dir()?.join("coordinator.pid"))
 }
 
 /// Get the path to the coordinator lock file.
+///
+/// # Errors
+///
+/// Returns an error if [`runtime_dir`] cannot determine the runtime directory.
 pub fn coordinator_lock() -> Result<PathBuf> {
     Ok(runtime_dir()?.join("coordinator.lock"))
 }

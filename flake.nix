@@ -85,11 +85,11 @@
 
         # Native packages and checks need the compiler and lint/format tools,
         # not Rust documentation, an analyzer, or four platforms' std libraries.
-        rustToolchain = pkgs.rust-bin.stable."1.98.1".minimal.override {
+        rustToolchain = pkgs.rust-bin.stable."1.100.0".minimal.override {
           extensions = [ "clippy" "rustfmt" ];
         };
 
-        rustDevToolchain = pkgs.rust-bin.stable."1.98.1".default.override {
+        rustDevToolchain = pkgs.rust-bin.stable."1.100.0".default.override {
           extensions = [ "rust-src" "rust-analyzer" "clippy" "rustfmt" "llvm-tools-preview" ];
           targets = [
             "x86_64-unknown-linux-gnu"

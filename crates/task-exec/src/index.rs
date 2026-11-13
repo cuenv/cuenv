@@ -11,6 +11,11 @@ pub struct TaskPath {
 
 impl TaskPath {
     /// Parse a raw task path that may use '.' or ':' separators
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `raw` is blank, has no segments, or has a blank
+    /// segment.
     pub fn parse(raw: &str) -> Result<Self> {
         if raw.trim().is_empty() {
             return Err(Error::configuration("Task name cannot be empty"));
@@ -35,6 +40,10 @@ impl TaskPath {
     }
 
     /// Create a new path with an additional segment appended
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `segment` is empty or contains '.' or ':'.
     pub fn join(&self, segment: &str) -> Result<Self> {
         validate_segment(segment)?;
         let mut next = self.segments.clone();
@@ -43,11 +52,13 @@ impl TaskPath {
     }
 
     /// Convert to canonical dotted representation
+    #[must_use]
     pub fn canonical(&self) -> String {
         self.segments.join(".")
     }
 
     /// Return the underlying path segments
+    #[must_use]
     pub fn segments(&self) -> &[String] {
         &self.segments
     }
@@ -114,6 +125,12 @@ impl TaskIndex {
     /// - Stripping `_` prefix from task names (CUE hidden fields for local-only tasks)
     /// - Extracting source file from task metadata
     /// - Canonicalizing nested task paths
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a task name, the name of a group child, or a
+    /// dependency name is not a valid task path (see [`TaskPath::parse`] and
+    /// [`TaskPath::join`]).
     pub fn build(tasks: &HashMap<String, TaskNode>) -> Result<Self> {
         let mut entries = BTreeMap::new();
 
@@ -142,6 +159,12 @@ impl TaskIndex {
     }
 
     /// Resolve a raw task name (dot or colon separated) to an indexed task
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `raw` is not a valid task path, or when it names
+    /// neither an indexed task nor a sequence step. The message suggests
+    /// similar names and lists the available tasks.
     pub fn resolve(&self, raw: &str) -> Result<&IndexedTask> {
         let path = TaskPath::parse(raw)?;
         let canonical = path.canonical();
@@ -162,16 +185,12 @@ impl TaskIndex {
 
             if !suggestions.is_empty() {
                 msg.push_str("\n\nDid you mean one of these?\n");
-                for s in &suggestions {
-                    msg.push_str(&format!("  - {s}\n"));
-                }
+                msg.push_str(&bullet_list(&suggestions));
             }
 
             if !available.is_empty() {
                 msg.push_str("\nAvailable tasks:\n");
-                for t in &available {
-                    msg.push_str(&format!("  - {t}\n"));
-                }
+                msg.push_str(&bullet_list(&available));
             }
 
             Error::configuration(msg)
@@ -179,11 +198,13 @@ impl TaskIndex {
     }
 
     /// List all indexed tasks in deterministic order
+    #[must_use]
     pub fn list(&self) -> Vec<&IndexedTask> {
         self.entries.values().collect()
     }
 
     /// Convert the index back into a Tasks collection keyed by canonical names
+    #[must_use]
     pub fn to_tasks(&self) -> Tasks {
         let tasks = self
             .entries
@@ -193,6 +214,11 @@ impl TaskIndex {
 
         Tasks { tasks }
     }
+}
+
+/// One `  - name` line per name.
+fn bullet_list(names: &[&str]) -> String {
+    names.iter().flat_map(|name| ["  - ", name, "\n"]).collect()
 }
 
 /// Extract source file from a task node
@@ -430,11 +456,7 @@ fn levenshtein(a: &str, b: &str) -> usize {
     for i in 1..=m {
         curr[0] = i;
         for j in 1..=n {
-            let cost = if a_chars[i - 1] == b_chars[j - 1] {
-                0
-            } else {
-                1
-            };
+            let cost = usize::from(a_chars[i - 1] != b_chars[j - 1]);
             curr[j] = (prev[j] + 1).min(curr[j - 1] + 1).min(prev[j - 1] + cost);
         }
         std::mem::swap(&mut prev, &mut curr);

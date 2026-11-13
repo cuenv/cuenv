@@ -52,9 +52,9 @@ mod tests {
         let ctx = CIContext::default();
         assert_eq!(ctx.provider, "local");
         assert_eq!(ctx.event, "manual");
-        assert!(ctx.ref_name.is_empty());
+        assert_eq!(ctx.ref_name, "");
         assert!(ctx.base_ref.is_none());
-        assert!(ctx.sha.is_empty());
+        assert_eq!(ctx.sha, "");
     }
 
     #[test]

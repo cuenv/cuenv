@@ -163,7 +163,7 @@ async fn fence_scenario(store: &TursoStateStore) -> Result<()> {
     store.migrate().await?;
     let tenant = TenantKey::try_new("example.com/migration", "web")?;
     let legacy = store.list(&tenant).await?.remove(0);
-    assert!(legacy.sensitive_attributes.is_empty());
+    assert_eq!(legacy.sensitive_attributes, [] as [String; 0]);
     assert_eq!(legacy.generation, uuid::Uuid::from_u128(7));
     let lock = store.lock(&tenant, "migration test").await?;
 
@@ -205,10 +205,9 @@ async fn fence_scenario(store: &TursoStateStore) -> Result<()> {
     };
     store.put_if_unchanged(&tenant, &lock, &update).await?;
     store.put_if_unchanged(&tenant, &lock, &update).await?;
-    assert!(
-        store.list(&tenant).await?[0]
-            .sensitive_attributes
-            .is_empty()
+    assert_eq!(
+        store.list(&tenant).await?[0].sensitive_attributes,
+        [] as [String; 0]
     );
     assert!(matches!(
         store
@@ -248,7 +247,7 @@ async fn fence_scenario(store: &TursoStateStore) -> Result<()> {
             .force_unlock(&stale[0].tenant()?, stale[0].lock.identifier().unwrap())
             .await?
     );
-    assert!(store.locks().await?.is_empty());
+    assert_eq!(store.locks().await?, [] as [crate::state::TenantLock; 0]);
     let _ = other_lock;
 
     // With no lock held it applies, and a client that does not know the
@@ -1843,7 +1842,10 @@ async fn every_state_statement_is_scoped_by_environment() {
             .await
             .unwrap();
         store.delete(&tenant, &lock, &record.address).await.unwrap();
-        assert!(store.list(&tenant).await.unwrap().is_empty());
+        assert_eq!(
+            store.list(&tenant).await.unwrap(),
+            [] as [ManagedResource; 0]
+        );
         assert!(
             store
                 .inner

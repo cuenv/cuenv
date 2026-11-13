@@ -425,7 +425,7 @@ mod tests {
         let state = TuiState::new();
         assert!(state.tasks().is_empty());
         assert!(state.outputs().is_empty());
-        assert!(state.running_tasks().is_empty());
+        assert_eq!(state.running_tasks(), [] as [String; 0]);
         assert!(!state.is_complete());
         assert!(!state.success());
     }
@@ -472,7 +472,7 @@ mod tests {
         state.update_task_status("t", TaskStatus::Completed);
         state.update_task_status("t", TaskStatus::Running);
         assert_eq!(state.tasks()["t"].status, TaskStatus::Completed);
-        assert!(state.running_tasks().is_empty());
+        assert_eq!(state.running_tasks(), [] as [String; 0]);
 
         let mut state2 = TuiState::new();
         state2.add_task(TaskInfo::new("u".to_string(), vec![], 0));

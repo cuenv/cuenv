@@ -12,12 +12,15 @@ use thiserror::Error as ThisError;
 #[error("Secret resolution failed: {message}")]
 #[diagnostic(code(cuenv::secret::resolution))]
 pub struct SecretResolutionError {
+    /// Description of why the secret could not be resolved.
     pub message: String,
+    /// Suggested remedy shown with the diagnostic, if any.
     #[help]
     pub help: Option<String>,
 }
 
 impl SecretResolutionError {
+    /// Creates a secret resolution error with a message and no help text.
     #[must_use]
     pub fn new(message: impl Into<String>) -> Self {
         Self {
@@ -26,6 +29,8 @@ impl SecretResolutionError {
         }
     }
 
+    /// Creates a secret resolution error with a message and a suggested
+    /// remedy.
     #[must_use]
     pub fn with_help(message: impl Into<String>, help: impl Into<String>) -> Self {
         Self {

@@ -428,16 +428,13 @@ pub(super) fn overlay_stale_children(
     previous: Option<&LockedVcsDependency>,
     resolved: &LockedVcsDependency,
 ) -> Vec<String> {
-    previous
-        .filter(|prev| prev.overlay)
-        .map(|prev| {
-            prev.children
-                .keys()
-                .filter(|child| !resolved.children.contains_key(*child))
-                .cloned()
-                .collect()
-        })
-        .unwrap_or_default()
+    previous.filter(|prev| prev.overlay).map_or_default(|prev| {
+        prev.children
+            .keys()
+            .filter(|child| !resolved.children.contains_key(*child))
+            .cloned()
+            .collect()
+    })
 }
 
 /// Remove overlay children dropped upstream. A stale child is only removed when

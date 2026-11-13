@@ -112,7 +112,7 @@ impl<'task_tree_widget> TaskTreeWidget<'task_tree_widget> {
                         }
                     })
                 });
-                let suffix = duration.map(|ms| format!(" ({ms}ms)")).unwrap_or_default();
+                let suffix = duration.map_or_default(|ms| format!(" ({ms}ms)"));
 
                 (symbol, color, suffix)
             }

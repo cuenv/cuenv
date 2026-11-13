@@ -719,7 +719,7 @@ fn collect_tasks_for_emoji(
 /// Infer category from task name and description
 pub fn infer_category_from_name(name: &str, description: Option<&str>) -> String {
     let name_lower = name.to_lowercase();
-    let desc_lower = description.map(|d| d.to_lowercase()).unwrap_or_default();
+    let desc_lower = description.map_or_default(|d| d.to_lowercase());
     let combined = format!("{} {}", name_lower, desc_lower);
 
     // Check for containers first (higher priority than build)

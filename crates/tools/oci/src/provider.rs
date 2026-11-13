@@ -304,7 +304,7 @@ mod tests {
     fn test_provider_name_and_description() {
         let provider = OciToolProvider::new();
         assert_eq!(provider.name(), "oci");
-        assert!(!provider.description().is_empty());
+        assert_ne!(provider.description(), "");
     }
 
     #[test]

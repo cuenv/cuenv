@@ -54,8 +54,14 @@ pub async fn conforms(store: &dyn StateStore) {
     let moved = ProjectInstance::try_new("services/web", "cuenv").unwrap();
 
     // Reads of a tenant with nothing stored are empty.
-    assert!(store.list(&tenant).await.unwrap().is_empty());
-    assert!(store.addresses(&tenant).await.unwrap().is_empty());
+    assert_eq!(
+        store.list(&tenant).await.unwrap(),
+        [] as [ManagedResource; 0]
+    );
+    assert_eq!(
+        store.addresses(&tenant).await.unwrap(),
+        [] as [ResourceAddress; 0]
+    );
     assert_eq!(store.current_lock(&tenant).await.unwrap(), None);
     assert_eq!(store.last_writer(&tenant).await.unwrap(), None);
     assert!(!store.force_unlock(&tenant, "nothing").await.unwrap());
@@ -88,7 +94,7 @@ pub async fn conforms(store: &dyn StateStore) {
         Err(InfrastructureError::LockLost { .. })
     ));
     store.put(&tenant, &lock, &pet).await.unwrap();
-    assert!(store.list(&dev).await.unwrap().is_empty());
+    assert_eq!(store.list(&dev).await.unwrap(), [] as [ManagedResource; 0]);
     let stored = store.list(&tenant).await.unwrap().remove(0);
     assert!(stored.same_content(&pet), "{stored:?}");
     assert_eq!(stored.serial, 1);
@@ -239,14 +245,17 @@ pub async fn conforms(store: &dyn StateStore) {
             .unwrap(),
         [None, Some("Dev".to_string())]
     );
-    assert!(
+    assert_eq!(
         store
             .environments("example.com/conformance", "api")
             .await
-            .unwrap()
-            .is_empty()
+            .unwrap(),
+        [] as [Option<String>; 0]
     );
     assert_eq!(store.locks().await.unwrap().len(), 1);
     store.unlock(&dev, &dev_lock).await.unwrap();
-    assert!(store.locks().await.unwrap().is_empty());
+    assert_eq!(
+        store.locks().await.unwrap(),
+        [] as [crate::state::TenantLock; 0]
+    );
 }

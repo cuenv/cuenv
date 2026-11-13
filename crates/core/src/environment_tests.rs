@@ -600,7 +600,7 @@ async fn test_resolve_with_secrets_collects_only_secret_parts() {
     let value = EnvValue::Interpolated(parts);
     let (resolved, secrets) = value.resolve_with_secrets().await.unwrap();
     assert_eq!(resolved, "hello-world");
-    assert!(secrets.is_empty()); // No secrets to redact
+    assert_eq!(secrets, [] as [String; 0]); // No secrets to redact
 }
 
 #[tokio::test]
@@ -1058,11 +1058,11 @@ async fn prepare_secret_providers_groups_secrets_by_resolver() {
         .await
         .unwrap();
 
-    let mut prepared = preparer.prepared.lock().unwrap().clone();
-    prepared.sort();
-    assert_eq!(prepared.len(), 2);
-    assert!(prepared[0].contains("first"), "{prepared:?}");
-    assert!(prepared[1].contains("second"), "{prepared:?}");
+    let mut sources = preparer.prepared.lock().unwrap().clone();
+    sources.sort();
+    assert_eq!(sources.len(), 2);
+    assert!(sources[0].contains("first"), "{sources:?}");
+    assert!(sources[1].contains("second"), "{sources:?}");
 }
 
 #[tokio::test]

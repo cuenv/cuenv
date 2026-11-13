@@ -194,7 +194,7 @@ mod tests {
 
     fn time() -> SystemTime {
         // 2013-05-24T00:00:00Z, the S3 documentation's example time.
-        SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_369_353_600)
+        SystemTime::UNIX_EPOCH + std::time::Duration::from_hours(380_376)
     }
 
     fn url(host: &str, path: &str, query: &[(String, String)]) -> String {

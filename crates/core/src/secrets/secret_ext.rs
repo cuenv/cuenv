@@ -164,8 +164,8 @@ mod tests {
 
         assert_eq!(secret.resolver, "onepassword");
         assert_eq!(secret.op_ref, Some("op://vault/item/field".to_string()));
-        assert!(secret.command.is_empty());
-        assert!(secret.args.is_empty());
+        assert_eq!(secret.command, "");
+        assert_eq!(secret.args, [] as [String; 0]);
     }
 
     #[test]

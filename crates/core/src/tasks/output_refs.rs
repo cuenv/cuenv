@@ -255,7 +255,7 @@ mod tests {
         });
 
         let deps = extraction::process_output_refs(&mut value);
-        assert!(deps.is_empty());
+        assert_eq!(deps, [] as [OutputRefDep; 0]);
         // Verify stdout was stripped from group children
         assert!(value["tasks"]["check"]["lint"].get("stdout").is_none());
     }

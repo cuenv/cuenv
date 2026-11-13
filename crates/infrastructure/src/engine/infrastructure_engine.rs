@@ -956,8 +956,7 @@ impl InfrastructureEngine {
         let native = self
             .configuration_evaluation
             .as_ref()
-            .map(|binding| binding.evaluator.references())
-            .unwrap_or_default();
+            .map_or_default(|binding| binding.evaluator.references());
         for reference in native {
             if data_sources::declaration(&self.infrastructure, &reference.consumer).is_none()
                 || data_sources::declaration(&self.infrastructure, &reference.source).is_none()

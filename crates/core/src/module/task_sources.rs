@@ -71,15 +71,17 @@ impl TaskSourceContext<'_> {
 
         if !obj.contains_key("_source")
             && let Some(source) = self.definition_source(field_path, obj)
+            && let Some(value) = source_value(source)
         {
-            obj.insert("_source".to_string(), source_value(source));
+            obj.insert("_source".to_string(), value);
         }
 
         if !obj.contains_key("_callerSource")
             && let Some(callers) = self.maps.callers
             && let Some(source) = self.source_for_field(field_path, obj, callers)
+            && let Some(value) = source_value(source)
         {
-            obj.insert("_callerSource".to_string(), source_value(source));
+            obj.insert("_callerSource".to_string(), value);
         }
     }
 
@@ -109,8 +111,8 @@ impl TaskSourceContext<'_> {
         obj: &Map<String, Value>,
     ) -> Option<&SourceLocation> {
         let exact = self.meta_key(field_path);
-        self.executable_body_source(&exact, obj, self.maps.definitions)
-            .or_else(|| self.authored_task_field_source(&exact, obj, self.maps.definitions))
+        Self::executable_body_source(&exact, obj, self.maps.definitions)
+            .or_else(|| Self::authored_task_field_source(&exact, obj, self.maps.definitions))
             .or_else(|| self.maps.definitions.get(&exact))
             .or_else(|| self.source_for_nearest_ancestor(field_path, self.maps.definitions))
     }
@@ -124,13 +126,12 @@ impl TaskSourceContext<'_> {
         let exact = self.meta_key(field_path);
         sources
             .get(&exact)
-            .or_else(|| self.executable_body_source(&exact, obj, sources))
-            .or_else(|| self.authored_task_field_source(&exact, obj, sources))
+            .or_else(|| Self::executable_body_source(&exact, obj, sources))
+            .or_else(|| Self::authored_task_field_source(&exact, obj, sources))
             .or_else(|| self.source_for_nearest_ancestor(field_path, sources))
     }
 
     fn executable_body_source<'a>(
-        &self,
         exact: &str,
         obj: &Map<String, Value>,
         sources: &'a SourceMap,
@@ -142,7 +143,6 @@ impl TaskSourceContext<'_> {
     }
 
     fn authored_task_field_source<'a>(
-        &self,
         exact: &str,
         obj: &Map<String, Value>,
         sources: &'a SourceMap,
@@ -150,11 +150,10 @@ impl TaskSourceContext<'_> {
         AUTHORED_TASK_SOURCE_FIELDS
             .iter()
             .filter(|field| obj.contains_key(**field))
-            .find_map(|field| self.source_for_task_field(exact, field, sources))
+            .find_map(|field| Self::source_for_task_field(exact, field, sources))
     }
 
     fn source_for_task_field<'a>(
-        &self,
         exact: &str,
         field: &str,
         sources: &'a SourceMap,
@@ -162,11 +161,10 @@ impl TaskSourceContext<'_> {
         let field_key = format!("{exact}.{field}");
         sources
             .get(&field_key)
-            .or_else(|| self.source_for_field_descendant(&field_key, sources))
+            .or_else(|| Self::source_for_field_descendant(&field_key, sources))
     }
 
     fn source_for_field_descendant<'a>(
-        &self,
         field_key: &str,
         sources: &'a SourceMap,
     ) -> Option<&'a SourceLocation> {
@@ -208,8 +206,11 @@ fn is_executable_task_object(obj: &Map<String, Value>) -> bool {
     !obj.contains_key("resolver") && (obj.contains_key("command") || obj.contains_key("script"))
 }
 
-fn source_value(source: &SourceLocation) -> Value {
-    serde_json::to_value(source).expect("source locations should serialize")
+/// The JSON form of `source` that task deserialization reads back. A source
+/// location holds only a string and integers, so serializing it cannot fail
+/// in practice; were it to, the task simply carries no source metadata.
+fn source_value(source: &SourceLocation) -> Option<Value> {
+    serde_json::to_value(source).ok()
 }
 
 #[cfg(test)]

@@ -216,8 +216,8 @@ async fn rename_refuses_pending_or_unreadable_recovery_files_before_state_mutati
         )))
         .await
         .unwrap_err();
-    assert!(!error.to_string().is_empty());
-    assert!(server.keys("state").is_empty());
+    assert_ne!(error.to_string(), "");
+    assert_eq!(server.keys("state"), [] as [String; 0]);
 }
 
 #[tokio::test]
@@ -885,13 +885,9 @@ async fn all_environment_rollback_uses_the_recorded_set_when_source_state_disapp
         cuenv_infrastructure::state::MigrationMutation::Applied
     ));
     assert!(harness.store.unlock(&harness.tenant, &fence).await.unwrap());
-    assert!(
-        harness
-            .store
-            .environments(MODULE, "app")
-            .await
-            .unwrap()
-            .is_empty()
+    assert_eq!(
+        harness.store.environments(MODULE, "app").await.unwrap(),
+        [] as [Option<String>; 0]
     );
     let target = object_store(&server, "cuenv");
     let before = target.list(&harness.tenant).await.unwrap();

@@ -12,11 +12,6 @@ keywords.workspace = true
 categories.workspace = true
 description = "Task execution engine for the cuenv ecosystem"
 
-# No [lints] opt-in yet: this crate was extracted from cuenv-core, which
-# predates the workspace lint config; enabling it flags ~80 pre-existing
-# pedantic findings in the moved code. The per-crate lint ratchet is
-# RFC-0006 phase 6.
-
 [dependencies]
 cuenv-core = { workspace = true }
 cuenv-manifest = { workspace = true }
@@ -41,6 +36,7 @@ sha2 = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+rustix = { workspace = true, features = ["process"] }
 
 [target.'cfg(windows)'.dependencies]
 sysinfo = "0.37"
@@ -50,3 +46,6 @@ bazel-remote-apis = { workspace = true }
 prost = { workspace = true }
 tempfile = { workspace = true }
 tokio-test = { workspace = true }
+
+[lints]
+workspace = true

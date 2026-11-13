@@ -37,7 +37,7 @@ pub struct ContributorActivation {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct AutoAssociate {
-    /// Commands that trigger auto-association (e.g., ["bun", "bunx"])
+    /// Commands that trigger auto-association (e.g., `["bun", "bunx"]`)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub command: Vec<String>,
 

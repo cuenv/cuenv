@@ -170,7 +170,7 @@ fn test_ffi_error_handling_edge_cases() -> TestResult {
         "definitely_not_a_real_package",
     ] {
         let error = cuengine::evaluate_cue_package(temp_dir.path(), package_name).unwrap_err();
-        assert!(!error.to_string().is_empty());
+        assert_ne!(error.to_string(), "");
     }
 
     Ok(())

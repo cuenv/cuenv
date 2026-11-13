@@ -658,7 +658,7 @@ async fn output_directory_roundtrips_as_a_reapi_tree() {
         .await
         .unwrap()
         .unwrap();
-    assert!(recorded.output_files.is_empty());
+    assert_eq!(recorded.output_files, [] as [cuenv_cas::OutputFile; 0]);
     assert_eq!(recorded.output_directories.len(), 1);
 
     let fresh = tmp.path().join("fresh");
@@ -1638,7 +1638,7 @@ async fn output_collection_ignores_trees_outside_the_declared_patterns() {
 async fn a_declared_output_that_was_never_produced_is_not_an_error() {
     let tmp = TempDir::new().unwrap();
     let collected = super::collect_outputs(tmp.path(), &["dist/**/*".to_string()]).unwrap();
-    assert!(collected.is_empty());
+    assert_eq!(collected, [] as [std::path::PathBuf; 0]);
 }
 
 #[tokio::test]
@@ -2213,7 +2213,9 @@ async fn a_glob_and_a_task_output_naming_one_file_are_one_input() {
     .await
     {
         CacheOutcome::Eligible(eligible) => eligible.inputs,
-        other => panic!("expected an eligible action, got {other:?}"),
+        other @ CacheOutcome::Skipped { .. } => {
+            panic!("expected an eligible action, got {other:?}")
+        }
     };
     crate::exec_root::prepare(root.path(), "action", &eligible_inputs)
         .expect("each input is staged once");
@@ -2479,7 +2481,7 @@ fn literal_prefix_bounds_a_pattern() {
 #[test]
 fn a_blank_input_means_the_project_directory_below_the_hasher_root() {
     let patterns = [
-        "".to_string(),
+        String::new(),
         " ".to_string(),
         ".".to_string(),
         "src/**".to_string(),

@@ -28,7 +28,7 @@ impl Slots {
 
     fn acquire(self: &Arc<Self>) -> Result<Permit> {
         self.active
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |active| {
                 (active < self.limit).then_some(active + 1)
             })
             .map_err(|_| failure(FrozenWorkerFailure::Capacity))?;

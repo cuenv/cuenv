@@ -454,10 +454,7 @@ impl InputChecks<'_> {
         );
         match holder {
             Some((name, directory)) => {
-                let rest = path
-                    .strip_prefix(directory)
-                    .map(forward_slashes)
-                    .unwrap_or_default();
+                let rest = path.strip_prefix(directory).map_or_default(forward_slashes);
                 let rest = if rest.is_empty() {
                     "**".to_string()
                 } else {
@@ -1083,7 +1080,7 @@ mod tests {
             ["#content:build", "lint", "#content:checks.unit"],
             "another project's build is never this project's build"
         );
-        assert!(project.diagnostics.task("deploy").is_empty());
+        assert_eq!(project.diagnostics.task("deploy"), [] as [String; 0]);
     }
 
     #[test]
@@ -1219,7 +1216,10 @@ mod tests {
             "{unit:?}"
         );
         let checks = project.tasks["checks"].as_group().expect("a group");
-        assert!(checks.depends_on.is_empty());
+        assert_eq!(
+            checks.depends_on,
+            [] as [cuenv_manifest::tasks::TaskDependency; 0]
+        );
         let unit = checks.children["unit"].as_task().expect("a task");
         assert_eq!(
             unit.dependency_names().collect::<Vec<_>>(),
@@ -1399,7 +1399,10 @@ mod tests {
         assert_eq!(project.diagnostics.pipeline("release").len(), 1);
         let ci = project.ci.expect("ci");
         assert_eq!(ci.pipelines["default"].tasks.len(), 1);
-        assert!(ci.pipelines["release"].tasks.is_empty());
+        assert_eq!(
+            ci.pipelines["release"].tasks,
+            [] as [cuenv_manifest::ci::PipelineTask; 0]
+        );
     }
 
     #[test]
@@ -1486,7 +1489,7 @@ mod tests {
         assert!(problems[0].contains("content.#Files & {paths: [...]}"));
         let build = project.tasks["build"].as_task().expect("a task");
         assert_eq!(build.inputs.len(), 2, "the readable inputs remain");
-        assert!(project.diagnostics.task("test").is_empty());
+        assert_eq!(project.diagnostics.task("test"), [] as [String; 0]);
     }
 
     #[test]

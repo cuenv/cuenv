@@ -484,8 +484,7 @@ fn rejection(rejected: &Rejected<'_>) -> Rejection {
     let code = rejected
         .error
         .and_then(|error| error.code)
-        .map(|code| format!(" (error {code}{})", code_meaning(code)))
-        .unwrap_or_default();
+        .map_or_default(|code| format!(" (error {code}{})", code_meaning(code)));
     let detail = match (rejected.disclosure, rejected.error) {
         (Disclosure::Full, Some(error)) => {
             format!(
@@ -614,15 +613,12 @@ const fn succeeded() -> bool {
 impl QueryResult {
     fn into_result(self) -> ExecuteResult {
         ExecuteResult {
-            rows: self
-                .results
-                .map(|rows| {
-                    rows.rows
-                        .iter()
-                        .map(|row| row.iter().map(value).collect())
-                        .collect()
-                })
-                .unwrap_or_default(),
+            rows: self.results.map_or_default(|rows| {
+                rows.rows
+                    .iter()
+                    .map(|row| row.iter().map(value).collect())
+                    .collect()
+            }),
             affected_row_count: self.meta.map_or(0, |meta| meta.changes),
         }
     }

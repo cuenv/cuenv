@@ -34,14 +34,12 @@ pub fn parse_task_args(
     let mut flags_ended = false;
 
     // Build short-to-long flag mapping
-    let short_to_long: HashMap<String, String> = params
-        .map(|p| {
-            p.named
-                .iter()
-                .filter_map(|(name, def)| def.short.as_ref().map(|s| (s.clone(), name.clone())))
-                .collect()
-        })
-        .unwrap_or_default();
+    let short_to_long: HashMap<String, String> = params.map_or_default(|p| {
+        p.named
+            .iter()
+            .filter_map(|(name, def)| def.short.as_ref().map(|s| (s.clone(), name.clone())))
+            .collect()
+    });
 
     let mut i = 0;
     while i < args.len() {
@@ -219,7 +217,7 @@ mod tests {
     fn test_parse_task_args_equals_syntax() {
         let args: Vec<String> = vec!["--key=value".into()];
         let (positional, named) = parse_task_args(&args, None);
-        assert!(positional.is_empty());
+        assert_eq!(positional, [] as [String; 0]);
         assert_eq!(named.get("key"), Some(&"value".to_string()));
     }
 
@@ -247,7 +245,7 @@ mod tests {
     fn test_parse_task_args_boolean_flag_at_end() {
         let args: Vec<String> = vec!["--verbose".into()];
         let (positional, named) = parse_task_args(&args, None);
-        assert!(positional.is_empty());
+        assert_eq!(positional, [] as [String; 0]);
         assert_eq!(named.get("verbose"), Some(&"true".to_string()));
     }
 

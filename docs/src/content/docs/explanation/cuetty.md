@@ -576,7 +576,7 @@ pipeline until it is ready:
 ```bash
 nix develop .#cuetty
 cd apps/cuetty
-rustc --version # Must report 1.98.1 for this qualification baseline.
+rustc --version # Must report 1.100.0 for this qualification baseline.
 cargo fmt -- --check
 cargo check --locked
 cargo test --locked --workspace -- --include-ignored
@@ -585,13 +585,13 @@ cargo build --release --locked
 ./script/build_and_run.sh --verify
 ```
 
-The root flake pins Rust **1.98.1**. Enter the Cuetty Nix shell before
+The root flake pins Rust **1.100.0**. Enter the Cuetty Nix shell before
 using Cargo or the packaging script so they use the pinned compiler. This
-upgrade supplies the compiler baseline for the direct `rio-vt` qualification
-spike and does not change the declared workspace MSRV; it is not evidence that
-Rio integration or macOS acceptance has passed. Rust 1.98.1 is the latest stable
-release as of 7 September 2026, per the
-[official release announcement](https://blog.rust-lang.org/2026/09/03/Rust-1.98.1/).
+compiler is the baseline for the direct `rio-vt` qualification spike, and the
+cuenv workspace declares the same version as its MSRV; it is not evidence that
+Rio integration or macOS acceptance has passed. Rust 1.100.0 is the latest stable
+release as of 12 November 2026, per the
+[official release announcement](https://blog.rust-lang.org/2026/11/12/Rust-1.100.0/).
 
 `build_and_run.sh --verify` uses the installed macOS Metal toolchain to build,
 sign, and validate the application bundle. The exact commands and resulting

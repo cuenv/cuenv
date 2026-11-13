@@ -539,7 +539,7 @@ mod tests {
         assert_eq!(index.all_bin_dirs, vec![bin_dir.clone()]);
         assert_eq!(index.tool_bin_dirs.get("jq"), Some(&vec![bin_dir]));
         assert!(!index.tool_bin_dirs.contains_key("rust"));
-        assert!(index.all_lib_dirs.is_empty());
+        assert_eq!(index.all_lib_dirs, [] as [std::path::PathBuf; 0]);
     }
 
     #[test]

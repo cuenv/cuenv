@@ -11,9 +11,13 @@ use tempfile::TempDir;
 /// Supported package manager types for mock workspaces
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PackageManager {
+    /// Bun: the mock workspace gets a `bun.lock`.
     Bun,
+    /// npm: the mock workspace gets a `package-lock.json`.
     Npm,
+    /// pnpm: the mock workspace gets a `pnpm-lock.yaml`.
     Pnpm,
+    /// Yarn: the mock workspace gets a `yarn.lock`.
     Yarn,
 }
 
@@ -29,6 +33,7 @@ pub fn create_task(name: &str, deps: Vec<&str>, labels: Vec<&str>) -> Task {
 }
 
 /// Create a test hook for onEnter/onExit testing
+#[must_use]
 pub fn create_test_hook(order: i32, command: &str) -> cuenv_hooks::Hook {
     cuenv_hooks::Hook {
         order,

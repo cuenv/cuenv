@@ -193,11 +193,7 @@ impl Action {
                 proto.input_root_digest.as_ref(),
                 "Action.input_root_digest",
             )?,
-            platform: proto
-                .platform
-                .as_ref()
-                .map(Platform::from_proto)
-                .unwrap_or_default(),
+            platform: proto.platform.as_ref().map_or_default(Platform::from_proto),
             action_semantics_version,
         })
     }
@@ -534,8 +530,7 @@ impl ActionResult {
             execution_metadata: proto
                 .execution_metadata
                 .as_ref()
-                .map(ExecutionMetadata::from_proto)
-                .unwrap_or_default(),
+                .map_or_default(ExecutionMetadata::from_proto),
         })
     }
 }

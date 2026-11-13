@@ -189,16 +189,16 @@ fn test_multiple_hook_steps_in_order() {
     let sorted = graph.topological_sort().unwrap();
     let names: Vec<&str> = sorted.iter().map(|n| n.name.as_str()).collect();
 
-    // Verify ordering: step0 -> step1_a/step1_b (parallel) -> step2 -> install
+    // Verify ordering: step0 -> projen steps 0 and 1 (parallel) -> step2 -> install
     let pos_step0 = names
         .iter()
         .position(|&n| n == "bun.hooks.beforeInstall[0]")
         .unwrap();
-    let pos_step1a = names
+    let pos_projen_step0 = names
         .iter()
         .position(|&n| n == "bun.hooks.beforeInstall.projen[0]")
         .unwrap();
-    let pos_step1b = names
+    let pos_projen_step1 = names
         .iter()
         .position(|&n| n == "bun.hooks.beforeInstall.projen[1]")
         .unwrap();
@@ -208,10 +208,10 @@ fn test_multiple_hook_steps_in_order() {
         .unwrap();
     let pos_install = names.iter().position(|&n| n == "bun.install").unwrap();
 
-    assert!(pos_step0 < pos_step1a);
-    assert!(pos_step0 < pos_step1b);
-    assert!(pos_step1a < pos_step2);
-    assert!(pos_step1b < pos_step2);
+    assert!(pos_step0 < pos_projen_step0);
+    assert!(pos_step0 < pos_projen_step1);
+    assert!(pos_projen_step0 < pos_step2);
+    assert!(pos_projen_step1 < pos_step2);
     assert!(pos_step2 < pos_install);
 }
 

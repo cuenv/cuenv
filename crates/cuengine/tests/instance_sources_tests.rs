@@ -104,7 +104,7 @@ fn without_fields_no_package_is_built_or_listed() -> TestResult {
 
     let sources = instance_sources(root, &root.join("app"), "cuenv")?;
 
-    assert!(sources.imports.is_empty());
+    assert_eq!(sources.imports, [] as [cuengine::ImportedInstance; 0]);
     assert!(
         sources.files.iter().any(|file| file == "content/env.cue"),
         "{:?}",

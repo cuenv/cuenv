@@ -326,7 +326,7 @@ mod tests {
         assert!(step.command.is_none());
         assert!(step.env.is_empty());
         assert!(step.agents.is_none());
-        assert!(step.artifact_paths.is_empty());
+        assert_eq!(step.artifact_paths, [] as [String; 0]);
         assert!(step.depends_on.is_empty());
         assert!(step.concurrency_group.is_none());
         assert!(step.concurrency.is_none());

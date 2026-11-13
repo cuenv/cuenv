@@ -49,3 +49,6 @@ rustix = { workspace = true, features = ["system"] }
 [dev-dependencies]
 tempfile = { workspace = true }
 temp-env = { workspace = true }
+
+[lints]
+workspace = true

@@ -912,10 +912,7 @@ fn comment_text(text: &str) -> Vec<String> {
     let start = lines.iter().position(|line| !line.is_empty());
     let end = lines.iter().rposition(|line| !line.is_empty());
     match (start, end) {
-        (Some(start), Some(end)) => lines
-            .get(start..=end)
-            .map(<[String]>::to_vec)
-            .unwrap_or_default(),
+        (Some(start), Some(end)) => lines.get(start..=end).map_or_default(<[String]>::to_vec),
         _ => Vec::new(),
     }
 }

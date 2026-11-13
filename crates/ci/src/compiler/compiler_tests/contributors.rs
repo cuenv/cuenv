@@ -603,7 +603,7 @@ fn test_contributor_task_to_ir_github_action() {
     );
     assert_eq!(ir_task.github_task_filter, vec!["publish.cue"]);
     assert_eq!(ir_task.id, "cuenv:contributor:nix.install");
-    assert!(ir_task.command.is_empty()); // No command, uses action
+    assert_eq!(ir_task.command, [] as [String; 0]); // No command, uses action
     assert!(ir_task.provider_hints.is_some());
     assert_eq!(ir_task.phase, Some(BuildStage::Bootstrap)); // priority 0 = Bootstrap
 

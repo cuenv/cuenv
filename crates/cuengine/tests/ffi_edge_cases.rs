@@ -62,7 +62,7 @@ fn test_evaluate_cue_package_error_prefix_response() -> TestResult {
         "package test\n\nthis is { completely invalid CUE syntax @#$%",
     )?;
     let error = cuengine::evaluate_cue_package(temp_dir.path(), "test").unwrap_err();
-    assert!(!error.to_string().is_empty());
+    assert_ne!(error.to_string(), "");
     Ok(())
 }
 
@@ -117,7 +117,7 @@ fn test_evaluate_cue_empty_directory_returns_error() -> TestResult {
     let temp_dir = TempDir::new()?;
     create_module(temp_dir.path())?;
     let error = cuengine::evaluate_cue_package(temp_dir.path(), "nonexistent").unwrap_err();
-    assert!(!error.to_string().is_empty());
+    assert_ne!(error.to_string(), "");
     Ok(())
 }
 
@@ -130,6 +130,6 @@ fn test_evaluate_cue_with_nonmatching_package() -> TestResult {
         "package wrong\nvalue: true\n",
     )?;
     let error = cuengine::evaluate_cue_package(temp_dir.path(), "different").unwrap_err();
-    assert!(!error.to_string().is_empty());
+    assert_ne!(error.to_string(), "");
     Ok(())
 }

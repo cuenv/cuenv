@@ -282,17 +282,14 @@ impl Checkout {
     /// Every file the index tracks: `git ls-files` from the root.
     #[must_use]
     pub fn tracked_files(&self) -> Vec<PathBuf> {
-        self.repository()
-            .index_or_empty()
-            .map(|index| {
-                let paths: BTreeSet<PathBuf> = index
-                    .entries()
-                    .iter()
-                    .map(|entry| path(entry.path(&index)))
-                    .collect();
-                paths.into_iter().collect()
-            })
-            .unwrap_or_default()
+        self.repository().index_or_empty().map_or_default(|index| {
+            let paths: BTreeSet<PathBuf> = index
+                .entries()
+                .iter()
+                .map(|entry| path(entry.path(&index)))
+                .collect();
+            paths.into_iter().collect()
+        })
     }
 }
 
@@ -412,9 +409,7 @@ impl RunCheckout {
     /// Every file the index tracks.
     #[must_use]
     pub fn tracked_files(&self) -> Vec<PathBuf> {
-        self.checkout()
-            .map(Checkout::tracked_files)
-            .unwrap_or_default()
+        self.checkout().map_or_default(Checkout::tracked_files)
     }
 }
 

@@ -155,7 +155,7 @@ mod tests {
     #[test]
     fn test_orchestrator_config_empty_targets() {
         let config = OrchestratorConfig::new("app", "1.0.0").with_targets(vec![]);
-        assert!(config.targets.is_empty());
+        assert_eq!(config.targets, [] as [Target; 0]);
     }
 
     #[test]

@@ -16,7 +16,7 @@ fn test_task_default_values() {
     assert!(task.shell.is_none());
     assert_eq!(task.command, "echo");
     assert_eq!(task.description(), "No description provided");
-    assert!(task.args.is_empty());
+    assert_eq!(task.args, [] as [String; 0]);
     assert!(task.is_hermetic()); // default is true
 }
 
@@ -42,7 +42,7 @@ fn test_task_script_deserialization() {
     }"#;
 
     let task: Task = serde_json::from_str(json).unwrap();
-    assert!(task.command.is_empty()); // No command
+    assert_eq!(task.command, ""); // No command
     assert_eq!(task.script, Some("echo hello".to_string()));
     assert_eq!(task.inputs.len(), 1);
 }
@@ -214,7 +214,7 @@ fn test_task_list_sequential() {
     ];
 
     assert_eq!(sequence.len(), 2);
-    assert!(!sequence.is_empty());
+    assert_ne!(sequence, [] as [TaskNode; 0]);
 }
 
 #[test]
@@ -252,7 +252,7 @@ fn test_task_group_parallel() {
 #[test]
 fn test_tasks_collection() {
     let mut tasks = Tasks::new();
-    assert!(tasks.list_tasks().is_empty());
+    assert_eq!(tasks.list_tasks(), [] as [&str; 0]);
 
     let task = Task {
         command: "echo".to_string(),
@@ -510,9 +510,9 @@ fn test_task_params_deserialization_with_flatten() {
 
 #[test]
 fn test_task_params_empty() {
-    let json = r#"{}"#;
+    let json = r"{}";
     let params: TaskParams = serde_json::from_str(json).unwrap();
-    assert!(params.positional.is_empty());
+    assert_eq!(params.positional, [] as [ParamDef; 0]);
     assert!(params.named.is_empty());
 }
 

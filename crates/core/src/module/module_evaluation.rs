@@ -45,8 +45,14 @@ pub struct DirectReference {
 pub struct ModuleEvaluationMetadata {
     /// Canonical native references, kept separately from legacy AST metadata.
     pub direct_references: HashMap<String, Vec<DirectReference>>,
+    /// CUE reference path each referencing field was written as, used to
+    /// name task references.
     pub references: Option<ReferenceMap>,
+    /// Where each field's value was originally defined, injected into task
+    /// objects as `_source` to resolve their default working directory.
     pub sources: Option<SourceMap>,
+    /// Where each field itself appears (the use site rather than the
+    /// definition), injected into task objects as `_callerSource`.
     pub caller_sources: Option<SourceMap>,
     /// Where values are declared, by field path, for an evaluation that
     /// does not inject task sources: only what tells a project's own
@@ -57,9 +63,14 @@ pub struct ModuleEvaluationMetadata {
 
 /// Raw CUE evaluation payload used to build a [`ModuleEvaluation`].
 pub struct ModuleEvaluationInput {
+    /// Path to the CUE module root (directory containing `cue.mod/`).
     pub root: PathBuf,
+    /// Evaluated JSON value of each instance, keyed by its path relative to
+    /// the module root.
     pub raw_instances: HashMap<String, serde_json::Value>,
+    /// Relative paths of the instances that declare a project `name`.
     pub project_paths: Vec<String>,
+    /// Reference and source metadata extracted alongside the instances.
     pub metadata: ModuleEvaluationMetadata,
 }
 
@@ -94,6 +105,7 @@ impl ModuleEvaluation {
     /// * `root` - Path to the CUE module root
     /// * `raw_instances` - Map of relative paths to evaluated JSON values
     /// * `options` - Project paths and reference metadata
+    #[must_use]
     pub fn from_raw(
         root: PathBuf,
         raw_instances: HashMap<String, serde_json::Value>,
@@ -241,21 +253,25 @@ impl ModuleEvaluation {
     }
 
     /// Get the root instance (the module root directory)
+    #[must_use]
     pub fn root_instance(&self) -> Option<&Instance> {
         self.instances.get(Path::new("."))
     }
 
     /// Get an instance by its relative path
+    #[must_use]
     pub fn get(&self, path: &Path) -> Option<&Instance> {
         self.instances.get(path)
     }
 
     /// Count of Base instances
+    #[must_use]
     pub fn base_count(&self) -> usize {
         self.bases().count()
     }
 
     /// Count of Project instances
+    #[must_use]
     pub fn project_count(&self) -> usize {
         self.projects().count()
     }
@@ -264,6 +280,7 @@ impl ModuleEvaluation {
     ///
     /// Returns paths from immediate parent up to (and including) the root ".".
     /// Returns empty vector if path is already the root.
+    #[must_use]
     pub fn ancestors(&self, path: &Path) -> Vec<PathBuf> {
         // Root has no ancestors
         if path == Path::new(".") {
@@ -290,6 +307,7 @@ impl ModuleEvaluation {
     ///
     /// Returns true if the field exists in both the child and an ancestor,
     /// and the values are equal (indicating inheritance via CUE unification).
+    #[must_use]
     pub fn is_inherited(&self, child_path: &Path, field: &str) -> bool {
         let Some(child) = self.instances.get(child_path) else {
             return false;
@@ -357,6 +375,11 @@ impl Instance {
     /// This enables commands to extract strongly-typed configuration
     /// from the evaluated CUE without re-evaluating.
     ///
+    /// # Errors
+    ///
+    /// Returns a configuration error when the instance evaluated to `null`
+    /// or its value does not match the shape of `T`.
+    ///
     /// # Example
     ///
     /// ```rust
@@ -398,6 +421,7 @@ impl Instance {
     }
 
     /// Get the project name if this is a Project instance
+    #[must_use]
     pub fn project_name(&self) -> Option<&str> {
         if matches!(self.kind, InstanceKind::Project) {
             self.value.get("name").and_then(|v| v.as_str())
@@ -407,11 +431,13 @@ impl Instance {
     }
 
     /// Get a field value from the evaluated config
+    #[must_use]
     pub fn field(&self, field: &str) -> Option<&serde_json::Value> {
         self.value.get(field)
     }
 
     /// Check if a field exists in the evaluated config
+    #[must_use]
     pub fn has_field(&self, field: &str) -> bool {
         self.value.get(field).is_some()
     }
@@ -512,7 +538,7 @@ mod tests {
         assert_eq!(ancestors[1], PathBuf::from("."));
 
         let root_ancestors = module.ancestors(Path::new("."));
-        assert!(root_ancestors.is_empty());
+        assert_eq!(root_ancestors, [] as [std::path::PathBuf; 0]);
     }
 
     #[test]

@@ -58,7 +58,7 @@ async fn test_resolve_simple_url() {
     match &resolved.source {
         ToolSource::Url { url, extract } => {
             assert_eq!(url, "https://example.com/tool-1.0.0-linux-x86_64.tar.gz");
-            assert!(extract.is_empty());
+            assert_eq!(extract.as_slice(), []);
         }
         _ => panic!("Expected URL source"),
     }

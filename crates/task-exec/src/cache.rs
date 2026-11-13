@@ -425,7 +425,11 @@ struct TaskCacheWriter<'cache> {
 }
 
 impl TaskCacheWriter<'_> {
-    async fn store_message(&self, message: &impl CanonicalMessage, kind: &str) -> Option<Digest> {
+    async fn store_message(
+        &self,
+        message: &(impl CanonicalMessage + Sync),
+        kind: &str,
+    ) -> Option<Digest> {
         let bytes = match cuenv_cas::canonical_bytes(message) {
             Ok(bytes) => bytes,
             Err(error) => {
@@ -644,6 +648,7 @@ impl MappedFrame<'_> {
 }
 
 /// The files one path of a file reference resolved to.
+#[derive(Clone, Copy)]
 struct AnchoredFiles<'files> {
     task_name: &'files str,
     /// The path, in the frame of the action.
@@ -825,9 +830,7 @@ fn output_declaration_matches(declaration: &str, relative: &Path) -> bool {
         return false;
     }
     if looks_like_glob(declaration) {
-        return Glob::new(declaration)
-            .ok()
-            .is_some_and(|glob| glob.compile_matcher().is_match(relative));
+        return Glob::new(declaration).is_ok_and(|glob| glob.compile_matcher().is_match(relative));
     }
     let declared = Path::new(declaration);
     relative == declared || relative.starts_with(declared)
@@ -1059,6 +1062,12 @@ pub async fn record(input: RecordInput<'_>) -> Result<()> {
 ///
 /// The executor uses this after projecting the same set back to the
 /// workspace, ensuring first-run and cache-hit output semantics agree.
+///
+/// # Errors
+///
+/// Returns an error if an output cannot be inspected, has a non-UTF-8 path,
+/// or cannot be stored in the [`Cas`], or if the captured streams or the
+/// [`ActionCache`] entry cannot be written.
 pub async fn record_resolved(input: RecordInput<'_>, resolved_outputs: &[PathBuf]) -> Result<()> {
     let RecordInput {
         cache,

@@ -50,15 +50,15 @@ pub async fn execute_env_list(
     tracing::debug!("Loading CUE config at path '{}'", path);
     let manifest: Base = load_base_config(path, executor)?;
 
-    let environments: Vec<String> = manifest
-        .env
-        .and_then(|env| env.environment)
-        .map(|envs| {
-            let mut keys: Vec<String> = envs.keys().cloned().collect();
-            keys.sort();
-            keys
-        })
-        .unwrap_or_default();
+    let environments: Vec<String> =
+        manifest
+            .env
+            .and_then(|env| env.environment)
+            .map_or_default(|envs| {
+                let mut keys: Vec<String> = envs.keys().cloned().collect();
+                keys.sort();
+                keys
+            });
 
     // Format and return the output
     let output = match format {

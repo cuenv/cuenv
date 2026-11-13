@@ -154,7 +154,10 @@ fn strip_dependency_prefix(path: &str) -> &str {
 }
 
 fn is_ci_pipeline_tasks_array(field_path: &str) -> bool {
-    field_path.starts_with("ci.pipelines.") && field_path.ends_with(".tasks")
+    field_path.starts_with("ci.pipelines.")
+        && field_path
+            .rsplit_once('.')
+            .is_some_and(|(_, field)| field == "tasks")
 }
 
 fn is_ci_matrix_task_object(field_path: &str, obj: &Map<String, Value>) -> bool {

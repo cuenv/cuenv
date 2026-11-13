@@ -341,8 +341,8 @@ mod tests {
         let config = HomebrewConfig::new("owner/tap", "myformula");
         assert_eq!(config.tap, "owner/tap");
         assert_eq!(config.formula, "myformula");
-        assert!(config.license.is_empty());
-        assert!(config.homepage.is_empty());
+        assert_eq!(config.license, "");
+        assert_eq!(config.homepage, "");
         assert!(config.token.is_none());
         assert_eq!(config.token_env, "HOMEBREW_TAP_TOKEN");
     }

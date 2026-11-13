@@ -136,7 +136,8 @@ pub fn prepare(cache_root: &Path, action_digest: &str, inputs: &[HashedInput]) -
         let candidate = parent.join(format!("{action_digest}-{}-{suffix}", std::process::id()));
         match std::fs::create_dir(&candidate) {
             Ok(()) => break candidate,
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            // Another invocation took this name; try the next suffix.
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
             Err(error) => {
                 return Err(Error::io_with_path("create exec root", candidate, error));
             }
@@ -163,6 +164,7 @@ pub fn prepare(cache_root: &Path, action_digest: &str, inputs: &[HashedInput]) -
 }
 
 /// Inputs to [`project_outputs`].
+#[derive(Clone, Copy)]
 pub struct ProjectOutputs<'project> {
     /// Root containing the completed task's outputs.
     pub exec_root: &'project Path,

@@ -799,7 +799,7 @@ async fn test_execute_graph_parallel_groups() {
     let results = executor.execute_graph(&graph).await.unwrap();
     assert_eq!(results.len(), 2);
     let joined = results.iter().map(|r| r.stdout.clone()).collect::<String>();
-    assert!(joined.contains("A") && joined.contains("B"));
+    assert!(joined.contains('A') && joined.contains('B'));
 }
 
 #[tokio::test]
@@ -959,7 +959,8 @@ async fn execute_graph_task_continue_on_error_skips_dependents() {
                 }
             }
             Ok(None) => break,
-            Err(_) => continue,
+            // No event within this poll; keep waiting until the deadline.
+            Err(_) => {}
         }
     }
 
@@ -1084,7 +1085,8 @@ async fn test_cache_hit_replays_task_output_events() {
                 }
             }
             Ok(None) => break,
-            Err(_) => continue,
+            // No event within this poll; keep waiting until the deadline.
+            Err(_) => {}
         }
     }
 
@@ -1599,7 +1601,7 @@ fn a_task_runs_where_it_is_defined_whichever_project_asks_for_it() {
 
     assert_eq!(frame.project_root, module_root.join("content"));
     assert_eq!(
-        executor.workdir_in(frame, &task).unwrap(),
+        TaskExecutor::workdir_in(frame, &task).unwrap(),
         module_root.join("shared")
     );
     // Without source metadata it runs in its own project.
@@ -1611,7 +1613,7 @@ fn a_task_runs_where_it_is_defined_whichever_project_asks_for_it() {
         .frame_for("#content:inherited", &unsourced)
         .unwrap();
     assert_eq!(
-        executor.workdir_in(frame, &unsourced).unwrap(),
+        TaskExecutor::workdir_in(frame, &unsourced).unwrap(),
         module_root.join("content")
     );
 }

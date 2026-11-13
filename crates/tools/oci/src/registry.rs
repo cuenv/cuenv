@@ -593,7 +593,7 @@ mod tests {
             layer_descriptors: vec![],
         };
 
-        assert!(resolved.layers.is_empty());
+        assert_eq!(resolved.layers, [] as [String; 0]);
         assert!(resolved.layer_descriptors.is_empty());
     }
 

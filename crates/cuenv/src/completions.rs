@@ -168,7 +168,7 @@ mod tests {
     fn test_get_available_tasks_no_config() {
         // Should return empty when no config exists
         let tasks = get_available_tasks("/nonexistent", "cuenv");
-        assert!(tasks.is_empty());
+        assert_eq!(tasks, [] as [(String, Option<String>); 0]);
     }
 
     #[test]
@@ -226,7 +226,7 @@ mod tests {
     #[test]
     fn test_get_available_tasks_invalid_package() {
         let tasks = get_available_tasks(".", "nonexistent_package_name");
-        assert!(tasks.is_empty());
+        assert_eq!(tasks, [] as [(String, Option<String>); 0]);
     }
 
     #[test]

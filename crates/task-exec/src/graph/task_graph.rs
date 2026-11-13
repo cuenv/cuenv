@@ -37,6 +37,14 @@ impl TaskGraph {
     }
 
     /// Add a single task to the graph.
+    ///
+    /// Adding a task whose name is already in the graph returns the existing
+    /// node.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `name` is already taken by a graph node that is
+    /// not a task.
     pub fn add_task(&mut self, name: &str, task: Task) -> Result<NodeIndex> {
         self.inner
             .add_task(name, task)
@@ -45,6 +53,11 @@ impl TaskGraph {
 
     /// Add dependency edges after all tasks have been added.
     /// This ensures proper cycle detection and missing dependency validation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a task depends on a task or group that is not in
+    /// the graph.
     pub fn add_dependency_edges(&mut self) -> Result<()> {
         self.inner
             .add_dependency_edges()
@@ -58,6 +71,10 @@ impl TaskGraph {
     }
 
     /// Get topologically sorted list of tasks.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the graph contains a dependency cycle.
     pub fn topological_sort(&self) -> Result<Vec<TaskGraphNode>> {
         self.inner
             .topological_sort()
@@ -65,6 +82,10 @@ impl TaskGraph {
     }
 
     /// Get all tasks that can run in parallel (no dependencies between them).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the graph contains a dependency cycle.
     pub fn parallel_groups(&self) -> Result<Vec<Vec<TaskGraphNode>>> {
         self.inner
             .parallel_groups()
@@ -213,12 +234,12 @@ mod tests {
         let mut graph = TaskGraph::new();
         let tasks = Tasks::new();
 
-        let task1 = test_utils::create_task("t1", vec![], vec![]);
-        let task2 = test_utils::create_task("t2", vec![], vec![]);
+        let first_step = test_utils::create_task("t1", vec![], vec![]);
+        let second_step = test_utils::create_task("t2", vec![], vec![]);
 
         let node = TaskNode::Sequence(vec![
-            TaskNode::Task(Box::new(task1)),
-            TaskNode::Task(Box::new(task2)),
+            TaskNode::Task(Box::new(first_step)),
+            TaskNode::Task(Box::new(second_step)),
         ]);
         let nodes = graph.build_from_node("seq", &node, &tasks).unwrap();
         assert_eq!(nodes.len(), 2);
@@ -235,12 +256,12 @@ mod tests {
         let mut graph = TaskGraph::new();
         let tasks = Tasks::new();
 
-        let task1 = test_utils::create_task("t1", vec![], vec![]);
-        let task2 = test_utils::create_task("t2", vec![], vec![]);
+        let first_child = test_utils::create_task("t1", vec![], vec![]);
+        let second_child = test_utils::create_task("t2", vec![], vec![]);
 
         let mut parallel_tasks = HashMap::new();
-        parallel_tasks.insert("first".to_string(), TaskNode::Task(Box::new(task1)));
-        parallel_tasks.insert("second".to_string(), TaskNode::Task(Box::new(task2)));
+        parallel_tasks.insert("first".to_string(), TaskNode::Task(Box::new(first_child)));
+        parallel_tasks.insert("second".to_string(), TaskNode::Task(Box::new(second_child)));
 
         let group = TaskGroup {
             type_: "group".to_string(),
@@ -555,13 +576,13 @@ mod tests {
         let tasks = Tasks::new();
 
         // Create a sequential group "setup" with two children
-        let task1 = test_utils::create_task("s1", vec![], vec![]);
-        let task2 = test_utils::create_task("s2", vec![], vec![]);
+        let first_setup_step = test_utils::create_task("s1", vec![], vec![]);
+        let second_setup_step = test_utils::create_task("s2", vec![], vec![]);
 
         // Build the sequence first
         let setup_node = TaskNode::Sequence(vec![
-            TaskNode::Task(Box::new(task1)),
-            TaskNode::Task(Box::new(task2)),
+            TaskNode::Task(Box::new(first_setup_step)),
+            TaskNode::Task(Box::new(second_setup_step)),
         ]);
         graph.build_from_node("setup", &setup_node, &tasks).unwrap();
 
@@ -717,12 +738,12 @@ mod tests {
         graph.add_task("test", test_task).unwrap();
 
         // Create the group where one child depends on test
-        let task1 = test_utils::create_task("s1", vec!["test"], vec![]);
-        let task2 = test_utils::create_task("s2", vec![], vec![]);
+        let first_setup_step = test_utils::create_task("s1", vec!["test"], vec![]);
+        let second_setup_step = test_utils::create_task("s2", vec![], vec![]);
 
         let setup_node = TaskNode::Sequence(vec![
-            TaskNode::Task(Box::new(task1)),
-            TaskNode::Task(Box::new(task2)),
+            TaskNode::Task(Box::new(first_setup_step)),
+            TaskNode::Task(Box::new(second_setup_step)),
         ]);
         graph.build_from_node("setup", &setup_node, &tasks).unwrap();
 
@@ -785,14 +806,14 @@ mod tests {
         let mut graph = TaskGraph::new();
         let tasks = Tasks::new();
 
-        let task1 = test_utils::create_task("task1", vec![], vec![]);
-        let task2 = test_utils::create_task("task2", vec![], vec![]);
-        let task3 = test_utils::create_task("task3", vec![], vec![]);
+        let first_child = test_utils::create_task("task1", vec![], vec![]);
+        let second_child = test_utils::create_task("task2", vec![], vec![]);
+        let third_child = test_utils::create_task("task3", vec![], vec![]);
 
         let mut parallel_tasks = HashMap::new();
-        parallel_tasks.insert("task1".to_string(), TaskNode::Task(Box::new(task1)));
-        parallel_tasks.insert("task2".to_string(), TaskNode::Task(Box::new(task2)));
-        parallel_tasks.insert("task3".to_string(), TaskNode::Task(Box::new(task3)));
+        parallel_tasks.insert("task1".to_string(), TaskNode::Task(Box::new(first_child)));
+        parallel_tasks.insert("task2".to_string(), TaskNode::Task(Box::new(second_child)));
+        parallel_tasks.insert("task3".to_string(), TaskNode::Task(Box::new(third_child)));
 
         let parallel = TaskGroup {
             type_: "group".to_string(),
@@ -825,14 +846,14 @@ mod tests {
         let mut graph = TaskGraph::new();
         let tasks = Tasks::new();
 
-        let task1 = test_utils::create_task("first", vec![], vec![]);
-        let task2 = test_utils::create_task("second", vec![], vec![]);
-        let task3 = test_utils::create_task("third", vec![], vec![]);
+        let first_step = test_utils::create_task("first", vec![], vec![]);
+        let second_step = test_utils::create_task("second", vec![], vec![]);
+        let third_step = test_utils::create_task("third", vec![], vec![]);
 
         let seq_node = TaskNode::Sequence(vec![
-            TaskNode::Task(Box::new(task1)),
-            TaskNode::Task(Box::new(task2)),
-            TaskNode::Task(Box::new(task3)),
+            TaskNode::Task(Box::new(first_step)),
+            TaskNode::Task(Box::new(second_step)),
+            TaskNode::Task(Box::new(third_step)),
         ]);
         graph.build_from_node("seq", &seq_node, &tasks).unwrap();
 
@@ -902,21 +923,21 @@ mod tests {
 
         // Two-node cycle
         let mut graph2 = TaskGraph::new();
-        let a = test_utils::create_task("a", vec!["b"], vec![]);
-        let b = test_utils::create_task("b", vec!["a"], vec![]);
-        graph2.add_task("a", a).unwrap();
-        graph2.add_task("b", b).unwrap();
+        let a_needs_b = test_utils::create_task("a", vec!["b"], vec![]);
+        let b_needs_a = test_utils::create_task("b", vec!["a"], vec![]);
+        graph2.add_task("a", a_needs_b).unwrap();
+        graph2.add_task("b", b_needs_a).unwrap();
         graph2.add_dependency_edges().unwrap();
         assert!(graph2.has_cycles(), "Two-node cycle must be detected");
 
         // Three-node cycle
         let mut graph3 = TaskGraph::new();
-        let x = test_utils::create_task("x", vec!["y"], vec![]);
-        let y = test_utils::create_task("y", vec!["z"], vec![]);
-        let z = test_utils::create_task("z", vec!["x"], vec![]);
-        graph3.add_task("x", x).unwrap();
-        graph3.add_task("y", y).unwrap();
-        graph3.add_task("z", z).unwrap();
+        let x_needs_y = test_utils::create_task("x", vec!["y"], vec![]);
+        let y_needs_z = test_utils::create_task("y", vec!["z"], vec![]);
+        let z_needs_x = test_utils::create_task("z", vec!["x"], vec![]);
+        graph3.add_task("x", x_needs_y).unwrap();
+        graph3.add_task("y", y_needs_z).unwrap();
+        graph3.add_task("z", z_needs_x).unwrap();
         graph3.add_dependency_edges().unwrap();
         assert!(graph3.has_cycles(), "Three-node cycle must be detected");
     }

@@ -227,12 +227,7 @@ fn leaving_inputs(message: &str) -> Vec<String> {
             })
             .find_map(|position| {
                 let file = position.split(':').next()?;
-                Some(
-                    Path::new(file)
-                        .parent()
-                        .map(Path::to_path_buf)
-                        .unwrap_or_default(),
-                )
+                Some(Path::new(file).parent().map_or_default(Path::to_path_buf))
             });
         let Some(directory) = directory else {
             continue;

@@ -272,7 +272,7 @@ mod tests {
     #[test]
     fn test_builder_empty_content() {
         let content = EditorConfigFile::builder().generate_content();
-        assert!(content.is_empty());
+        assert_eq!(content, "");
     }
 
     #[test]

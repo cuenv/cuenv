@@ -132,6 +132,10 @@ pub fn find_env_file(path: &Path, expected_package: &str) -> Result<EnvFileStatu
 /// Detect the CUE package name from a file.
 ///
 /// Returns `Ok(None)` if no package declaration is found.
+///
+/// # Errors
+///
+/// Returns a configuration error when the file cannot be read.
 pub fn detect_package_name(path: &Path) -> Result<Option<String>> {
     let contents = fs::read_to_string(path)
         .map_err(|e| Error::configuration(format!("Failed to read {}: {e}", path.display())))?;
@@ -413,12 +417,12 @@ mod tests {
 
     #[test]
     fn strip_comments_removes_line_and_block_comments() {
-        let source = r#"
+        let source = r"
 // line comment
 /* block
 comment */
 package cuenv // inline
-        "#;
+        ";
         let cleaned = super::strip_comments(source);
         assert!(cleaned.contains("package cuenv"));
         assert!(!cleaned.contains("line comment"));

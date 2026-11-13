@@ -154,7 +154,7 @@ mod tests {
     fn bool_form_round_trips() {
         let on: Hermetic = serde_json::from_str("true").unwrap();
         assert!(on.is_enabled());
-        assert!(on.passthrough().is_empty());
+        assert_eq!(on.passthrough(), [] as [String; 0]);
 
         let off: Hermetic = serde_json::from_str("false").unwrap();
         assert!(!off.is_enabled());
@@ -175,7 +175,7 @@ mod tests {
     fn empty_options_object_is_hermetic_with_no_passthrough() {
         let parsed: Hermetic = serde_json::from_str("{}").unwrap();
         assert!(parsed.is_enabled());
-        assert!(parsed.passthrough().is_empty());
+        assert_eq!(parsed.passthrough(), [] as [String; 0]);
     }
 
     #[test]

@@ -443,8 +443,7 @@ fn describe_http_error(error: &HttpError<'_>) -> String {
     let code = serde_json::from_slice::<HranaErrorBody>(&error.body.bytes)
         .ok()
         .and_then(|body| body.code)
-        .map(|code| format!(" ({})", crate::error::strip_control_characters(&code)))
-        .unwrap_or_default();
+        .map_or_default(|code| format!(" ({})", crate::error::strip_control_characters(&code)));
     match error.disclosure {
         Disclosure::Full => format!(
             "Turso returned HTTP {status}{code}: {}",

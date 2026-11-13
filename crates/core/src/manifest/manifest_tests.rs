@@ -321,7 +321,7 @@ fn test_task_matcher_deserialization() {
 
 #[test]
 fn test_task_matcher_defaults() {
-    let json = r#"{}"#;
+    let json = r"{}";
     let matcher: TaskMatcher = serde_json::from_str(json).unwrap();
 
     assert!(matcher.labels.is_none());
@@ -605,8 +605,8 @@ fn test_empty_hooks() {
     let on_enter = cuenv.on_enter_hooks();
     let on_exit = cuenv.on_exit_hooks();
 
-    assert!(on_enter.is_empty());
-    assert!(on_exit.is_empty());
+    assert_eq!(on_enter, [] as [cuenv_hooks::Hook; 0]);
+    assert_eq!(on_exit, [] as [cuenv_hooks::Hook; 0]);
 }
 
 #[test]

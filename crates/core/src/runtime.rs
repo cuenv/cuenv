@@ -1,3 +1,8 @@
+//! Environment variables contributed by a project's configured runtime.
+//!
+//! Nix and devenv runtimes supply their development shell environment by
+//! running the runtime's own `print-dev-env` command.
+
 use crate::Result;
 use crate::manifest::{DevenvRuntime, NixRuntime, Runtime};
 use cuenv_hooks::Hook;
@@ -90,8 +95,7 @@ async fn resolve_devenv_command() -> Result<String> {
         .arg("version")
         .output()
         .await
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+        .is_ok_and(|o| o.status.success())
     {
         return Ok("devenv".to_string());
     }

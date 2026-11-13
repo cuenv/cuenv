@@ -62,13 +62,11 @@ pub fn format_task_detail(task: &cuenv_task_exec::IndexedTask) -> String {
                         let default = param
                             .default
                             .as_ref()
-                            .map(|d| format!(" [default: {d}]"))
-                            .unwrap_or_default();
+                            .map_or_default(|d| format!(" [default: {d}]"));
                         let desc = param
                             .description
                             .as_ref()
-                            .map(|d| format!(" - {d}"))
-                            .unwrap_or_default();
+                            .map_or_default(|d| format!(" - {d}"));
                         writeln!(output, "  {{{{{i}}}}}{required}{default}{desc}").ok();
                     }
                 }
@@ -78,22 +76,16 @@ pub fn format_task_detail(task: &cuenv_task_exec::IndexedTask) -> String {
                     names.sort();
                     for name in names {
                         let param = &params.named[name];
-                        let short = param
-                            .short
-                            .as_ref()
-                            .map(|s| format!("-{s}, "))
-                            .unwrap_or_default();
+                        let short = param.short.as_ref().map_or_default(|s| format!("-{s}, "));
                         let required = if param.required { " (required)" } else { "" };
                         let default = param
                             .default
                             .as_ref()
-                            .map(|d| format!(" [default: {d}]"))
-                            .unwrap_or_default();
+                            .map_or_default(|d| format!(" [default: {d}]"));
                         let desc = param
                             .description
                             .as_ref()
-                            .map(|d| format!(" - {d}"))
-                            .unwrap_or_default();
+                            .map_or_default(|d| format!(" - {d}"));
                         writeln!(output, "  {short}--{name}{required}{default}{desc}").ok();
                     }
                 }

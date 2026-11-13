@@ -18,7 +18,7 @@ let
   # glibc for the smoke test, which Nix substitutes instead of building.
   crossCompilesArm = system == "x86_64-linux";
   armGlibc = (import (input "nixpkgs") { system = "aarch64-linux"; }).glibc;
-  nativeRust = pkgs.rust-bin.stable."1.98.1".default;
+  nativeRust = pkgs.rust-bin.stable."1.100.0".default;
   rust =
     if crossCompilesArm then nativeRust.override { targets = [ "aarch64-unknown-linux-gnu" ]; } else nativeRust;
 in

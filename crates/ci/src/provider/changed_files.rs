@@ -120,7 +120,7 @@ mod tests {
 
         assert_eq!(compared.files(), [PathBuf::from("a.txt")]);
         assert_eq!(compared.no_base(), None);
-        assert!(no_base.files().is_empty());
+        assert_eq!(no_base.files(), [] as [PathBuf; 0]);
         assert_eq!(no_base.no_base().map(NoBase::reason), Some("tag push"));
     }
 }

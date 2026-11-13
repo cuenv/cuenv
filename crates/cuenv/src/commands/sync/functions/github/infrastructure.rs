@@ -739,9 +739,15 @@ mod tests {
     -> std::result::Result<(), Box<dyn std::error::Error>> {
         let mut fixture = project(&serde_json::Value::Null);
         fixture.info.config.infrastructure = Some(serde_json::json!({"state": {}}));
-        assert!(generate_workflows(&fixture.info, "cuenv")?.is_empty());
+        assert_eq!(
+            generate_workflows(&fixture.info, "cuenv")?,
+            [] as [(String, String); 0]
+        );
         fixture.info.config.infrastructure = None;
-        assert!(generate_workflows(&fixture.info, "cuenv")?.is_empty());
+        assert_eq!(
+            generate_workflows(&fixture.info, "cuenv")?,
+            [] as [(String, String); 0]
+        );
         Ok(())
     }
 
@@ -1094,12 +1100,15 @@ infrastructure: {
                 "{source}: {paths:?}"
             );
         }
-        assert!(stale_workflows(&fixture.info, "cuenv")?.is_empty());
+        assert_eq!(stale_workflows(&fixture.info, "cuenv")?, [] as [String; 0]);
         std::fs::write(
             directory.join("main.cue"),
             "package stack\ninfrastructure: resources: pending: configuration: name: string\n",
         )?;
-        assert!(generate_workflows(&fixture.info, "cuenv")?.is_empty());
+        assert_eq!(
+            generate_workflows(&fixture.info, "cuenv")?,
+            [] as [(String, String); 0]
+        );
         assert_eq!(stale_workflows(&fixture.info, "cuenv")?.len(), 2);
         fixture.info.config.infrastructure = Some(serde_json::json!({"workflows": {}}));
         let ambiguous =
@@ -1138,8 +1147,11 @@ directory: "stack"
 projectPackage: "operations"
 "#,
         )?;
-        assert!(generate_workflows(&fixture.info, "cuenv")?.is_empty());
-        assert!(stale_workflows(&fixture.info, "cuenv")?.is_empty());
+        assert_eq!(
+            generate_workflows(&fixture.info, "cuenv")?,
+            [] as [(String, String); 0]
+        );
+        assert_eq!(stale_workflows(&fixture.info, "cuenv")?, [] as [String; 0]);
         let generated = generate_workflows(&fixture.info, "operations")?;
         assert_eq!(generated.len(), 2);
         for (_, yaml) in generated {
@@ -1180,7 +1192,7 @@ projectPackage: "operations"
         let mut fixture = project(&serde_json::json!({}));
         let info = &mut fixture.info;
         info.config.name = "rawkode.academy".to_string();
-        assert!(stale_workflows(info, "cuenv")?.is_empty());
+        assert_eq!(stale_workflows(info, "cuenv")?, [] as [String; 0]);
         info.config.infrastructure = Some(serde_json::json!({"state": {}}));
         assert_eq!(
             stale_workflows(info, "cuenv")?,
@@ -1190,7 +1202,7 @@ projectPackage: "operations"
             ]
         );
         info.config.infrastructure = None;
-        assert!(stale_workflows(info, "cuenv")?.is_empty());
+        assert_eq!(stale_workflows(info, "cuenv")?, [] as [String; 0]);
         Ok(())
     }
 }

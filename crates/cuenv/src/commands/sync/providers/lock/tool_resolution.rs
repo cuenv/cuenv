@@ -115,7 +115,7 @@ pub(super) fn tool_identity_key(
     version: &str,
     source: Option<&SourceConfig>,
 ) -> ToolIdentityKey {
-    let source_hash = source.map(|s| format!("{s:?}")).unwrap_or_default();
+    let source_hash = source.map_or_default(|s| format!("{s:?}"));
     (name.to_string(), version.to_string(), source_hash)
 }
 

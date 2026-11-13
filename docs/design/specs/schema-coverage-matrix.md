@@ -251,11 +251,12 @@ CI note: `schema.#GitHubConfig.trustedPublishing` supports `cratesIo` and
 and generated workflow action; it requires `id-token: write` and is intended
 for production release pipelines.
 
-Build-only note: the root and Cuetty app-local Nix flakes pin Rust `1.98.1`
-with matching `rust-overlay` locks. This compiler update changes no schema,
-CLI support status, or declared workspace MSRV. The infrastructure tests use
-explicit String clones to satisfy this compiler's Clippy checks; build and
-Clippy validation must still pass before review or release.
+Build-only note: the root flake, which also builds Cuetty and the release
+tools, pins Rust `1.100.0` with a matching `rust-overlay` lock, and the
+workspace MSRV (`rust-version`) is `1.100`. This compiler update changes no
+schema or CLI support status. Every workspace crate, including `cuenv-core`
+and `cuenv-task-exec`, inherits `[workspace.lints]`; build and Clippy
+validation must still pass before review or release.
 
 | Schema file | Definition | Feature | Audience | Implementation owner | CLI surface | Docs page | Example | Test/eval | Skill | Status | Drift/UX note |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |

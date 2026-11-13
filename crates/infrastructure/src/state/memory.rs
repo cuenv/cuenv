@@ -137,8 +137,7 @@ impl StateStore for MemoryStateStore {
         let resources: Vec<ManagedResource> = contents
             .rows
             .get(access.tenant)
-            .map(|rows| rows.values().cloned().collect())
-            .unwrap_or_default();
+            .map_or_default(|rows| rows.values().cloned().collect());
         let writer = contents.writers.get(access.tenant).cloned();
         LegacyMigrationCopy {
             access: *access,
@@ -227,8 +226,7 @@ impl StateStore for MemoryStateStore {
             .contents()?
             .rows
             .get(tenant)
-            .map(|resources| resources.values().cloned().collect())
-            .unwrap_or_default())
+            .map_or_default(|resources| resources.values().cloned().collect()))
     }
 
     async fn put(
@@ -443,7 +441,7 @@ mod tests {
             .unwrap()
             .remove("sensitive_attributes");
         let legacy: ManagedResource = serde_json::from_value(legacy).unwrap();
-        assert!(legacy.sensitive_attributes.is_empty());
+        assert_eq!(legacy.sensitive_attributes, [] as [String; 0]);
         store.put(&tenant, &lock, &legacy).await.unwrap();
         let initial = store.list(&tenant).await.unwrap().remove(0);
         let sensitive = ManagedResource {
@@ -480,10 +478,9 @@ mod tests {
             Err(InfrastructureError::StateChanged { .. })
         ));
         store.put(&tenant, &lock, &legacy).await.unwrap();
-        assert!(
-            store.list(&tenant).await.unwrap()[0]
-                .sensitive_attributes
-                .is_empty()
+        assert_eq!(
+            store.list(&tenant).await.unwrap()[0].sensitive_attributes,
+            [] as [String; 0]
         );
     }
 
@@ -495,12 +492,12 @@ mod tests {
         let lock = store.lock(&web, "test").await.unwrap();
         store.put(&web, &lock, &resource("one")).await.unwrap();
         assert_eq!(store.list(&web).await.unwrap().len(), 1);
-        assert!(store.list(&api).await.unwrap().is_empty());
+        assert_eq!(store.list(&api).await.unwrap(), [] as [ManagedResource; 0]);
         store
             .delete(&web, &lock, &ResourceAddress::new("random_pet", "one"))
             .await
             .unwrap();
-        assert!(store.list(&web).await.unwrap().is_empty());
+        assert_eq!(store.list(&web).await.unwrap(), [] as [ManagedResource; 0]);
     }
 
     #[tokio::test]
@@ -534,7 +531,10 @@ mod tests {
 
         store.put(&legacy, &legacy_lock, &record).await.unwrap();
         store.put(&dev, &dev_lock, &record).await.unwrap();
-        assert!(store.list(&staging).await.unwrap().is_empty());
+        assert_eq!(
+            store.list(&staging).await.unwrap(),
+            [] as [ManagedResource; 0]
+        );
         assert!(matches!(
             store.put(&staging, &dev_lock, &record).await,
             Err(InfrastructureError::LockLost { .. })
@@ -576,7 +576,7 @@ mod tests {
             .delete(&dev, &dev_lock, &record.address)
             .await
             .unwrap();
-        assert!(store.list(&dev).await.unwrap().is_empty());
+        assert_eq!(store.list(&dev).await.unwrap(), [] as [ManagedResource; 0]);
         assert_eq!(store.list(&legacy).await.unwrap().len(), 1);
         assert_eq!(store.list(&staging).await.unwrap().len(), 1);
     }

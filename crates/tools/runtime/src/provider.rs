@@ -484,7 +484,7 @@ mod tests {
         match source {
             ToolSource::Url { url, extract } => {
                 assert_eq!(url, "https://example.com/tool-1.0.0.tar.gz");
-                assert!(extract.is_empty());
+                assert_eq!(extract, [] as [cuenv_manifest::tools::ToolExtract; 0]);
             }
             _ => panic!("Expected URL source"),
         }

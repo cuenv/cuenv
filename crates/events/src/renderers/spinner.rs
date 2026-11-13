@@ -213,8 +213,7 @@ impl SpinnerRenderer {
         };
         let limit = group
             .max_concurrency
-            .map(|n| format!(" cap={n}"))
-            .unwrap_or_default();
+            .map_or_default(|n| format!(" cap={n}"));
         bar.set_message(format!("{mode}{limit}"));
         self.groups.insert(
             group.name.to_string(),
@@ -322,7 +321,7 @@ impl SpinnerRenderer {
                 self.tick_group(completion.parent_group, GroupOutcome::Succeeded);
             }
             TaskOutcome::Failed(exit_code) => {
-                let code = exit_code.map(|c| format!(" exit={c}")).unwrap_or_default();
+                let code = exit_code.map_or_default(|c| format!(" exit={c}"));
                 bar.finish_with_message(format!("failed{code} in {duration}"));
                 self.tick_group(completion.parent_group, GroupOutcome::Failed);
             }

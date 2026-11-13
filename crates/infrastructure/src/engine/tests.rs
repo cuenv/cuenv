@@ -1697,10 +1697,10 @@ async fn an_unrelated_failure_still_recreates_a_replacement() {
     let incomplete = scripted.incomplete();
     assert_eq!(incomplete.failures.len(), 1);
     assert_eq!(incomplete.failures[0].address.name, "aaa");
-    assert!(incomplete.skipped.is_empty());
-    assert!(incomplete.deleted_not_recreated.is_empty());
+    assert_eq!(incomplete.skipped, [] as [ResourceAddress; 0]);
+    assert_eq!(incomplete.deleted_not_recreated, [] as [ResourceAddress; 0]);
     assert_eq!(incomplete.completed, 1);
-    assert!(scripted.uncreated().is_empty());
+    assert_eq!(scripted.uncreated(), [] as [String; 0]);
     assert!(
         runner.ran().contains(&"create zzz".to_string()),
         "{:?}",
@@ -1801,8 +1801,8 @@ async fn a_replacement_whose_create_can_no_longer_follow_keeps_its_old_object() 
     assert_eq!(runner.ran(), ["delete child"]);
     let incomplete = scripted.incomplete();
     assert_eq!(Scripted::names(&incomplete.skipped), ["parent", "sibling"]);
-    assert!(incomplete.deleted_not_recreated.is_empty());
-    assert!(scripted.uncreated().is_empty());
+    assert_eq!(incomplete.deleted_not_recreated, [] as [ResourceAddress; 0]);
+    assert_eq!(scripted.uncreated(), [] as [String; 0]);
 }
 
 #[tokio::test]
@@ -1877,8 +1877,8 @@ async fn a_failed_replacement_delete_skips_its_create_without_calling_it_deleted
     let incomplete = scripted.incomplete();
     assert_eq!(incomplete.failures.len(), 1);
     assert!(incomplete.skipped.is_empty(), "{:?}", incomplete.skipped);
-    assert!(incomplete.deleted_not_recreated.is_empty());
-    assert!(scripted.uncreated().is_empty());
+    assert_eq!(incomplete.deleted_not_recreated, [] as [ResourceAddress; 0]);
+    assert_eq!(scripted.uncreated(), [] as [String; 0]);
 }
 
 #[tokio::test]
@@ -3049,13 +3049,9 @@ async fn failed_refresh_only_writes_are_plain_state_errors() {
         matches!(error, InfrastructureError::LockLost { .. }),
         "{error}"
     );
-    assert!(
-        engine
-            .unrecorded_store()
-            .unwrap()
-            .list(&tenant())
-            .unwrap()
-            .is_empty()
+    assert_eq!(
+        engine.unrecorded_store().unwrap().list(&tenant()).unwrap(),
+        [] as [crate::unrecorded::UnrecordedRecord; 0]
     );
 }
 
@@ -4359,7 +4355,7 @@ async fn failed_data_read_blocks_chained_reads_and_consumers_but_not_unrelated_w
     assert!(!journal.iter().any(|entry| entry.contains("consumer")
         || entry.contains("dependent")
         || entry.contains("second")));
-    assert!(scripted.stored.is_empty());
+    assert_eq!(scripted.stored, [] as [ManagedResource; 0]);
 }
 
 #[tokio::test]
@@ -4483,7 +4479,7 @@ async fn data_read_failure_preserves_an_unstarted_replacement_and_reports_a_star
             assert!(!Scripted::names(&scripted.incomplete().skipped).contains(&"consumer"));
         } else {
             assert!(!journal.contains(&"delete random_pet.consumer".to_string()));
-            assert!(scripted.uncreated().is_empty());
+            assert_eq!(scripted.uncreated(), [] as [String; 0]);
             assert!(Scripted::names(&scripted.incomplete().skipped).contains(&"consumer"));
         }
     }
@@ -4539,7 +4535,7 @@ async fn data_only_deferred_reads_execute_without_state_and_eager_reads_are_not_
     assert!(!plan.has_changes());
     let scripted = run_scripted_plan(plan.clone(), &runner).await;
     assert!(scripted.result.is_ok());
-    assert!(scripted.stored.is_empty());
+    assert_eq!(scripted.stored, [] as [ManagedResource; 0]);
     assert_eq!(
         *runner.journal.lock().unwrap(),
         ["read data.example_lookup.standalone"]
@@ -4553,7 +4549,7 @@ async fn data_only_deferred_reads_execute_without_state_and_eager_reads_are_not_
     let scripted = run_scripted_plan(plan, &runner).await;
     assert!(scripted.result.is_ok());
     assert!(runner.journal.lock().unwrap().is_empty());
-    assert!(scripted.stored.is_empty());
+    assert_eq!(scripted.stored, [] as [ManagedResource; 0]);
 }
 
 #[tokio::test]
@@ -4568,10 +4564,10 @@ async fn a_failed_unconsumed_read_is_reported_without_a_manufactured_resource_fa
         incomplete.failures[0].address.to_string(),
         "data.example_lookup.standalone"
     );
-    assert!(incomplete.skipped.is_empty());
+    assert_eq!(incomplete.skipped, [] as [ResourceAddress; 0]);
     assert_eq!(incomplete.total, 0);
     assert_eq!(incomplete.completed, 0);
-    assert!(scripted.stored.is_empty());
+    assert_eq!(scripted.stored, [] as [ManagedResource; 0]);
     assert!(
         !scripted
             .events
@@ -4720,7 +4716,7 @@ fn malformed_data_results_withhold_diagnostics_even_with_a_valid_sensitive_sibli
         assert!(!format!("{error:?}").contains(&secret));
         assert!(!cuenv_events::redact(&secret).contains(&secret));
         assert!(!error.to_string().contains("untrusted diagnostic"));
-        assert!(warnings.is_empty());
+        assert_eq!(warnings, [] as [String; 0]);
     }
 }
 
@@ -4777,7 +4773,7 @@ fn malformed_message_pack_data_results_never_render_response_diagnostics() -> Re
         );
         assert!(!format!("{error:?}").contains(secret));
         assert!(!error.to_string().contains("untrusted diagnostic"));
-        assert!(warnings.is_empty());
+        assert_eq!(warnings, [] as [String; 0]);
         assert!(!cuenv_events::redact(secret).contains(secret));
     }
     Ok(())
@@ -4813,7 +4809,7 @@ async fn stopping_during_a_read_prevents_the_next_managed_mutation_or_refresh_wr
                 *runner.journal.lock().unwrap(),
                 ["read data.example_lookup.lookup"]
             );
-            assert!(scripted.stored.is_empty());
+            assert_eq!(scripted.stored, [] as [ManagedResource; 0]);
             assert!(
                 scripted.events.is_empty(),
                 "read-only interruption emitted managed events: {:?}",
@@ -4847,7 +4843,7 @@ async fn stopping_during_the_final_unconsumed_read_interrupts_library_apply() {
             *runner.journal.lock().unwrap(),
             ["read data.example_lookup.last"]
         );
-        assert!(scripted.stored.is_empty());
+        assert_eq!(scripted.stored, [] as [ManagedResource; 0]);
         assert!(scripted.events.is_empty());
     }
 }
@@ -5065,7 +5061,7 @@ fn malformed_data_results_register_nested_sensitive_map_keys_in_both_encodings()
         .unwrap_err();
         assert!(error.to_string().contains("diagnostics withheld"));
         assert!(!error.to_string().contains(&key));
-        assert!(warnings.is_empty());
+        assert_eq!(warnings, [] as [String; 0]);
         assert!(!cuenv_events::redact(&key).contains(&key), "{encoding}");
     }
 }

@@ -26,11 +26,11 @@ pub const TASK_FAILURE_SNIPPET_LINES: usize = 20;
 
 /// Build a compact, user-friendly summary for a failed task, including the
 /// exit code and the tail of stdout/stderr to help with diagnostics.
+#[must_use]
 pub fn summarize_task_failure(result: &TaskResult, max_output_lines: usize) -> String {
     let exit_code = result
         .exit_code
-        .map(|c| c.to_string())
-        .unwrap_or_else(|| "unknown".to_string());
+        .map_or_else(|| "unknown".to_string(), |c| c.to_string());
 
     let mut sections = Vec::new();
     sections.push(format!(
@@ -51,7 +51,7 @@ pub fn summarize_task_failure(result: &TaskResult, max_output_lines: usize) -> S
     sections.join("\n\n")
 }
 
-pub(super) fn format_failure_streams(result: &TaskResult, max_output_lines: usize) -> String {
+pub fn format_failure_streams(result: &TaskResult, max_output_lines: usize) -> String {
     let mut streams = Vec::new();
 
     if let Some(stdout) = summarize_stream("stdout", &result.stdout, max_output_lines) {
@@ -65,11 +65,7 @@ pub(super) fn format_failure_streams(result: &TaskResult, max_output_lines: usiz
     streams.join("\n\n")
 }
 
-pub(super) fn summarize_stream(
-    label: &str,
-    content: &str,
-    max_output_lines: usize,
-) -> Option<String> {
+pub fn summarize_stream(label: &str, content: &str, max_output_lines: usize) -> Option<String> {
     let normalized = content.trim_end();
     if normalized.is_empty() {
         return None;

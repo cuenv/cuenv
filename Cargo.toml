@@ -46,11 +46,11 @@ members = [
 [workspace.package]
 version = "0.76.1"
 edition = "2024"
-rust-version = "1.90"
+rust-version = "1.100"
 authors = ["cuenv Contributors"]
 license = "AGPL-3.0-or-later"
 repository = "https://github.com/cuenv/cuenv"
-homepage = "https://github.com/cuenv/cuenv"
+homepage = "https://cuenv.dev"
 documentation = "https://docs.rs/cuenv"
 readme = "readme.md"
 keywords = ["cue", "configuration", "validation", "ffi"]

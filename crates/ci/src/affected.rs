@@ -129,8 +129,7 @@ fn reference_spelling(anchors: &dyn PlaceAnchor, consumer: &Path, path: &Path) -
     if let Some((name, directory)) = holder {
         let rest = path
             .strip_prefix(&directory)
-            .map(|rest| rest.to_string_lossy().replace('\\', "/"))
-            .unwrap_or_default();
+            .map_or_default(|rest| rest.to_string_lossy().replace('\\', "/"));
         let rest = if rest.is_empty() {
             "**".to_string()
         } else {
