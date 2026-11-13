@@ -56,7 +56,7 @@ fn direct_matrix_retains_cache_setup_environment_and_outputs() {
         !matches!(
             step.run.as_deref(),
             Some("build cuenv" | "cuenv secrets setup")
-        ) && step.uses.as_deref() != Some("actions/download-artifact@v4")
+        ) && step.uses.as_deref() != Some("actions/download-artifact@v8")
     }));
     let command = job
         .steps
@@ -247,7 +247,7 @@ fn test_build_artifact_aggregation_job() {
     let download_steps: Vec<_> = job
         .steps
         .iter()
-        .filter(|s| s.uses.as_deref() == Some("actions/download-artifact@v4"))
+        .filter(|s| s.uses.as_deref() == Some("actions/download-artifact@v8"))
         .collect();
     assert_eq!(download_steps.len(), 2);
 

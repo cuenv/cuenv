@@ -399,7 +399,7 @@ impl GitHubActionsEmitter {
         steps.extend(phase_steps);
 
         for artifact in &task.artifact_downloads {
-            let download_step = Step::uses("actions/download-artifact@v4")
+            let download_step = Step::uses("actions/download-artifact@v8")
                 .with_name(format!("Download {}", artifact.name))
                 .with_input("name", serde_yaml::Value::String(artifact.name.clone()))
                 .with_input("path", serde_yaml::Value::String(artifact.path.clone()));
@@ -457,7 +457,7 @@ impl GitHubActionsEmitter {
                 .iter()
                 .map(|o| o.path.clone())
                 .collect();
-            let mut upload_step = Step::uses("actions/upload-artifact@v4")
+            let mut upload_step = Step::uses("actions/upload-artifact@v7")
                 .with_name("Upload artifacts")
                 .with_input(
                     "name",
@@ -546,7 +546,7 @@ impl GitHubActionsEmitter {
                     };
 
                     steps.push(
-                        Step::uses("actions/download-artifact@v4")
+                        Step::uses("actions/download-artifact@v8")
                             .with_name(format!("Download {prev_job}"))
                             .with_input("name", serde_yaml::Value::String(prev_job.clone()))
                             .with_input("path", serde_yaml::Value::String(download_path)),
@@ -709,7 +709,7 @@ impl GitHubActionsEmitter {
                         .collect::<Vec<_>>()
                         .join("\n")
                 };
-                let mut upload_step = Step::uses("actions/upload-artifact@v4")
+                let mut upload_step = Step::uses("actions/upload-artifact@v7")
                     .with_name("Upload artifacts")
                     .with_input(
                         "name",

@@ -422,7 +422,7 @@ fn plan_command(path: &str, command_path: &str, project_name: &str) -> String {
 
 /// Keep the plan output for the comment job, which has no secrets.
 fn keep_plan_step() -> Step {
-    Step::uses("actions/upload-artifact@v4")
+    Step::uses("actions/upload-artifact@v7")
         .with_name("Keep the plan for the comment")
         .with_if(format!(
             "!cancelled() && steps.{PLAN_STEP_ID}.outcome != 'skipped'"
@@ -438,7 +438,7 @@ fn keep_plan_step() -> Step {
 
 /// Fetch the plan output in the comment job.
 fn fetch_plan_step() -> Step {
-    let mut step = Step::uses("actions/download-artifact@v4")
+    let mut step = Step::uses("actions/download-artifact@v8")
         .with_name("Fetch the plan")
         .with_input("name", serde_yaml::Value::String(PLAN_ARTIFACT.to_string()))
         .with_input(
@@ -489,7 +489,7 @@ if (existing) {{
   await github.rest.issues.createComment({{ owner, repo, issue_number, body }});
 }}"
     );
-    Step::uses("actions/github-script@v7")
+    Step::uses("actions/github-script@v9")
         .with_name("Comment infrastructure plan")
         .with_env("PLAN_FILE", PLAN_FILE)
         .with_env("PLAN_OUTCOME", "${{ join(needs.*.result, '') }}")
@@ -562,7 +562,7 @@ if (!match) {{
 }}
 core.exportVariable('REVIEWED_PLAN', match[1]);"
     );
-    Step::uses("actions/github-script@v7")
+    Step::uses("actions/github-script@v9")
         .with_name("Find the reviewed plan")
         .with_id(REVIEWED_PLAN_STEP_ID)
         .with_input("script", serde_yaml::Value::String(script))
@@ -815,7 +815,7 @@ mod tests {
         assert!(run.contains("$GITHUB_STEP_SUMMARY"), "{run}");
         assert!(step(&plan_steps, "Comment infrastructure plan").is_none());
         let keep = step(&plan_steps, "Keep the plan for the comment").ok_or("keep step")?;
-        assert_eq!(keep["uses"], "actions/upload-artifact@v4");
+        assert_eq!(keep["uses"], "actions/upload-artifact@v7");
 
         // A separate job without the plan's secrets posts the comment.
         let comment_job = &plan["jobs"]["dns-infrastructure-plan-comment"];
@@ -825,9 +825,9 @@ mod tests {
         assert!(comment_job.get("environment").is_none());
         let comment_steps = steps(plan, "dns-infrastructure-plan-comment");
         assert_eq!(comment_steps.len(), 2);
-        assert_eq!(comment_steps[0]["uses"], "actions/download-artifact@v4");
+        assert_eq!(comment_steps[0]["uses"], "actions/download-artifact@v8");
         let comment = step(&comment_steps, "Comment infrastructure plan").ok_or("comment step")?;
-        assert_eq!(comment["uses"], "actions/github-script@v7");
+        assert_eq!(comment["uses"], "actions/github-script@v9");
         assert_eq!(
             comment["env"]["PLAN_OUTCOME"],
             "${{ join(needs.*.result, '') }}"
