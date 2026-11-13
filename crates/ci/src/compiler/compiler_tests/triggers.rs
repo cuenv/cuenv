@@ -507,3 +507,125 @@ fn a_problem_recorded_against_a_reached_node_fails_compilation() {
         "{error}"
     );
 }
+
+/// `app` (in `services/app`), whose `build` depends on `#content:build`
+/// and reads its outputs, compiled with every project of the module.
+fn compiled_with_a_dependency_on_content(
+    content: Project,
+) -> Result<crate::ir::IntermediateRepresentation, crate::compiler::CompilerError> {
+    use cuenv_core::ci::{CI, Pipeline, PipelineCondition, PipelineTask, StringOrVec, TaskRef};
+    use std::collections::BTreeMap;
+
+    let mut project = Project::new("app");
+    project.tasks.insert(
+        "build".to_string(),
+        TaskNode::Task(Box::new(Task {
+            command: "true".to_string(),
+            depends_on: vec![cuenv_core::tasks::TaskDependency::from_name(
+                "#content:build",
+            )],
+            inputs: vec![cuenv_core::tasks::Input::Task(
+                cuenv_core::tasks::TaskOutput {
+                    task: "#content:build".to_string(),
+                    map: None,
+                },
+            )],
+            ..Default::default()
+        })),
+    );
+    let pipeline = Pipeline {
+        tasks: vec![PipelineTask::Simple(TaskRef::from_name("build"))],
+        when: Some(PipelineCondition {
+            branch: Some(StringOrVec::String("main".to_string())),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    project.ci = Some(CI {
+        pipelines: BTreeMap::from([("default".to_string(), pipeline.clone())]),
+        ..Default::default()
+    });
+    let options = CompilerOptions {
+        pipeline_name: Some("default".to_string()),
+        pipeline: Some(pipeline),
+        project_path: Some("services/app".to_string()),
+        file_anchors: Some(crate::compiler::FileAnchors::Known(imported(&[(
+            "content", "content",
+        )]))),
+        module_projects: Some(std::sync::Arc::new(BTreeMap::from([
+            (std::path::PathBuf::from("content"), content),
+            (std::path::PathBuf::from("services/app"), project.clone()),
+        ]))),
+        ..Default::default()
+    };
+    Compiler::with_options(project, options).compile()
+}
+
+#[test]
+fn a_dependency_on_another_projects_task_triggers_on_what_that_task_reads() {
+    let mut content = Project::new("content");
+    content.tasks.insert(
+        "build".to_string(),
+        TaskNode::Task(Box::new(Task {
+            command: "true".to_string(),
+            inputs: vec![
+                cuenv_core::tasks::Input::Path("articles/**".to_string()),
+                module_files(&["bun.lock"]),
+            ],
+            outputs: vec!["dist/site.json".to_string()],
+            ..Default::default()
+        })),
+    );
+
+    let ir = compiled_with_a_dependency_on_content(content).unwrap();
+    let paths = ir.pipeline.trigger.expect("a trigger").paths;
+
+    for expected in ["content/articles/**", "bun.lock"] {
+        assert!(
+            paths.contains(&expected.to_string()),
+            "{expected}: {paths:?}"
+        );
+    }
+    // `app` reads only `content`'s outputs: it is triggered through
+    // `content`, never by every file of its own directory.
+    assert!(!paths.contains(&"services/app/**".to_string()), "{paths:?}");
+    // The IR keeps the dependency out of its task graph.
+    let build = ir
+        .tasks
+        .iter()
+        .find(|task| task.id == "build")
+        .expect("build is compiled");
+    assert!(build.depends_on.is_empty(), "{:?}", build.depends_on);
+    assert_eq!(build.external_dependencies, ["#content:build"]);
+}
+
+#[test]
+fn a_dependency_on_a_task_without_inputs_triggers_on_its_whole_project() {
+    let mut content = Project::new("content");
+    content.tasks.insert(
+        "build".to_string(),
+        TaskNode::Task(Box::new(Task {
+            command: "true".to_string(),
+            outputs: vec!["dist/site.json".to_string()],
+            ..Default::default()
+        })),
+    );
+
+    let ir = compiled_with_a_dependency_on_content(content).unwrap();
+    let paths = ir.pipeline.trigger.expect("a trigger").paths;
+
+    assert!(paths.contains(&"content/**".to_string()), "{paths:?}");
+}
+
+#[test]
+fn a_dependency_on_a_task_another_project_lacks_is_a_compile_error() {
+    let error = compiled_with_a_dependency_on_content(Project::new("content"))
+        .expect_err("content has no build");
+
+    assert!(
+        error
+            .to_string()
+            .contains("project 'content' has no task 'build'"),
+        "{error}"
+    );
+}

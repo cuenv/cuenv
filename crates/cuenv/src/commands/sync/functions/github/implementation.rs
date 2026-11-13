@@ -1001,6 +1001,44 @@ mod tests {
     }
 
     #[test]
+    fn a_job_per_task_workflow_refuses_a_task_of_another_project() {
+        let mut site = make_regular_task("site");
+        site.external_dependencies = vec!["#content:build".to_string()];
+        let mut ctx = make_pipeline_context(
+            cuenv_manifest::config::CuenvSource::Release,
+            vec![make_regular_task("build"), site],
+        );
+
+        let error = reject_external_dependencies("default", &ctx)
+            .expect_err("an expanded pipeline cannot run it")
+            .to_string();
+        assert!(
+            error.contains("task 'site' depends on '#content:build', a task of another project"),
+            "{error}"
+        );
+        assert!(error.contains("mode: \"thin\""), "{error}");
+
+        // A matrix runs each entry in a job of its own, whatever the mode.
+        ctx.pipeline_tasks = vec![cuenv_core::ci::PipelineTask::Matrix(
+            cuenv_core::ci::MatrixTask {
+                task_type: Some("matrix".to_string()),
+                task: cuenv_core::ci::TaskRef::from_name("site"),
+                matrix: BTreeMap::from([("arch".to_string(), vec!["x86".to_string()])]),
+                artifacts: None,
+                params: None,
+            },
+        )];
+        let error = reject_external_dependencies("default", &ctx)
+            .expect_err("a matrix cannot run it")
+            .to_string();
+        assert!(error.contains("remove the matrix task"), "{error}");
+
+        // Without one, nothing is refused.
+        ctx.tasks = vec![make_regular_task("build")];
+        assert!(reject_external_dependencies("default", &ctx).is_ok());
+    }
+
+    #[test]
     fn nix_source_standard_workflow_realizes_bootstrapped_cuenv_package() -> cuenv_core::Result<()>
     {
         let mut tasks = make_bootstrap_ir().tasks;
