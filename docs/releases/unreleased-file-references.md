@@ -106,9 +106,36 @@ Breaking effects of the stamp:
 
 - `cuenvRef` is a reserved field of a task group: no child can be called
   `cuenvRef`.
-- Re-labelling an imported task (`tasks: articles: content.tasks.articles`)
-  now conflicts on the project stamp. Put reusable task bodies in a definition
-  of a package that is not a project.
+- A task of another project can no longer be reused as a task of yours, under
+  any label, its own included: `tasks: lint: shared.tasks.lint` (or
+  `tasks: check: shared.tasks.lint`) conflicts on the project stamp, and the
+  project stops evaluating with an error that does not name the stamp:
+
+  ```text
+  tasks.lint: 3 errors in empty disjunction:
+  tasks.lint: 5 errors in empty disjunction:
+  tasks.lint: conflicting values {command:"eslint",…} and […] (mismatched types struct and list):
+  ```
+
+  Write the task body once as a definition in a package that is not a
+  project, and use it in every project that runs it; each use is stamped with
+  the project that uses it:
+
+  ```cue
+  // bodies/bodies.cue
+  package bodies
+
+  import "github.com/cuenv/cuenv/schema"
+
+  #Lint: schema.#Task & {
+    command: "eslint"
+    args: ["."]
+    inputs: ["src/**"]
+  }
+
+  // app/env.cue
+  tasks: lint: bodies.#Lint
+  ```
 - A dependency on another project's sequence whose members are all nested
   sequences carries no stamp and is still bound by its bare name.
 
