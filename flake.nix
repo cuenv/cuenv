@@ -159,7 +159,7 @@
           pname = "libcue-bridge";
           version = "0.0.0";
           src = cueBridgeSource;
-          vendorHash = "sha256-2127EeuvrvXzjJQNgN3yVd7il9PCISlS+8+N1sUlYPQ=";
+          vendorHash = "sha256-EOYHCIfWk7CYYXLrpu0bQIjqPLjYe1abtFkx6ti8jXs=";
           nativeBuildInputs = pkgs.lib.optionals (!pkgs.stdenv.hostPlatform.isDarwin) [ pkgs.binutils ];
         };
         buildGoModule126 = pkgs.buildGoModule.override { go = pkgs.go_1_26; };

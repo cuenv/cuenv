@@ -321,7 +321,10 @@ commit `5a1f958`, based on CUE 0.16.1, on Go 1.26. The fork shares a typed
 reference with the referenced value when the value was declared with one of
 the definitions of the type and the type's other definitions cannot be unified
 with it. Dependency graphs then evaluate in time linear in their size,
-regardless of declaration order.
+regardless of declaration order. Since 0.75.0 the fork (commit `806b303`) also
+shares a typed reference into an imported package, as in
+`dependsOn: [content.tasks.articles]`, so a chain of projects whose tasks
+depend on the tasks of the projects they import evaluates in linear time too.
 
 References to sequences (`dependsOn: [release]` where `release` is a list of
 tasks) keep working; cuenv resolves the name from the reference path.
