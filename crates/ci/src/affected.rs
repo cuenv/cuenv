@@ -406,7 +406,11 @@ fn warn_about_unmatchable_inputs(project_root: &Path, task_name: &str, node: &Ta
                  this task always runs"
             }
         };
-        warn_once_per_task(project_root, task_name, reason, || {
+        let task = WarnedTask {
+            project_root,
+            task_name,
+        };
+        warn_once_per_task(task, &format!("{reason:?}"), || {
             format!(
                 "task '{task_name}' of project {} has input '{pattern}': {explanation}",
                 project_root.display()
@@ -415,15 +419,21 @@ fn warn_about_unmatchable_inputs(project_root: &Path, task_name: &str, node: &Ta
     }
 }
 
+/// The task a warning is about.
+#[derive(Clone, Copy)]
+struct WarnedTask<'task> {
+    project_root: &'task Path,
+    task_name: &'task str,
+}
+
 /// Emit `message` unless the same kind of warning was already given for this
 /// task in this run.
-fn warn_once_per_task(
-    project_root: &Path,
-    task_name: &str,
-    reason: UnmatchablePattern,
-    message: impl FnOnce() -> String,
-) {
-    let key = format!("{}\0{task_name}\0{reason:?}", project_root.display());
+fn warn_once_per_task(task: WarnedTask<'_>, kind: &str, message: impl FnOnce() -> String) {
+    let WarnedTask {
+        project_root,
+        task_name,
+    } = task;
+    let key = format!("{}\0{task_name}\0{kind}", project_root.display());
     if first_time(key) {
         cuenv_events::emit_stderr!(format!("warning: {}", message()));
     }

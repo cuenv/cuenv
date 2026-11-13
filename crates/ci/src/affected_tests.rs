@@ -1012,22 +1012,24 @@ fn test_compute_affected_tasks_non_pipeline_dep_no_match() {
 // Fail-closed selection (issue 611)
 // ==========================================================================
 
-fn affected_in(
-    project: &Project,
-    all_projects: &HashMap<String, (PathBuf, Project)>,
-    changed_files: &[PathBuf],
-    pipeline_tasks: &[&str],
-) -> Vec<String> {
+/// A change in a module, as seen from the project `/repo/app`.
+struct Change<'change> {
+    project: &'change Project,
+    all_projects: &'change HashMap<String, (PathBuf, Project)>,
+    files: &'change [PathBuf],
+}
+
+fn affected_in(change: &Change<'_>, pipeline_tasks: &[&str]) -> Vec<String> {
     let pipeline_tasks: Vec<String> = pipeline_tasks.iter().map(ToString::to_string).collect();
     super::compute_affected_tasks(
         ChangedInputs {
-            files: changed_files,
+            files: change.files,
             project_root: Path::new("/repo/app"),
         },
         &pipeline_tasks,
         &AffectedProjects {
-            project,
-            all_projects,
+            project: change.project,
+            all_projects: change.all_projects,
         },
     )
 }
@@ -1069,14 +1071,23 @@ fn a_group_child_with_an_external_dependency_selects_the_group() {
     let changed = vec![PathBuf::from("content/articles/one.md")];
 
     assert_eq!(
-        affected_in(&project, &content_project(), &changed, &["check"]),
+        affected_in(
+            &Change {
+                project: &project,
+                all_projects: &content_project(),
+                files: &changed
+            },
+            &["check"]
+        ),
         ["check"]
     );
     assert!(
         affected_in(
-            &project,
-            &content_project(),
-            &[PathBuf::from("content/other.md")],
+            &Change {
+                project: &project,
+                all_projects: &content_project(),
+                files: &[PathBuf::from("content/other.md")]
+            },
             &["check"]
         )
         .is_empty()
@@ -1098,7 +1109,14 @@ fn a_sequence_step_with_an_external_dependency_selects_the_sequence() {
     let changed = vec![PathBuf::from("content/articles/one.md")];
 
     assert_eq!(
-        affected_in(&project, &content_project(), &changed, &["release"]),
+        affected_in(
+            &Change {
+                project: &project,
+                all_projects: &content_project(),
+                files: &changed
+            },
+            &["release"]
+        ),
         ["release"]
     );
 }
@@ -1120,7 +1138,14 @@ fn a_group_dependency_of_a_group_child_is_followed() {
     let changed = vec![PathBuf::from("app/schema/user.cue")];
 
     assert_eq!(
-        affected_in(&project, &HashMap::new(), &changed, &["ci"]),
+        affected_in(
+            &Change {
+                project: &project,
+                all_projects: &HashMap::new(),
+                files: &changed
+            },
+            &["ci"]
+        ),
         ["ci"]
     );
 }
@@ -1144,7 +1169,14 @@ fn an_external_producer_that_is_a_group_is_expanded_to_its_tasks() {
     let changed = vec![PathBuf::from("content/articles/one.md")];
 
     assert_eq!(
-        affected_in(&project, &all_projects, &changed, &["build"]),
+        affected_in(
+            &Change {
+                project: &project,
+                all_projects: &all_projects,
+                files: &changed
+            },
+            &["build"]
+        ),
         ["build"]
     );
 }
@@ -1156,7 +1188,14 @@ fn a_task_the_external_project_does_not_have_counts_as_affected() {
     let changed = vec![PathBuf::from("docs/readme.md")];
 
     assert_eq!(
-        affected_in(&project, &content_project(), &changed, &["build"]),
+        affected_in(
+            &Change {
+                project: &project,
+                all_projects: &content_project(),
+                files: &changed
+            },
+            &["build"]
+        ),
         ["build"]
     );
 }
@@ -1168,7 +1207,14 @@ fn a_pipeline_task_that_does_not_resolve_is_selected() {
     let changed = vec![PathBuf::from("docs/readme.md")];
 
     assert_eq!(
-        affected_in(&project, &HashMap::new(), &changed, &["build", "typo"]),
+        affected_in(
+            &Change {
+                project: &project,
+                all_projects: &HashMap::new(),
+                files: &changed
+            },
+            &["build", "typo"]
+        ),
         ["typo"]
     );
 }
@@ -1181,10 +1227,27 @@ fn a_parent_directory_input_selects_its_task_whenever_anything_changed() {
     let changed = vec![PathBuf::from("content/articles/one.md")];
 
     assert_eq!(
-        affected_in(&project, &HashMap::new(), &changed, &["build"]),
+        affected_in(
+            &Change {
+                project: &project,
+                all_projects: &HashMap::new(),
+                files: &changed
+            },
+            &["build"]
+        ),
         ["build"]
     );
-    assert!(affected_in(&project, &HashMap::new(), &[], &["build"]).is_empty());
+    assert!(
+        affected_in(
+            &Change {
+                project: &project,
+                all_projects: &HashMap::new(),
+                files: &[]
+            },
+            &["build"]
+        )
+        .is_empty()
+    );
     assert_eq!(
         super::matched_inputs_for_task(
             "build",
@@ -1209,7 +1272,14 @@ fn a_group_child_with_a_parent_directory_input_selects_the_group() {
     let changed = vec![PathBuf::from("docs/readme.md")];
 
     assert_eq!(
-        affected_in(&project, &HashMap::new(), &changed, &["check"]),
+        affected_in(
+            &Change {
+                project: &project,
+                all_projects: &HashMap::new(),
+                files: &changed
+            },
+            &["check"]
+        ),
         ["check"]
     );
 }
@@ -1221,7 +1291,14 @@ fn an_absolute_input_selects_its_task_whenever_anything_changed() {
     let changed = vec![PathBuf::from("docs/readme.md")];
 
     assert_eq!(
-        affected_in(&project, &HashMap::new(), &changed, &["build"]),
+        affected_in(
+            &Change {
+                project: &project,
+                all_projects: &HashMap::new(),
+                files: &changed
+            },
+            &["build"]
+        ),
         ["build"]
     );
 }
