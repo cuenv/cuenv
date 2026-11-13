@@ -294,6 +294,9 @@ done
 # holding CUE files must export, and export the same under every release.
 # tests/schema-compat/testdata/modules-reject/NAME/ is the same, except that
 # a directory whose files carry a `// want: TEXT` line must fail with it.
+# The files of both are not named env.cue: cuenv discovers every env.cue of
+# this repository as a project of its own module, and these are written for
+# language v0.18.0 or meant not to evaluate.
 
 module_language="v0.18.0"
 
