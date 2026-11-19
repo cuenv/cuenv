@@ -1,29 +1,61 @@
 //! Building the remote half of the task cache.
 //!
-//! `cuenv-cas-remote` speaks the Bazel Remote Execution API; this is where a
-//! project's declared configuration turns into a connected client, and where
-//! the environment gets to override it so CI can inject an endpoint without
-//! editing CUE.
+//! `cuenv-cas-remote` speaks the Bazel Remote Execution API v2 (gRPC) and the
+//! Bazel HTTP/REST cache layout; this is where a project's declared
+//! configuration turns into a connected client, and where the environment gets
+//! to override it so CI can inject an endpoint without editing CUE.
 
-use cuenv_cas::{ActionCache, Cas};
+use cuenv_cas::{ActionCache, ActionPublisher, Cas};
 use cuenv_cas_remote::{
-    Credentials, LayeredActionCache, LayeredCas, RemoteActionCache, RemoteCas, RemoteClient,
-    RemoteConfig,
+    Credentials, HttpActionCache, HttpCas, HttpRemoteClient, LayeredActionCache, LayeredCas,
+    RemoteActionCache, RemoteCas, RemoteClient, RemoteConfig, RemoteProtocol, RemotePublisher,
 };
-use cuenv_core::manifest::{Cache, RemoteCache};
+use cuenv_core::manifest::{Cache, CacheProtocol, RemoteCache};
+use cuenv_events::{CacheEvent, EventCategory};
+use serde::Serialize;
 use std::sync::Arc;
 
 /// Environment variable overriding the configured endpoint.
 const ENDPOINT_ENV: &str = "CUENV_REMOTE_CACHE";
+/// Environment variable overriding the configured protocol (`grpc` or `http`).
+const PROTOCOL_ENV: &str = "CUENV_REMOTE_CACHE_PROTOCOL";
 /// Environment variable overriding whether this machine uploads.
 const UPLOAD_ENV: &str = "CUENV_REMOTE_CACHE_UPLOAD";
 
 /// The local stores, wrapped with a remote layer when one is configured.
 pub struct CacheLayers {
-    /// Blob store the executor should use.
+    /// Blob store the executor should use (always read-through; writes stay local).
     pub cas: Arc<dyn Cas>,
-    /// Action cache the executor should use.
+    /// Action cache the executor should use (always read-through; writes stay local).
     pub action_cache: Arc<dyn ActionCache>,
+    /// Optional post-run remote publisher, present only when upload is enabled
+    /// and credentials resolved cleanly.
+    pub publisher: Option<Arc<dyn ActionPublisher>>,
+}
+
+/// Snapshot of remote cache resolution and connectivity for `cuenv cache status`.
+#[derive(Debug, Clone, Serialize)]
+pub struct RemoteCacheStatus {
+    /// Whether a remote cache is configured (after env overrides).
+    pub configured: bool,
+    /// Effective endpoint URL, if configured.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+    /// Effective transport protocol (`"grpc"` or `"http"`), if configured.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub protocol: Option<String>,
+    /// Effective instance name, if configured.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instance: Option<String>,
+    /// Whether upload was requested by config/env.
+    pub upload_requested: bool,
+    /// Whether upload is effectively enabled (currently false until strict Linux confinement lands).
+    pub upload_enabled: bool,
+    /// Connectivity check outcome (`"connected"`, `"unreachable"`, `"disabled"`, etc.).
+    pub state: String,
+    /// Diagnostic detail when unreachable, degraded, or misconfigured.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
 }
 
 /// Resolve the effective remote configuration.
@@ -32,7 +64,7 @@ pub struct CacheLayers {
 /// point at a cache the repository does not hard-code. Setting it to an empty
 /// value turns the remote off, which is the escape hatch when a cache is
 /// misbehaving and editing CUE is not an option.
-fn resolve(configured: Option<&RemoteCache>) -> Option<RemoteCache> {
+pub fn resolve(configured: Option<&RemoteCache>) -> Option<RemoteCache> {
     let endpoint_override = std::env::var(ENDPOINT_ENV).ok();
     if endpoint_override.as_deref() == Some("") {
         tracing::debug!("remote cache disabled by an empty {ENDPOINT_ENV}");
@@ -56,10 +88,43 @@ fn resolve(configured: Option<&RemoteCache>) -> Option<RemoteCache> {
         (None, None) => return None,
     };
 
+    if let Some(protocol) = protocol_override() {
+        remote.protocol = protocol;
+    }
     if let Some(upload) = upload_override() {
         remote.upload = upload;
     }
     Some(remote)
+}
+
+fn protocol_override() -> Option<CacheProtocol> {
+    let raw = std::env::var(PROTOCOL_ENV).ok()?;
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "" => None,
+        "grpc" => Some(CacheProtocol::Grpc),
+        "http" => Some(CacheProtocol::Http),
+        other => {
+            tracing::warn!(
+                value = other,
+                "ignoring unrecognised {PROTOCOL_ENV}; expected grpc or http"
+            );
+            None
+        }
+    }
+}
+
+fn to_remote_protocol(protocol: CacheProtocol) -> RemoteProtocol {
+    match protocol {
+        CacheProtocol::Grpc => RemoteProtocol::Grpc,
+        CacheProtocol::Http => RemoteProtocol::Http,
+    }
+}
+
+fn protocol_label(protocol: CacheProtocol) -> &'static str {
+    match protocol {
+        CacheProtocol::Grpc => "grpc",
+        CacheProtocol::Http => "http",
+    }
 }
 
 /// Parse `CUENV_REMOTE_CACHE_UPLOAD`, ignoring anything unrecognised.
@@ -143,6 +208,94 @@ fn credentials(remote: &RemoteCache) -> CredentialResolution {
     CredentialResolution::Ready(Credentials::None)
 }
 
+fn emit_degraded(endpoint: &str, reason: impl Into<String>) {
+    let _ = cuenv_events::emit(EventCategory::Cache(CacheEvent::RemoteDegraded {
+        endpoint: endpoint.to_string(),
+        reason: reason.into(),
+    }));
+}
+
+fn emit_connected(remote: &RemoteCache, upload_enabled: bool) {
+    let _ = cuenv_events::emit(EventCategory::Cache(CacheEvent::RemoteConnected {
+        endpoint: remote.endpoint.clone(),
+        protocol: protocol_label(remote.protocol).to_string(),
+        instance: remote.instance.clone(),
+        upload_enabled,
+    }));
+}
+
+/// Probe remote cache configuration and live connectivity for `cuenv cache status`.
+pub async fn probe_status(cache: Option<&Cache>) -> RemoteCacheStatus {
+    let Some(remote) = resolve(cache.and_then(|c| c.remote.as_ref())) else {
+        return RemoteCacheStatus {
+            configured: false,
+            endpoint: None,
+            protocol: None,
+            instance: None,
+            upload_requested: false,
+            upload_enabled: false,
+            state: "disabled".to_string(),
+            detail: None,
+        };
+    };
+
+    let proto_label = protocol_label(remote.protocol).to_string();
+    let credentials = match credentials(&remote) {
+        CredentialResolution::Ready(creds) => creds,
+        CredentialResolution::MissingConfigured => Credentials::None,
+        CredentialResolution::Ambiguous => {
+            return RemoteCacheStatus {
+                configured: true,
+                endpoint: Some(remote.endpoint),
+                protocol: Some(proto_label),
+                instance: Some(remote.instance),
+                upload_requested: remote.upload,
+                upload_enabled: false,
+                state: "misconfigured".to_string(),
+                detail: Some("auth sets both bearerTokenEnv and header".to_string()),
+            };
+        }
+    };
+
+    let config = RemoteConfig::new(&remote.endpoint)
+        .with_protocol(to_remote_protocol(remote.protocol))
+        .with_instance_name(&remote.instance)
+        .with_credentials(credentials);
+
+    let probe_result = match remote.protocol {
+        CacheProtocol::Grpc => match RemoteClient::connect(config).await {
+            Ok(client) => client.check_capabilities().await.map(|_| ()),
+            Err(e) => Err(e),
+        },
+        CacheProtocol::Http => match HttpRemoteClient::new(config) {
+            Ok(client) => client.check_health().await,
+            Err(e) => Err(e),
+        },
+    };
+
+    let (state, detail) = match probe_result {
+        Ok(()) => ("connected".to_string(), None),
+        Err(e) => ("unreachable".to_string(), Some(e.to_string())),
+    };
+
+    RemoteCacheStatus {
+        configured: true,
+        endpoint: Some(remote.endpoint),
+        protocol: Some(proto_label),
+        instance: Some(remote.instance),
+        upload_requested: remote.upload,
+        upload_enabled: false,
+        state,
+        detail,
+    }
+}
+
+type RemoteHandles = (
+    Arc<dyn Cas>,
+    Arc<dyn ActionCache>,
+    Option<Arc<dyn ActionPublisher>>,
+);
+
 /// Stack a remote cache behind `local`, when one is configured and reachable.
 ///
 /// A remote cache is an optimization, so every failure here degrades to the
@@ -157,6 +310,7 @@ pub async fn build(
     let local = CacheLayers {
         cas: local_cas,
         action_cache: local_action_cache,
+        publisher: None,
     };
 
     let Some(remote) = resolve(cache.and_then(|cache| cache.remote.as_ref())) else {
@@ -171,63 +325,150 @@ pub async fn build(
             );
             (Credentials::None, false)
         }
-        CredentialResolution::Ambiguous => return local,
-    };
-    let upload = false;
-    if remote.upload && credential_allows_upload {
-        tracing::warn!(
-            "remote cache upload is temporarily disabled until strict filesystem isolation is available"
-        );
-    }
-    let config = RemoteConfig::new(&remote.endpoint)
-        .with_instance_name(&remote.instance)
-        .with_credentials(credentials);
-    let config = if upload { config.writable() } else { config };
-
-    let client = match RemoteClient::connect(config).await {
-        Ok(client) => client,
-        Err(e) => {
-            tracing::warn!(
-                endpoint = remote.endpoint,
-                error = %e,
-                "remote cache unreachable; continuing with the local cache only"
-            );
+        CredentialResolution::Ambiguous => {
+            emit_degraded(&remote.endpoint, "ambiguous auth configuration");
             return local;
         }
     };
+    let upload = remote.upload && credential_allows_upload;
+    // Ordinary CAS / ActionCache layers are ALWAYS read-only so action
+    // construction, cache hits, failed sandbox setups, and failed tasks can
+    // never push to the remote cache. Publication flows exclusively through
+    // the separate post-run `RemotePublisher` after verified strict confinement.
+    let read_config = RemoteConfig::new(&remote.endpoint)
+        .with_protocol(to_remote_protocol(remote.protocol))
+        .with_instance_name(&remote.instance)
+        .with_credentials(credentials);
+    let write_config = read_config.clone().writable();
 
-    let remote_cas = match RemoteCas::connect(client.clone()).await {
-        Ok(remote_cas) => remote_cas,
-        Err(e) => {
-            tracing::warn!(
-                endpoint = remote.endpoint,
-                error = %e,
-                "remote cache rejected the capabilities handshake; continuing with the local cache only"
-            );
-            return local;
+    let (remote_cas, remote_ac, publisher): RemoteHandles = match remote.protocol {
+        CacheProtocol::Grpc => {
+            let client = match RemoteClient::connect(read_config).await {
+                Ok(client) => client,
+                Err(e) => {
+                    tracing::warn!(
+                        endpoint = remote.endpoint,
+                        error = %e,
+                        "remote cache unreachable; continuing with the local cache only"
+                    );
+                    emit_degraded(&remote.endpoint, e.to_string());
+                    return local;
+                }
+            };
+
+            let remote_cas = match RemoteCas::connect(client.clone()).await {
+                Ok(remote_cas) => remote_cas,
+                Err(e) => {
+                    tracing::warn!(
+                        endpoint = remote.endpoint,
+                        error = %e,
+                        "remote cache rejected the capabilities handshake; continuing with the local cache only"
+                    );
+                    emit_degraded(&remote.endpoint, e.to_string());
+                    return local;
+                }
+            };
+
+            let publisher = if upload {
+                match RemoteClient::connect(write_config).await {
+                    Ok(write_client) => {
+                        let write_cas = Arc::new(RemoteCas::with_capabilities(
+                            write_client.clone(),
+                            remote_cas.capabilities().clone(),
+                        ));
+                        let write_ac = Arc::new(RemoteActionCache::new(write_client));
+                        Some(Arc::new(RemotePublisher::grpc(write_cas, write_ac))
+                            as Arc<dyn ActionPublisher>)
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            endpoint = remote.endpoint,
+                            error = %e,
+                            "could not initialize remote cache publisher; continuing read-only"
+                        );
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+
+            (
+                Arc::new(remote_cas),
+                Arc::new(RemoteActionCache::new(client)),
+                publisher,
+            )
+        }
+        CacheProtocol::Http => {
+            let client = match HttpRemoteClient::new(read_config) {
+                Ok(client) => client,
+                Err(e) => {
+                    tracing::warn!(
+                        endpoint = remote.endpoint,
+                        error = %e,
+                        "invalid HTTP remote cache configuration; continuing with the local cache only"
+                    );
+                    emit_degraded(&remote.endpoint, e.to_string());
+                    return local;
+                }
+            };
+
+            if let Err(e) = client.check_health().await {
+                tracing::warn!(
+                    endpoint = remote.endpoint,
+                    error = %e,
+                    "HTTP remote cache unreachable; continuing with the local cache only"
+                );
+                emit_degraded(&remote.endpoint, e.to_string());
+                return local;
+            }
+
+            let publisher = if upload {
+                match HttpRemoteClient::new(write_config) {
+                    Ok(write_client) => {
+                        let write_cas = Arc::new(HttpCas::new(write_client.clone()));
+                        let write_ac = Arc::new(HttpActionCache::new(write_client));
+                        Some(Arc::new(RemotePublisher::http(write_cas, write_ac))
+                            as Arc<dyn ActionPublisher>)
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            endpoint = remote.endpoint,
+                            error = %e,
+                            "could not initialize HTTP remote cache publisher; continuing read-only"
+                        );
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+
+            (
+                Arc::new(HttpCas::new(client.clone())),
+                Arc::new(HttpActionCache::new(client)),
+                publisher,
+            )
         }
     };
 
     tracing::info!(
         endpoint = remote.endpoint,
+        protocol = protocol_label(remote.protocol),
         instance = remote.instance,
-        upload,
+        upload = publisher.is_some(),
         "remote cache connected"
     );
+    emit_connected(&remote, publisher.is_some());
 
-    let remote_cas = Arc::new(remote_cas) as Arc<dyn Cas>;
-    let mut cas = LayeredCas::new(local.cas, remote_cas.clone());
-    let mut action_cache =
-        LayeredActionCache::new(local.action_cache, Arc::new(RemoteActionCache::new(client)))
-            .with_remote_cas(remote_cas);
-    if upload {
-        cas = cas.with_push();
-        action_cache = action_cache.with_push();
-    }
+    let cas = LayeredCas::new(local.cas, remote_cas.clone());
+    let action_cache =
+        LayeredActionCache::new(local.action_cache, remote_ac).with_remote_cas(remote_cas);
 
     CacheLayers {
         cas: Arc::new(cas),
         action_cache: Arc::new(action_cache),
+        publisher,
     }
 }
 
@@ -245,9 +486,16 @@ mod tests {
 
     #[test]
     fn no_configuration_and_no_environment_means_local_only() {
-        temp_env::with_vars([(ENDPOINT_ENV, None::<&str>), (UPLOAD_ENV, None)], || {
-            assert!(resolve(None).is_none());
-        });
+        temp_env::with_vars(
+            [
+                (ENDPOINT_ENV, None::<&str>),
+                (PROTOCOL_ENV, None),
+                (UPLOAD_ENV, None),
+            ],
+            || {
+                assert!(resolve(None).is_none());
+            },
+        );
     }
 
     #[test]
@@ -255,12 +503,29 @@ mod tests {
         temp_env::with_vars(
             [
                 (ENDPOINT_ENV, Some("grpcs://ci-cache:443")),
+                (PROTOCOL_ENV, None),
                 (UPLOAD_ENV, None),
             ],
             || {
                 let resolved = resolve(None).expect("endpoint from the environment");
                 assert_eq!(resolved.endpoint, "grpcs://ci-cache:443");
+                assert_eq!(resolved.protocol, CacheProtocol::Grpc);
                 assert!(!resolved.upload, "uploading stays opt-in");
+            },
+        );
+    }
+
+    #[test]
+    fn the_environment_can_select_http_protocol() {
+        temp_env::with_vars(
+            [
+                (ENDPOINT_ENV, Some("https://ci-cache.example.com")),
+                (PROTOCOL_ENV, Some("http")),
+                (UPLOAD_ENV, None),
+            ],
+            || {
+                let resolved = resolve(None).expect("endpoint from the environment");
+                assert_eq!(resolved.protocol, CacheProtocol::Http);
             },
         );
     }
@@ -270,6 +535,7 @@ mod tests {
         temp_env::with_vars(
             [
                 (ENDPOINT_ENV, Some("grpcs://override:443")),
+                (PROTOCOL_ENV, None),
                 (UPLOAD_ENV, None),
             ],
             || {
@@ -283,15 +549,26 @@ mod tests {
     fn an_empty_endpoint_variable_turns_the_remote_off() {
         // The escape hatch when a cache misbehaves and editing CUE is not an
         // option.
-        temp_env::with_vars([(ENDPOINT_ENV, Some("")), (UPLOAD_ENV, None)], || {
-            assert!(resolve(Some(&configured("grpcs://from-cue:443"))).is_none());
-        });
+        temp_env::with_vars(
+            [
+                (ENDPOINT_ENV, Some("")),
+                (PROTOCOL_ENV, None),
+                (UPLOAD_ENV, None),
+            ],
+            || {
+                assert!(resolve(Some(&configured("grpcs://from-cue:443"))).is_none());
+            },
+        );
     }
 
     #[test]
     fn upload_can_be_enabled_for_a_trusted_builder() {
         temp_env::with_vars(
-            [(ENDPOINT_ENV, None::<&str>), (UPLOAD_ENV, Some("true"))],
+            [
+                (ENDPOINT_ENV, None::<&str>),
+                (PROTOCOL_ENV, None),
+                (UPLOAD_ENV, Some("true")),
+            ],
             || {
                 let resolved = resolve(Some(&configured("grpcs://cache:443"))).unwrap();
                 assert!(resolved.upload);
@@ -304,7 +581,11 @@ mod tests {
         let mut uploading = configured("grpcs://cache:443");
         uploading.upload = true;
         temp_env::with_vars(
-            [(ENDPOINT_ENV, None::<&str>), (UPLOAD_ENV, Some("false"))],
+            [
+                (ENDPOINT_ENV, None::<&str>),
+                (PROTOCOL_ENV, None),
+                (UPLOAD_ENV, Some("false")),
+            ],
             || assert!(!resolve(Some(&uploading)).unwrap().upload),
         );
     }
@@ -314,7 +595,11 @@ mod tests {
         // Failing open here would let a typo publish unsound entries to a
         // shared cache.
         temp_env::with_vars(
-            [(ENDPOINT_ENV, None::<&str>), (UPLOAD_ENV, Some("maybe"))],
+            [
+                (ENDPOINT_ENV, None::<&str>),
+                (PROTOCOL_ENV, None),
+                (UPLOAD_ENV, Some("maybe")),
+            ],
             || {
                 assert!(
                     !resolve(Some(&configured("grpcs://cache:443")))

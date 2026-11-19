@@ -83,6 +83,23 @@ pub trait TaskEnvironments: std::fmt::Debug + Send + Sync {
     fn environment_for<'a>(&'a self, name: &'a str, task: &'a Task) -> TaskEnvironmentFuture<'a>;
 }
 
+/// Remote cache authorization policy for a dependency task belonging to another
+/// project (`#project:task`).
+///
+/// External projects default to [`ExternalCachePolicy::LocalOnly`] so running
+/// a dependency from another project never silently inherits the invoking
+/// project's remote cache write authority.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ExternalCachePolicy {
+    /// Only local CAS/ActionCache reads and writes are permitted.
+    #[default]
+    LocalOnly,
+    /// Read-only remote fallback is permitted, but remote publication is denied.
+    ReadOnlyRemote,
+    /// Explicitly authorized to publish to the configured remote cache.
+    AllowPublish,
+}
+
 /// What a task of another project runs with in place of the run's own
 /// project: that project's directory, CUE module and cache identity.
 ///
@@ -98,6 +115,8 @@ pub struct ProjectExecution {
     pub cue_module_root: Option<PathBuf>,
     /// Caching infrastructure carrying the project's own runtime identity.
     pub cache: Option<TaskCacheConfig>,
+    /// Remote cache authorization for tasks belonging to this external project.
+    pub cache_policy: ExternalCachePolicy,
 }
 
 /// Task executor configuration
@@ -219,6 +238,7 @@ impl TaskExecutor {
             secret_salt: None,
             mode_override: None,
             cache_root,
+            publisher: None,
         };
 
         // Two tasks racing here each build a store; the loser's is dropped,
@@ -276,25 +296,42 @@ impl TaskExecutor {
 
         let task_environment = self.task_environment(name, task).await?;
 
+        // Resolve the effective sandbox tier up front so explicit `strict`
+        // fails closed even when caching is disabled, and `auto` keys the
+        // action under the tier that will actually be enforced.
+        let sandbox_resolution =
+            super::sandbox::resolve_sandbox(task.sandbox(), task.network_allowed())?;
+        if let Some(reason) = &sandbox_resolution.fallback_reason {
+            tracing::warn!(
+                task = %name,
+                reason = %reason,
+                "hermetic.sandbox: \"auto\" fell back to \"dir\""
+            );
+        }
+        let effective_sandbox = sandbox_resolution.effective;
+
         // Input resolution and directory isolation remain available when
         // result caching is disabled. A sandbox-only config supplies the
         // hasher and execution-root location without permitting cache I/O.
         let cache = match frame.cache.cloned() {
             Some(cache) => Some(cache),
-            None if task.sandbox().uses_exec_root() => Some(self.sandbox_only_cache()?),
+            None if effective_sandbox.uses_exec_root() => Some(self.sandbox_only_cache()?),
             None => None,
         };
         let mut cache_handle: Option<CacheHandle> = if let Some(cache) = cache {
             let workdir = Self::workdir_in(frame, task)?;
-            let outcome = super::cache::build_action(BuildActionInput {
-                task,
-                task_name: name,
-                environment: &task_environment,
-                cache: &cache,
-                workdir: &workdir,
-                project_root: frame.project_root,
-                module_root: frame.module_root,
-            })
+            let outcome = super::cache::build_action_with_sandbox(
+                BuildActionInput {
+                    task,
+                    task_name: name,
+                    environment: &task_environment,
+                    cache: &cache,
+                    workdir: &workdir,
+                    project_root: frame.project_root,
+                    module_root: frame.module_root,
+                },
+                &effective_sandbox,
+            )
             .await?;
             match outcome {
                 super::cache::CacheOutcome::Eligible(eligible) => {
@@ -355,12 +392,18 @@ impl TaskExecutor {
                         Some(CacheHandle {
                             cache,
                             action_digest: Some(eligible.digest),
+                            action: Some(eligible.action),
+                            command: Some(eligible.command),
+                            command_digest: Some(eligible.command_digest),
+                            contains_secrets: eligible.contains_secrets,
+                            publish_authorized: frame.publish_authorized,
                             workdir,
                             exec_root,
                             run_workdir,
                             root_key,
                             inputs,
                             working_directory,
+                            effective_sandbox,
                         })
                     } else {
                         cuenv_events::emit_task_cache_skipped!(
@@ -387,27 +430,34 @@ impl TaskExecutor {
                         Some(CacheHandle {
                             cache,
                             action_digest: None,
+                            action: None,
+                            command: None,
+                            command_digest: None,
+                            contains_secrets: eligible.contains_secrets,
+                            publish_authorized: false,
                             workdir,
                             exec_root,
                             run_workdir,
                             root_key,
                             inputs,
                             working_directory,
+                            effective_sandbox,
                         })
                     }
                 }
                 super::cache::CacheOutcome::Skipped { reason, execution } => {
                     cuenv_events::emit_task_cache_skipped!(name, reason.clone());
-                    if task.sandbox().uses_exec_root() {
+                    if effective_sandbox.uses_exec_root() {
                         // Fail closed, as documented: running against the
                         // live checkout would hand back a result that looks
                         // isolated and is not, and any input mapped from
                         // another task or project would simply be missing.
                         let Some(execution) = execution else {
                             return Err(Error::configuration(format!(
-                                "task '{name}' requires hermetic.sandbox: \"dir\" but its input \
+                                "task '{name}' requires hermetic.sandbox: \"{}\" but its input \
                                  set cannot be resolved ({reason}); fix the declaration or set \
-                                 hermetic.sandbox: \"none\""
+                                 hermetic.sandbox: \"none\"",
+                                effective_sandbox.key_value()
                             )));
                         };
                         let root_key = cuenv_cas::Digest::of_bytes(
@@ -428,12 +478,18 @@ impl TaskExecutor {
                         Some(CacheHandle {
                             cache,
                             action_digest: None,
+                            action: None,
+                            command: None,
+                            command_digest: None,
+                            contains_secrets: false,
+                            publish_authorized: false,
                             workdir,
                             exec_root,
                             run_workdir,
                             root_key: root_key.hash,
                             inputs: execution.inputs,
                             working_directory: execution.working_directory,
+                            effective_sandbox,
                         })
                     } else {
                         None
@@ -507,8 +563,14 @@ impl TaskExecutor {
                 &resolved_outputs,
             )
             .await;
-            if let Err(e) = recorded {
-                tracing::warn!(task = %name, error = %e, "cache write failed");
+            match recorded {
+                Ok(Some(action_result)) => {
+                    maybe_publish_remote(name, handle, action_digest, &action_result).await;
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::warn!(task = %name, error = %e, "cache write failed");
+                }
             }
         }
 
@@ -599,13 +661,13 @@ impl TaskExecutor {
 
         let mut attempt = 1_u32;
         loop {
-            let workdir = cache_handle
-                .as_ref()
-                .map(|handle| handle.run_workdir.as_path());
             // A timeout is a hard policy violation, not a transient failure:
             // retrying would re-incur the full timeout each attempt, so a
             // timed-out attempt ends the task immediately.
-            let result = match self.execute_task_non_hermetic(context, workdir).await? {
+            let result = match self
+                .execute_task_non_hermetic(context, cache_handle.as_deref())
+                .await?
+            {
                 TaskAttempt::TimedOut(result) => return Ok(result),
                 TaskAttempt::Completed(result) => result,
             };
@@ -683,6 +745,8 @@ impl TaskExecutor {
             stdout,
             stderr,
             success,
+            from_cache: true,
+            cache_source: Some(super::result::CacheSource::Local),
         })
     }
 
@@ -714,6 +778,7 @@ impl TaskExecutor {
                 .as_deref()
                 .unwrap_or(&project.project_root),
             cache: project.cache.as_ref(),
+            publish_authorized: project.cache_policy == ExternalCachePolicy::AllowPublish,
         })
     }
 
@@ -730,6 +795,7 @@ impl TaskExecutor {
                 .as_deref()
                 .unwrap_or(&self.config.project_root),
             cache: self.config.cache.as_ref(),
+            publish_authorized: true,
         }
     }
 
@@ -777,7 +843,7 @@ impl TaskExecutor {
     async fn execute_task_non_hermetic(
         &self,
         context: TaskExecutionContext<'_>,
-        workdir_override: Option<&Path>,
+        cache_handle: Option<&CacheHandle>,
     ) -> Result<TaskAttempt> {
         let TaskExecutionContext {
             name,
@@ -787,15 +853,18 @@ impl TaskExecutor {
 
         // A sandboxed task's exec root wins; everything else resolves the
         // working directory the usual way (see `workdir_in`).
-        let workdir = match workdir_override {
-            Some(path) => path.to_path_buf(),
+        let workdir = match cache_handle {
+            Some(handle) => handle.run_workdir.clone(),
             None => Self::workdir_in(self.frame_for(name, task)?, task)?,
         };
+        let strict_active =
+            cache_handle.is_some_and(|handle| handle.effective_sandbox.strict_proof().is_some());
 
         tracing::info!(
             task = %name,
             workdir = %workdir.display(),
-            sandboxed = workdir_override.is_some(),
+            sandboxed = cache_handle.is_some(),
+            strict = strict_active,
             "Executing task"
         );
 
@@ -811,10 +880,42 @@ impl TaskExecutor {
 
         cuenv_events::emit_task_started!(name, cmd_str, false);
 
-        // Build command - handle script mode vs command mode
+        // Build command - handle script mode vs command mode.
+        // When OS-level strict confinement is active, prepare the sandbox plan
+        // before fork so all path allocations happen safely in the parent.
         let command_spec = task.command_spec(|command| environment.resolve_command(command))?;
-        let mut cmd = Command::new(&command_spec.program);
-        cmd.args(&command_spec.args);
+        let strict_scratch = if strict_active
+            && let Some(handle) = cache_handle
+            && let Some(exec_root) = &handle.exec_root
+        {
+            let tmp_dir = exec_root.path().join(".cuenv-tmp");
+            let home_dir = exec_root.path().join(".cuenv-home");
+            std::fs::create_dir_all(&tmp_dir).map_err(|error| {
+                Error::io_with_path("create sandbox tmp", tmp_dir.clone(), error)
+            })?;
+            std::fs::create_dir_all(&home_dir).map_err(|error| {
+                Error::io_with_path("create sandbox home", home_dir.clone(), error)
+            })?;
+            let plan = super::sandbox::StrictSandboxPlan::prepare(
+                exec_root.path(),
+                &workdir,
+                &tmp_dir,
+                &home_dir,
+                task.network_allowed(),
+            )?;
+            let cmd = plan.build_command(&command_spec.program, &command_spec.args)?;
+            Some((cmd, tmp_dir, home_dir))
+        } else {
+            None
+        };
+
+        let (mut cmd, strict_tmp_home) = if let Some((cmd, tmp_dir, home_dir)) = strict_scratch {
+            (cmd, Some((tmp_dir, home_dir)))
+        } else {
+            let mut cmd = Command::new(&command_spec.program);
+            cmd.args(&command_spec.args);
+            (cmd, None)
+        };
 
         // A hermetic command receives exactly the environment represented in
         // its action key. Without `env_clear`, Command inherits every host
@@ -831,6 +932,21 @@ impl TaskExecutor {
         };
         for (k, v) in &env_vars {
             cmd.env(k, v);
+        }
+        if let Some((tmp_dir, home_dir)) = &strict_tmp_home {
+            // Inside the strict mount namespace, private tmp/home are mounted
+            // at `/tmp` and `/cuenv-home` on Linux (or the staged dirs on macOS).
+            #[cfg(target_os = "linux")]
+            {
+                let _ = (tmp_dir, home_dir);
+                cmd.env("TMPDIR", "/tmp");
+                cmd.env("HOME", "/cuenv-home");
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                cmd.env("TMPDIR", tmp_dir);
+                cmd.env("HOME", home_dir);
+            }
         }
 
         // Apply task-level env vars, including secrets resolved at execution time.
@@ -863,6 +979,7 @@ impl TaskExecutor {
             ProcessOptions {
                 capture_output: self.config.capture_output,
                 timeout,
+                isolate_stdio_and_fds: strict_active || task.is_hermetic(),
             },
         )
         .await
@@ -1223,6 +1340,91 @@ struct TaskFrame<'frame> {
     module_root: &'frame Path,
     /// The project's caching infrastructure, when it has one.
     cache: Option<&'frame TaskCacheConfig>,
+    /// Whether this project is authorized to publish results to a remote cache.
+    publish_authorized: bool,
+}
+
+async fn maybe_publish_remote(
+    task_name: &str,
+    handle: &CacheHandle,
+    action_digest: &cuenv_cas::Digest,
+    action_result: &cuenv_cas::ActionResult,
+) {
+    let Some(publisher) = &handle.cache.publisher else {
+        return;
+    };
+
+    let skip_reason: Option<String> = if !handle.publish_authorized {
+        Some("external project is not authorized to publish to remote cache".to_string())
+    } else if handle.contains_secrets {
+        Some("secret-bearing tasks are kept local-only".to_string())
+    } else {
+        match handle.effective_sandbox.strict_proof() {
+            Some(proof) if proof.publish_eligible => None,
+            Some(proof) => Some(format!(
+                "sandbox '{}' is not eligible for remote publication (network_enforced={})",
+                proof.platform, proof.network_enforced
+            )),
+            None => Some(format!(
+                "sandbox tier '{}' does not enforce strict OS confinement",
+                handle.effective_sandbox.key_value()
+            )),
+        }
+    };
+
+    if let Some(reason) = skip_reason {
+        tracing::debug!(task = %task_name, %reason, "skipping remote cache publication");
+        let _ = cuenv_events::emit(cuenv_events::EventCategory::Cache(
+            cuenv_events::CacheEvent::RemoteUploadSkipped {
+                task: task_name.to_string(),
+                reason,
+            },
+        ));
+        return;
+    }
+
+    let (Some(action), Some(command), Some(command_digest)) = (
+        handle.action.as_ref(),
+        handle.command.as_ref(),
+        handle.command_digest.as_ref(),
+    ) else {
+        return;
+    };
+
+    let publish_request = cuenv_cas::PublishActionRequest {
+        local_cas: handle.cache.cas.as_ref(),
+        action,
+        action_digest,
+        command,
+        command_digest,
+        result: action_result,
+    };
+
+    match publisher.publish(publish_request).await {
+        Ok(()) => {
+            tracing::debug!(task = %task_name, action = %action_digest, "published action to remote cache");
+            let _ = cuenv_events::emit(cuenv_events::EventCategory::Cache(
+                cuenv_events::CacheEvent::RemoteUploaded {
+                    task: task_name.to_string(),
+                    digest: action_digest.to_resource(),
+                },
+            ));
+        }
+        Err(error) => {
+            tracing::warn!(
+                task = %task_name,
+                action = %action_digest,
+                %error,
+                "remote cache publication failed"
+            );
+            let _ = cuenv_events::emit(cuenv_events::EventCategory::Cache(
+                cuenv_events::CacheEvent::RemoteUploadFailed {
+                    task: task_name.to_string(),
+                    error: error.to_string(),
+                },
+            ));
+        }
+    }
 }
 
 fn resolve_task_directory(
@@ -1318,6 +1520,11 @@ struct TaskExecutionContext<'execution> {
 struct CacheHandle {
     cache: TaskCacheConfig,
     action_digest: Option<cuenv_cas::Digest>,
+    action: Option<cuenv_cas::Action>,
+    command: Option<cuenv_cas::Command>,
+    command_digest: Option<cuenv_cas::Digest>,
+    contains_secrets: bool,
+    publish_authorized: bool,
     /// Where the user expects outputs to land, which is not where a
     /// sandboxed task runs.
     workdir: PathBuf,
@@ -1331,6 +1538,8 @@ struct CacheHandle {
     inputs: Vec<cuenv_vcs::HashedInput>,
     /// Working directory relative to each execution root.
     working_directory: PathBuf,
+    /// The OS/directory sandbox tier actually enforced for this run.
+    effective_sandbox: super::sandbox::EffectiveSandbox,
 }
 
 #[derive(Clone, Copy)]

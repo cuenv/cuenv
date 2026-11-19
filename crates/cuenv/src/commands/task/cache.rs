@@ -19,7 +19,7 @@ use crate::commands;
 /// 1. `$CUENV_CACHE_DIR` (explicit override)
 /// 2. `$XDG_CACHE_HOME/cuenv` or the platform default
 /// 3. `<project>/.cuenv-cache`
-pub(super) fn resolve_cache_root(project_root: &Path) -> PathBuf {
+pub fn resolve_cache_root(project_root: &Path) -> PathBuf {
     if let Some(env) = std::env::var_os("CUENV_CACHE_DIR")
         && !env.is_empty()
     {
@@ -82,7 +82,11 @@ pub(super) async fn build_task_cache(
     // failure in here degrades to local-only: a cache is an optimization, so
     // an unreachable server should make a build slower, not broken.
     let layers = if cache_off {
-        remote_cache::CacheLayers { cas, action_cache }
+        remote_cache::CacheLayers {
+            cas,
+            action_cache,
+            publisher: None,
+        }
     } else {
         remote_cache::build(cache_config, cas, action_cache).await
     };
@@ -119,6 +123,7 @@ pub(super) async fn build_task_cache(
             CacheOverride::ReadOnly => Some(TaskCacheMode::Read),
             CacheOverride::WriteOnly => Some(TaskCacheMode::Write),
         },
+        publisher: layers.publisher,
     })
 }
 

@@ -36,6 +36,52 @@ impl CommandExecutor {
             | Command::ShellInit { .. }
             | Command::ShellSession { .. }
             | Command::ShellRefresh) => self.execute_handler_command(command).await,
+            Command::CacheStatus {
+                path,
+                package,
+                format,
+            } => super::cache::execute_status(&path, &package, &format).await,
+            Command::CacheStats { path, format } => super::cache::execute_stats(&path, &format),
+            Command::CacheVerify {
+                path,
+                repair,
+                format,
+            } => {
+                let mode = if repair {
+                    super::cache::VerifyMode::Repair
+                } else {
+                    super::cache::VerifyMode::ReadOnly
+                };
+                super::cache::execute_verify(&path, &format, mode).await
+            }
+            Command::CacheGc {
+                path,
+                max_size,
+                max_age,
+                dry_run,
+                format,
+            } => {
+                super::cache::execute_gc(super::cache::CacheGcArgs {
+                    path,
+                    format,
+                    max_size,
+                    max_age,
+                    dry_run,
+                })
+                .await
+            }
+            Command::CachePrune {
+                path,
+                dry_run,
+                format,
+            } => {
+                super::cache::execute_prune(super::cache::CachePruneArgs {
+                    path,
+                    format,
+                    dry_run,
+                })
+                .await
+            }
             Command::Completions { .. }
             | Command::Info { .. }
             | Command::Fmt { .. }

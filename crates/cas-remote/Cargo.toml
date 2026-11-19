@@ -18,7 +18,10 @@ cuenv-cas = { workspace = true }
 async-trait = { workspace = true }
 bazel-remote-apis = { workspace = true }
 tonic = { workspace = true }
-tokio = { workspace = true, features = ["rt", "sync"] }
+prost = { workspace = true }
+reqwest = { workspace = true }
+rustls = { workspace = true }
+tokio = { workspace = true, features = ["rt", "sync", "fs"] }
 tokio-stream = { workspace = true }
 futures = { workspace = true }
 thiserror = { workspace = true }
@@ -27,6 +30,7 @@ tracing = { workspace = true }
 uuid = { workspace = true }
 hex = { workspace = true }
 sha2 = { workspace = true }
+zstd = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net"] }

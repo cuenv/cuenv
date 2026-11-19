@@ -387,4 +387,51 @@ pub enum Command {
         /// What to do.
         action: infrastructure::ProviderAction,
     },
+    /// Show local and remote cache status.
+    CacheStatus {
+        /// Path to the CUE module or project directory.
+        path: String,
+        /// CUE package name to evaluate.
+        package: String,
+        /// Output format (`text` or `json`).
+        format: String,
+    },
+    /// Show local cache entry counts and disk usage.
+    CacheStats {
+        /// Path to the CUE module or project directory.
+        path: String,
+        /// Output format (`text` or `json`).
+        format: String,
+    },
+    /// Verify integrity of the local cache, optionally repairing corrupt entries.
+    CacheVerify {
+        /// Path to the CUE module or project directory.
+        path: String,
+        /// Remove corrupt blobs and invalid/dangling action entries.
+        repair: bool,
+        /// Output format (`text` or `json`).
+        format: String,
+    },
+    /// Garbage-collect aged or excess local cache entries and unreferenced blobs.
+    CacheGc {
+        /// Path to the CUE module or project directory.
+        path: String,
+        /// Optional target maximum cache size string (e.g. `2G`).
+        max_size: Option<String>,
+        /// Optional maximum entry age string (e.g. `7d`).
+        max_age: Option<String>,
+        /// Preview deletions without removing files.
+        dry_run: bool,
+        /// Output format (`text` or `json`).
+        format: String,
+    },
+    /// Remove unreferenced CAS blobs and stale temp directories.
+    CachePrune {
+        /// Path to the CUE module or project directory.
+        path: String,
+        /// Preview deletions without removing files.
+        dry_run: bool,
+        /// Output format (`text` or `json`).
+        format: String,
+    },
 }

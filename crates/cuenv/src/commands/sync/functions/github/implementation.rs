@@ -251,6 +251,8 @@ pub(super) struct PipelineContext {
     pub(super) tasks: Vec<cuenv_ci::ir::Task>,
     /// Original pipeline tasks (with matrix/artifacts/params info)
     pub(super) pipeline_tasks: Vec<cuenv_core::ci::PipelineTask>,
+    /// Optional project remote cache config with CI trust-boundary settings
+    pub(super) remote_cache: Option<cuenv_core::manifest::RemoteCache>,
 }
 
 impl PipelineContext {
@@ -443,6 +445,14 @@ fn build_project_pipeline_context(request: WorkflowRequest<'_>) -> Result<Pipeli
         .trigger
         .unwrap_or_else(|| build_github_trigger_condition(pipeline_name, pipeline, ci));
 
+    let remote_cache = project
+        .config
+        .cache
+        .as_ref()
+        .and_then(|c| c.remote.as_ref())
+        .filter(|r| r.ci.is_some())
+        .cloned();
+
     Ok(PipelineContext {
         is_release,
         cuenv_source,
@@ -455,6 +465,7 @@ fn build_project_pipeline_context(request: WorkflowRequest<'_>) -> Result<Pipeli
         runtimes: ir.runtimes,
         tasks: all_tasks,
         pipeline_tasks: pipeline.tasks.clone(),
+        remote_cache,
     })
 }
 
@@ -488,7 +499,10 @@ fn emit_thin_workflow(pipeline_name: &str, ctx: &PipelineContext) -> Result<Vec<
     use cuenv_github::workflow::GitHubActionsEmitter;
 
     let ir = ctx.to_ir(pipeline_name);
-    let emitter = GitHubActionsEmitter::from_config(&ctx.github_config).with_nix();
+    let mut emitter = GitHubActionsEmitter::from_config(&ctx.github_config).with_nix();
+    if let Some(remote_cache) = ctx.remote_cache.clone() {
+        emitter = emitter.with_remote_cache(remote_cache);
+    }
 
     let (filename, yaml) = emitter.emit_thin_workflow(&ir).map_err(|e| {
         cuenv_core::Error::configuration(format!("Failed to emit thin workflow: {e}"))
@@ -994,6 +1008,7 @@ mod tests {
             pipeline_tasks: vec![cuenv_core::ci::PipelineTask::Simple(
                 cuenv_core::ci::TaskRef::from_name("build"),
             )],
+            remote_cache: None,
         }
     }
 

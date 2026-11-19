@@ -7,17 +7,19 @@
 
 use serde::{Deserialize, Serialize};
 
-/// How much filesystem isolation a task runs under.
+/// How much filesystem and OS-level isolation a task runs under.
 ///
 /// [`Sandbox::Dir`] runs the task in a per-action directory populated from
 /// declared inputs, isolating relative workspace reads and writes.
 /// It is not an OS security boundary: absolute host paths remain reachable.
+/// [`Sandbox::Auto`] upgrades to strict OS-level confinement when the host
+/// supports it and falls back to [`Sandbox::Dir`] otherwise.
+/// [`Sandbox::Strict`] requires OS-level confinement and fails closed when
+/// the host cannot enforce it (even with caching disabled).
 /// [`Sandbox::None`] runs directly in the project directory.
 ///
 /// [`Sandbox::Dir`] is the default so relative workspace access follows the
 /// declarations on the first run as well as on cache hits.
-///
-/// Stricter OS-level tiers are deliberately absent until they exist.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum Sandbox {
@@ -25,6 +27,11 @@ pub enum Sandbox {
     /// outputs projected back. The default.
     #[default]
     Dir,
+    /// Use strict OS-level confinement when supported, otherwise fall back to
+    /// [`Sandbox::Dir`] and key the action under the actual tier.
+    Auto,
+    /// Require OS-level confinement; fail closed if unavailable.
+    Strict,
     /// No isolation: the project directory, unrestricted. The explicit
     /// opt-out, for tasks that must touch the live checkout.
     None,
@@ -36,7 +43,7 @@ impl Sandbox {
     pub fn uses_exec_root(self) -> bool {
         match self {
             Self::None => false,
-            Self::Dir => true,
+            Self::Dir | Self::Auto | Self::Strict => true,
         }
     }
 }
@@ -58,6 +65,11 @@ pub struct HermeticOptions {
     /// Filesystem isolation tier. Absent means the default, [`Sandbox::Dir`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sandbox: Option<Sandbox>,
+
+    /// Whether network access is permitted under strict OS confinement.
+    /// Defaults to `false`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub network: bool,
 }
 
 /// A task's `hermetic` setting.
@@ -144,6 +156,19 @@ impl Hermetic {
             Self::Options(options) => options.sandbox.unwrap_or(Sandbox::Dir),
         }
     }
+
+    /// Whether network access is permitted under strict OS confinement.
+    ///
+    /// Non-hermetic tasks always permit network access; hermetic tasks default
+    /// to `false` (network disabled when strict confinement is enforced).
+    #[must_use]
+    pub fn network(&self) -> bool {
+        match self {
+            Self::Enabled(false) => true,
+            Self::Enabled(true) => false,
+            Self::Options(options) => options.network,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -155,9 +180,11 @@ mod tests {
         let on: Hermetic = serde_json::from_str("true").unwrap();
         assert!(on.is_enabled());
         assert_eq!(on.passthrough(), [] as [String; 0]);
+        assert!(!on.network());
 
         let off: Hermetic = serde_json::from_str("false").unwrap();
         assert!(!off.is_enabled());
+        assert!(off.network());
     }
 
     #[test]
@@ -196,6 +223,20 @@ mod tests {
     }
 
     #[test]
+    fn auto_and_strict_sandbox_tiers_and_network_flag_parse() {
+        let auto: Hermetic = serde_json::from_str(r#"{"sandbox":"auto"}"#).unwrap();
+        assert_eq!(auto.sandbox(), Sandbox::Auto);
+        assert!(auto.sandbox().uses_exec_root());
+        assert!(!auto.network());
+
+        let strict: Hermetic =
+            serde_json::from_str(r#"{"sandbox":"strict","network":true}"#).unwrap();
+        assert_eq!(strict.sandbox(), Sandbox::Strict);
+        assert!(strict.sandbox().uses_exec_root());
+        assert!(strict.network());
+    }
+
+    #[test]
     fn a_non_hermetic_task_gets_no_isolation() {
         // Nothing coherent to isolate: its key records neither its inputs nor
         // its environment.
@@ -227,6 +268,7 @@ mod tests {
             serde_json::to_string(&Hermetic::Options(HermeticOptions {
                 passthrough: vec!["CARGO_HOME".into()],
                 sandbox: None,
+                network: false,
             }))
             .unwrap(),
             r#"{"passthrough":["CARGO_HOME"]}"#
@@ -235,9 +277,19 @@ mod tests {
             serde_json::to_string(&Hermetic::Options(HermeticOptions {
                 passthrough: Vec::new(),
                 sandbox: Some(Sandbox::Dir),
+                network: false,
             }))
             .unwrap(),
             r#"{"passthrough":[],"sandbox":"dir"}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&Hermetic::Options(HermeticOptions {
+                passthrough: Vec::new(),
+                sandbox: Some(Sandbox::Strict),
+                network: true,
+            }))
+            .unwrap(),
+            r#"{"passthrough":[],"sandbox":"strict","network":true}"#
         );
     }
 }

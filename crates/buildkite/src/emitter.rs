@@ -31,6 +31,8 @@ pub struct BuildkiteEmitter {
     pub use_emojis: bool,
     /// Default queue for agents
     pub default_queue: Option<String>,
+    /// Optional project remote cache configuration for trust-boundary step emission
+    pub remote_cache: Option<cuenv_core::manifest::RemoteCache>,
 }
 
 #[derive(Clone, Copy)]
@@ -62,6 +64,13 @@ impl BuildkiteEmitter {
     #[must_use]
     pub fn with_default_queue(mut self, queue: impl Into<String>) -> Self {
         self.default_queue = Some(queue.into());
+        self
+    }
+
+    /// Configure remote cache trust-boundary emission for generated pipelines.
+    #[must_use]
+    pub fn with_remote_cache(mut self, remote_cache: cuenv_core::manifest::RemoteCache) -> Self {
+        self.remote_cache = Some(remote_cache);
         self
     }
 
@@ -197,18 +206,83 @@ impl BuildkiteEmitter {
 
         // Environment variables - secrets are handled by stage tasks
         // Convert from BTreeMap to HashMap for Buildkite schema
-        let env: HashMap<String, String> = task
+        let mut env: HashMap<String, String> = task
             .env
             .iter()
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
 
         // Build agent rules from resource tags
-        let agents = task
+        let mut agents = task
             .resources
             .as_ref()
             .and_then(|r| AgentRules::from_tags(r.tags.clone()))
             .or_else(|| self.default_queue.as_ref().map(AgentRules::with_queue));
+
+        // Apply remote cache trust boundaries: route write-authorized steps to
+        // a secret-access-policy-gated queue and isolate local cache paths.
+        if let Some(remote) = &self.remote_cache {
+            let ci = remote.ci.as_ref();
+            let isolated = ci.is_none_or(|c| c.isolated_cache_dir);
+            let protocol = match remote.protocol {
+                cuenv_core::manifest::CacheProtocol::Grpc => "grpc",
+                cuenv_core::manifest::CacheProtocol::Http => "http",
+            };
+            let protected_trigger = ir.pipeline.trigger.as_ref().is_some_and(|t| {
+                t.pull_request != Some(true)
+                    && (!t.branches.is_empty() || !t.tags.is_empty() || !t.release.is_empty())
+            });
+            let write_queue = ci.and_then(|c| c.write_queue.as_deref());
+            let write_secret = ci.and_then(|c| c.write_secret.as_deref());
+
+            if remote.upload
+                && protected_trigger
+                && let (Some(queue), Some(_secret)) = (write_queue, write_secret)
+            {
+                agents = Some(AgentRules::with_queue(queue));
+                env.insert("CUENV_REMOTE_CACHE".to_string(), remote.endpoint.clone());
+                env.insert(
+                    "CUENV_REMOTE_CACHE_PROTOCOL".to_string(),
+                    protocol.to_string(),
+                );
+                if !remote.instance.is_empty() {
+                    env.insert(
+                        "CUENV_REMOTE_CACHE_INSTANCE".to_string(),
+                        remote.instance.clone(),
+                    );
+                }
+                env.insert("CUENV_REMOTE_CACHE_UPLOAD".to_string(), "true".to_string());
+                if isolated {
+                    env.insert(
+                        "CUENV_CACHE_DIR".to_string(),
+                        "/tmp/cuenv-cache/trusted".to_string(),
+                    );
+                }
+            } else {
+                if ci.and_then(|c| c.read_secret.as_deref()).is_some() {
+                    env.insert("CUENV_REMOTE_CACHE".to_string(), remote.endpoint.clone());
+                    env.insert(
+                        "CUENV_REMOTE_CACHE_PROTOCOL".to_string(),
+                        protocol.to_string(),
+                    );
+                    if !remote.instance.is_empty() {
+                        env.insert(
+                            "CUENV_REMOTE_CACHE_INSTANCE".to_string(),
+                            remote.instance.clone(),
+                        );
+                    }
+                } else {
+                    env.insert("CUENV_REMOTE_CACHE".to_string(), String::new());
+                }
+                env.insert("CUENV_REMOTE_CACHE_UPLOAD".to_string(), "false".to_string());
+                if isolated {
+                    env.insert(
+                        "CUENV_CACHE_DIR".to_string(),
+                        "/tmp/cuenv-cache/untrusted".to_string(),
+                    );
+                }
+            }
+        }
 
         // Build artifact paths from orchestrator outputs
         let artifact_paths: Vec<String> = task
@@ -745,5 +819,54 @@ mod tests {
 
         // Should just have plain cuenv task
         assert!(yaml.contains("cuenv task build"));
+    }
+
+    #[test]
+    fn test_remote_cache_separates_write_queue_and_untrusted_steps() {
+        use cuenv_core::manifest::{CacheProtocol, RemoteCache, RemoteCacheCi};
+
+        let remote_cache = RemoteCache {
+            endpoint: "grpcs://cache.example.com:443".to_string(),
+            protocol: CacheProtocol::Grpc,
+            instance: "main".to_string(),
+            upload: true,
+            auth: None,
+            ci: Some(RemoteCacheCi {
+                read_secret: Some("CACHE_RO_TOKEN".to_string()),
+                write_secret: Some("CACHE_RW_TOKEN".to_string()),
+                write_environment: None,
+                write_queue: Some("cache-write".to_string()),
+                isolated_cache_dir: true,
+            }),
+        };
+
+        let emitter = BuildkiteEmitter::new()
+            .with_default_queue("default")
+            .with_remote_cache(remote_cache);
+
+        // Protected push pipeline routes to write_queue with upload enabled.
+        let mut protected_ir = make_ir(vec![make_task("build", &["cargo", "build"])]);
+        protected_ir.pipeline.trigger = Some(cuenv_ci::ir::TriggerCondition {
+            branches: vec!["main".to_string()],
+            pull_request: Some(false),
+            ..Default::default()
+        });
+        let protected_yaml = emitter.emit(&protected_ir).unwrap();
+        assert!(protected_yaml.contains("queue: cache-write"));
+        assert!(protected_yaml.contains("CUENV_REMOTE_CACHE_UPLOAD: 'true'"));
+        assert!(protected_yaml.contains("/tmp/cuenv-cache/trusted"));
+
+        // Pull-request pipeline stays on default queue with upload disabled.
+        let mut pr_ir = make_ir(vec![make_task("build", &["cargo", "build"])]);
+        pr_ir.pipeline.trigger = Some(cuenv_ci::ir::TriggerCondition {
+            branches: vec!["main".to_string()],
+            pull_request: Some(true),
+            ..Default::default()
+        });
+        let pr_yaml = emitter.emit(&pr_ir).unwrap();
+        assert!(!pr_yaml.contains("queue: cache-write"));
+        assert!(pr_yaml.contains("queue: default"));
+        assert!(pr_yaml.contains("CUENV_REMOTE_CACHE_UPLOAD: 'false'"));
+        assert!(pr_yaml.contains("/tmp/cuenv-cache/untrusted"));
     }
 }

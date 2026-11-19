@@ -1,6 +1,6 @@
 use super::{
-    ChangesetCommands, EnvCommands, InfrastructureCommands, OutputFormat, ReleaseCommands,
-    RuntimeCommands, SecretsCommands, ShellCommands, SyncCommands, ToolsCommands,
+    CacheCommands, ChangesetCommands, EnvCommands, InfrastructureCommands, OutputFormat,
+    ReleaseCommands, RuntimeCommands, SecretsCommands, ShellCommands, SyncCommands, ToolsCommands,
 };
 use crate::completions::task_completer;
 use clap::Subcommand;
@@ -526,6 +526,13 @@ pub enum Commands {
         )]
         package: String,
     },
+    /// Cache diagnostics and maintenance operations.
+    #[command(about = "Cache diagnostics and maintenance operations")]
+    Cache {
+        /// Cache subcommand to execute.
+        #[command(subcommand)]
+        subcommand: CacheCommands,
+    },
 }
 impl Commands {
     /// Extract the package name from the command.
@@ -550,6 +557,14 @@ impl Commands {
             | Self::Logs { package, .. }
             | Self::Ps { package, .. }
             | Self::Restart { package, .. } => package,
+
+            Self::Cache { subcommand } => match subcommand {
+                CacheCommands::Status { package, .. } => package,
+                CacheCommands::Stats { .. }
+                | CacheCommands::Verify { .. }
+                | CacheCommands::Gc { .. }
+                | CacheCommands::Prune { .. } => "cuenv",
+            },
 
             // Nested env subcommands with --package
             Self::Env { subcommand } => match subcommand {

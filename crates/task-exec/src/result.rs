@@ -1,5 +1,14 @@
 use super::graph_walk::WalkOutcome;
 
+/// Origin of a cached task result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CacheSource {
+    /// Restored from the local CAS / ActionCache.
+    Local,
+    /// Restored from a remote cache and verified locally.
+    Remote,
+}
+
 /// Task execution result
 #[derive(Debug, Clone)]
 pub struct TaskResult {
@@ -13,6 +22,10 @@ pub struct TaskResult {
     pub stderr: String,
     /// Whether the task completed successfully
     pub success: bool,
+    /// Whether this result was restored from the action cache instead of running
+    pub from_cache: bool,
+    /// Cache tier that supplied the result when `from_cache` is `true`
+    pub cache_source: Option<CacheSource>,
 }
 
 impl WalkOutcome for TaskResult {

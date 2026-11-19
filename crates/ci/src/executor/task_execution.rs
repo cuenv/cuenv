@@ -12,15 +12,17 @@ use crate::compiler::Compiler;
 use crate::ir::CachePolicy;
 use crate::report::{PipelineStatus, TaskReport, TaskStatus};
 use cuenv_core::context::{TaskEnv, TaskSelection, TaskSelectionOptions, TaskSubject};
-use cuenv_core::environment::Environment;
+use cuenv_core::environment::{EnvValue, Environment};
 use cuenv_core::manifest::Project;
-use cuenv_core::tasks::{Input, Task};
+use cuenv_core::tasks::{Input, Sandbox, Task, TaskCacheMode};
 
+use cuenv_task_exec::cache::TaskCacheConfig;
 use cuenv_task_exec::graph_walk::{WalkCallbacks, WalkPolicy};
 use cuenv_task_exec::{
-    ExecutorConfig, ProjectExecution, RootProject, ScopeProject, TaskExecutor, TaskIndex, TaskScope,
+    ExecutorConfig, ExternalCachePolicy, ProjectExecution, RootProject, ScopeProject, TaskExecutor,
+    TaskIndex, TaskScope,
 };
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -651,6 +653,14 @@ async fn compile_and_execute_ir(
             .map_err(|e| ExecutorError::Compilation(format!("Secret resolution failed: {e}")))?;
     cuenv_events::register_secrets(secrets);
 
+    // Preserve secret provenance so cached CI tasks fingerprint project
+    // credentials instead of persisting raw secret values in Command blobs.
+    let mut secret_var_names: BTreeSet<String> = variables
+        .iter()
+        .filter(|(_, value)| value.is_secret())
+        .map(|(name, _)| name.clone())
+        .collect();
+
     let mut env: BTreeMap<String, String> = hook_env.clone();
     env.extend(runtime_env);
     env.extend(resolved);
@@ -661,8 +671,36 @@ async fn compile_and_execute_ir(
         .await
         .map_err(|e| ExecutorError::Compilation(format!("Secret resolution failed: {e}")))?;
     cuenv_events::register_secrets(secrets);
+    for (name, value) in &task.env {
+        if serde_json::from_value::<EnvValue>(value.clone()).is_ok_and(|v| v.is_secret()) {
+            secret_var_names.insert(name.clone());
+        }
+    }
     env.extend(resolved);
     task_env::apply_task_env(&mut env, &ir_task.env);
+
+    // Withhold configured remote cache credential variables from task
+    // environments so untrusted build scripts cannot exfiltrate cache tokens.
+    if let Some(auth) = config
+        .cache
+        .as_ref()
+        .and_then(|cache| cache.remote.as_ref())
+        .and_then(|remote| remote.auth.as_ref())
+    {
+        for cred_var in auth
+            .bearer_token_env
+            .as_deref()
+            .into_iter()
+            .chain(auth.header.as_ref().map(|header| header.value_env.as_str()))
+        {
+            env.remove(cred_var);
+            if let Ok(secret_val) = std::env::var(cred_var)
+                && !secret_val.is_empty()
+            {
+                cuenv_events::register_secrets(vec![secret_val]);
+            }
+        }
+    }
 
     tools::apply_tool_activation_steps(&mut env, &activation_steps);
     ensure_home_env(&mut env);
@@ -672,14 +710,19 @@ async fn compile_and_execute_ir(
         task_to_run.cache_policy = policy;
     }
 
-    // A mapped input is read where the mapping puts it, and only an
-    // execution root can put it there. Every other task runs in the
-    // checkout, where an output is already where its task wrote it.
-    let output = if relocates_an_input(task) {
+    let task_cache_mode = effective_ci_cache_mode(task, cache_policy_override);
+    let needs_task_executor = relocates_an_input(task)
+        || matches!(task.sandbox(), Sandbox::Strict | Sandbox::Auto)
+        || task_cache_mode.allows_read()
+        || task_cache_mode.allows_write();
+
+    let output = if needs_task_executor {
         execute_staged(StagedTask {
             task_name,
             task,
             env,
+            secret_var_names,
+            cache_mode_override: cache_policy_override.map(ir_cache_policy_to_task_mode),
             staging,
         })
         .await?
@@ -701,10 +744,34 @@ async fn compile_and_execute_ir(
         stdout: output.stdout,
         stderr: output.stderr,
         success: output.success,
-        from_cache: false,
+        from_cache: output.from_cache,
         duration_ms,
         captures: HashMap::new(),
     })
+}
+
+fn ir_cache_policy_to_task_mode(policy: CachePolicy) -> TaskCacheMode {
+    match policy {
+        CachePolicy::Disabled => TaskCacheMode::Never,
+        CachePolicy::Readonly => TaskCacheMode::Read,
+        CachePolicy::Writeonly => TaskCacheMode::Write,
+        CachePolicy::Normal => TaskCacheMode::ReadWrite,
+    }
+}
+
+fn effective_ci_cache_mode(task: &Task, override_policy: Option<CachePolicy>) -> TaskCacheMode {
+    let mut mode = task.cache_policy().mode;
+    if let Some(override_mode) = override_policy.map(ir_cache_policy_to_task_mode) {
+        let reads = mode.allows_read() && override_mode.allows_read();
+        let writes = mode.allows_write() && override_mode.allows_write();
+        mode = match (reads, writes) {
+            (true, true) => TaskCacheMode::ReadWrite,
+            (true, false) => TaskCacheMode::Read,
+            (false, true) => TaskCacheMode::Write,
+            (false, false) => TaskCacheMode::Never,
+        };
+    }
+    mode
 }
 
 /// Whether a task reads a file somewhere other than where it was produced.
@@ -721,25 +788,64 @@ struct StagedTask<'staged> {
     task: &'staged Task,
     /// The environment the task would run with in the checkout.
     env: BTreeMap<String, String>,
+    /// Variable names whose values came from secret resolution.
+    secret_var_names: BTreeSet<String>,
+    /// Optional CI-level cache mode override.
+    cache_mode_override: Option<TaskCacheMode>,
     staging: Staging<'staged>,
 }
 
-/// Run a task that maps inputs as `cuenv task` runs it: in an execution root
-/// holding its declared inputs, each mapped file at its `to` path, with its
-/// declared outputs copied back into the project.
-///
-/// A task that opted out of the directory sandbox has nowhere to stage a
-/// mapping, and is refused with that explanation.
+fn build_ci_local_cache(
+    staging: Staging<'_>,
+    mode_override: Option<TaskCacheMode>,
+) -> Option<TaskCacheConfig> {
+    let cache_root = std::env::var_os("CUENV_CACHE_DIR")
+        .filter(|v| !v.is_empty())
+        .map_or_else(|| staging.project_root.join(".cuenv-cache"), PathBuf::from);
+
+    let cas = cuenv_cas::LocalCas::open(&cache_root).ok()?;
+    let action_cache = cuenv_cas::LocalActionCache::open(&cache_root).ok()?;
+    let vcs_hasher =
+        Arc::new(cuenv_vcs::WalkHasher::new(staging.workspace_root).excluding(&cache_root))
+            as Arc<dyn cuenv_vcs::VcsHasher>;
+
+    let secret_salt = std::env::var("CUENV_SECRET_SALT")
+        .ok()
+        .filter(|s| !s.is_empty());
+
+    Some(TaskCacheConfig {
+        cas: Arc::new(cas),
+        action_cache: Arc::new(action_cache),
+        vcs_hasher,
+        vcs_hasher_root: staging.workspace_root.to_path_buf(),
+        action_semantics_version: cuenv_cas::ACTION_SEMANTICS_VERSION,
+        runtime_identity_properties: BTreeMap::new(),
+        cache_disabled_reason: None,
+        secret_salt,
+        mode_override,
+        cache_root,
+        publisher: None,
+    })
+}
+
+/// Run a task through [`TaskExecutor`] with full sandbox, caching, and secret
+/// provenance parity with `cuenv task`.
 async fn execute_staged(staged: StagedTask<'_>) -> std::result::Result<TaskOutput, ExecutorError> {
     let StagedTask {
         task_name,
         task,
         env,
+        secret_var_names,
+        cache_mode_override,
         staging,
     } = staged;
     let mut environment = Environment::new();
     for (name, value) in env {
-        environment.set(name, value);
+        if secret_var_names.contains(&name) {
+            environment.set_secret(name, value);
+        } else {
+            environment.set(name, value);
+        }
     }
     // A task in the checkout finds its programs on the host's `PATH` when
     // nothing declares one. So does this one.
@@ -749,10 +855,12 @@ async fn execute_staged(staged: StagedTask<'_>) -> std::result::Result<TaskOutpu
         environment.set("PATH".to_string(), path);
     }
 
+    let local_cache = build_ci_local_cache(staging, cache_mode_override);
     let execution = ProjectExecution {
         project_root: staging.project_root.to_path_buf(),
         cue_module_root: Some(staging.module_root.to_path_buf()),
-        cache: None,
+        cache: local_cache.clone(),
+        cache_policy: ExternalCachePolicy::LocalOnly,
     };
     let executor = TaskExecutor::new(ExecutorConfig {
         capture_output: cuenv_core::OutputCapture::Capture,
@@ -763,7 +871,7 @@ async fn execute_staged(staged: StagedTask<'_>) -> std::result::Result<TaskOutpu
         working_dir: None,
         project_root: execution.project_root.clone(),
         cue_module_root: execution.cue_module_root.clone(),
-        cache: None,
+        cache: local_cache,
         sandbox_hasher_root: Some(staging.workspace_root.to_path_buf()),
         external_projects: staging
             .project_key
@@ -782,7 +890,7 @@ async fn execute_staged(staged: StagedTask<'_>) -> std::result::Result<TaskOutpu
         stdout: result.stdout,
         stderr: result.stderr,
         success: result.success,
-        from_cache: false,
+        from_cache: result.from_cache,
         duration_ms: 0,
         captures: HashMap::new(),
     })

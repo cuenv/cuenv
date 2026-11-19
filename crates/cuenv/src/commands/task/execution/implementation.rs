@@ -243,6 +243,7 @@ fn external_project_executions(
                     project_root: project.root.clone(),
                     cue_module_root: Some(project.module_root.clone()),
                     cache,
+                    cache_policy: cuenv_task_exec::ExternalCachePolicy::LocalOnly,
                 },
             )
         })

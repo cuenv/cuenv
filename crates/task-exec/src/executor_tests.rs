@@ -53,6 +53,7 @@ fn unisolated_hermeticity() -> Hermetic {
     Hermetic::Options(HermeticOptions {
         passthrough: Vec::new(),
         sandbox: Some(Sandbox::None),
+        network: false,
     })
 }
 
@@ -72,6 +73,8 @@ async fn test_task_result() {
         stdout: "output".to_string(),
         stderr: String::new(),
         success: true,
+        from_cache: false,
+        cache_source: None,
     };
     assert_eq!(result.name, "test");
     assert_eq!(result.exit_code, Some(0));
@@ -391,6 +394,7 @@ async fn unresolvable_inputs_fail_rather_than_run_against_the_checkout() {
     let requested = Hermetic::Options(HermeticOptions {
         passthrough: Vec::new(),
         sandbox: Some(Sandbox::Dir),
+        network: false,
     });
     for hermetic in [Hermetic::default(), requested] {
         let tmp = TempDir::new().unwrap();
@@ -1031,6 +1035,7 @@ async fn test_cache_hit_replays_task_output_events() {
         secret_salt: Some("test-salt".to_string()),
         mode_override: None,
         cache_root: cache_root.path().to_path_buf(),
+        publisher: None,
     };
     let executor = TaskExecutor::new(ExecutorConfig {
         environment: host_path_environment(),
@@ -1105,6 +1110,8 @@ fn test_summarize_task_failure_with_exit_code() {
         stdout: String::new(),
         stderr: "command not found".to_string(),
         success: false,
+        from_cache: false,
+        cache_source: None,
     };
     let summary = super::summarize_task_failure(&result, 10);
     assert!(summary.contains("build"));
@@ -1120,6 +1127,8 @@ fn test_summarize_task_failure_no_exit_code() {
         stdout: String::new(),
         stderr: String::new(),
         success: false,
+        from_cache: false,
+        cache_source: None,
     };
     let summary = super::summarize_task_failure(&result, 10);
     assert!(summary.contains("killed"));
@@ -1134,6 +1143,8 @@ fn test_summarize_task_failure_no_output() {
         stdout: String::new(),
         stderr: String::new(),
         success: false,
+        from_cache: false,
+        cache_source: None,
     };
     let summary = super::summarize_task_failure(&result, 10);
     assert!(summary.contains("No stdout/stderr"));
@@ -1151,6 +1162,8 @@ fn test_summarize_task_failure_truncates_long_output() {
             .join("\n"),
         stderr: String::new(),
         success: false,
+        from_cache: false,
+        cache_source: None,
     };
     let summary = super::summarize_task_failure(&result, 10);
     assert!(summary.contains("last 10 of 50 lines"));
@@ -1182,6 +1195,8 @@ fn test_format_failure_streams_both() {
         stdout: "stdout content".to_string(),
         stderr: "stderr content".to_string(),
         success: false,
+        from_cache: false,
+        cache_source: None,
     };
     let formatted = super::format_failure_streams(&result, 10);
     assert!(formatted.contains("stdout:"));
@@ -1484,6 +1499,8 @@ fn test_task_result_clone() {
         stdout: "output".to_string(),
         stderr: "error".to_string(),
         success: true,
+        from_cache: false,
+        cache_source: None,
     };
     let cloned = result.clone();
     assert_eq!(cloned.name, result.name);
@@ -1518,6 +1535,7 @@ fn executor_with_another_project(module_root: &Path) -> TaskExecutor {
                 project_root: content,
                 cue_module_root: Some(module_root.to_path_buf()),
                 cache: None,
+                cache_policy: crate::ExternalCachePolicy::LocalOnly,
             },
         )]),
         ..ExecutorConfig::default()

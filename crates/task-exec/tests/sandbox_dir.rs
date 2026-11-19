@@ -55,6 +55,7 @@ fn build_executor(workspace: &Path, cache_root: &Path) -> cuenv_cas::Result<Task
         secret_salt: Some("test-salt".to_string()),
         mode_override: None,
         cache_root: cache_root.to_path_buf(),
+        publisher: None,
     };
 
     Ok(TaskExecutor::new(ExecutorConfig {
@@ -91,6 +92,7 @@ fn sandboxed(script: &str, inputs: &[&str], outputs: &[&str]) -> Task {
         hermetic: Hermetic::Options(HermeticOptions {
             passthrough: Vec::new(),
             sandbox: Some(Sandbox::Dir),
+            network: false,
         }),
         ..Task::default()
     }
@@ -436,6 +438,7 @@ async fn isolation_can_be_opted_out_of() {
         hermetic: Hermetic::Options(HermeticOptions {
             passthrough: Vec::new(),
             sandbox: Some(Sandbox::None),
+            network: false,
         }),
         ..sandboxed("cat undeclared.txt", &["declared.txt"], &[])
     };

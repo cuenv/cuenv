@@ -22,6 +22,9 @@ pub enum TaskAttempt {
 pub struct ProcessOptions {
     pub(super) capture_output: OutputCapture,
     pub(super) timeout: Option<Duration>,
+    /// Bind stdin to `/dev/null` and close inherited non-stdio file descriptors
+    /// (`>= 3`) in `pre_exec`. Enabled for hermetic / confined runs.
+    pub(super) isolate_stdio_and_fds: bool,
 }
 
 /// Run a host task process in captured or inherited-output mode.
@@ -31,9 +34,21 @@ pub async fn run_task_process(
     options: ProcessOptions,
 ) -> Result<TaskAttempt> {
     if options.capture_output.should_capture() {
-        run_captured_process(name, command, options.timeout).await
+        run_captured_process(
+            name,
+            command,
+            options.timeout,
+            options.isolate_stdio_and_fds,
+        )
+        .await
     } else {
-        run_inherited_process(name, command, options.timeout).await
+        run_inherited_process(
+            name,
+            command,
+            options.timeout,
+            options.isolate_stdio_and_fds,
+        )
+        .await
     }
 }
 
@@ -41,13 +56,18 @@ async fn run_captured_process(
     name: &str,
     mut command: Command,
     timeout: Option<Duration>,
+    isolate_stdio_and_fds: bool,
 ) -> Result<TaskAttempt> {
     use tokio::io::{AsyncBufReadExt, BufReader};
 
     let start_time = std::time::Instant::now();
 
     #[cfg(unix)]
-    setup_process_group(&mut command);
+    setup_process_group(&mut command, isolate_stdio_and_fds);
+
+    if isolate_stdio_and_fds {
+        command.stdin(Stdio::null());
+    }
 
     let mut child = command
         .stdout(Stdio::piped())
@@ -92,7 +112,12 @@ async fn run_captured_process(
     });
 
     let status = match wait_or_terminate(name, &mut child, timeout).await? {
-        WaitOutcome::Exited(status) => status,
+        WaitOutcome::Exited(status) => {
+            // Reap any lingering background descendants in the task's process
+            // group before collecting outputs or publishing cache entries.
+            reap_process_group(child_pid).await;
+            status
+        }
         WaitOutcome::TimedOut(timeout) => {
             if let Some(pid) = child_pid {
                 process_registry::global_registry().unregister(pid).await;
@@ -135,6 +160,8 @@ async fn run_captured_process(
         stdout,
         stderr,
         success,
+        from_cache: false,
+        cache_source: None,
     }))
 }
 
@@ -142,14 +169,21 @@ async fn run_inherited_process(
     name: &str,
     mut command: Command,
     timeout: Option<Duration>,
+    isolate_stdio_and_fds: bool,
 ) -> Result<TaskAttempt> {
     #[cfg(unix)]
-    setup_process_group(&mut command);
+    setup_process_group(&mut command, isolate_stdio_and_fds);
+
+    let stdin = if isolate_stdio_and_fds {
+        Stdio::null()
+    } else {
+        Stdio::inherit()
+    };
 
     let mut child = command
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
-        .stdin(Stdio::inherit())
+        .stdin(stdin)
         .spawn()
         .map_err(|e| Error::io(format!("spawn task {}", name), e))?;
 
@@ -162,7 +196,10 @@ async fn run_inherited_process(
 
     let start_time = std::time::Instant::now();
     let status = match wait_or_terminate(name, &mut child, timeout).await? {
-        WaitOutcome::Exited(status) => status,
+        WaitOutcome::Exited(status) => {
+            reap_process_group(child_pid).await;
+            status
+        }
         WaitOutcome::TimedOut(timeout) => {
             if let Some(pid) = child_pid {
                 process_registry::global_registry().unregister(pid).await;
@@ -194,6 +231,8 @@ async fn run_inherited_process(
         stdout: String::new(),
         stderr: String::new(),
         success,
+        from_cache: false,
+        cache_source: None,
     }))
 }
 
@@ -255,6 +294,8 @@ fn timeout_result(task: TimedOutTask<'_>) -> TaskResult {
             format!("{}\n{message}", task.stderr)
         },
         success: false,
+        from_cache: false,
+        cache_source: None,
     }
 }
 
@@ -264,6 +305,62 @@ fn format_duration(duration: Duration) -> String {
     } else {
         format!("{}s", duration.as_secs())
     }
+}
+
+/// Ensure no lingering descendants in the child's process group remain alive
+/// after the lead process has exited.
+async fn reap_process_group(child_pid: Option<u32>) {
+    #[cfg(unix)]
+    if let Some(pid) = child_pid
+        && let Ok(pgid) = i32::try_from(pid)
+    {
+        // Fast path: if no processes remain in `-pgid`, `kill(-pgid, 0)` returns
+        // -1 with ESRCH immediately.
+        if !process_group_alive(pgid) {
+            return;
+        }
+        // SAFETY: The child was placed in its own process group by `setup_process_group`.
+        #[expect(
+            unsafe_code,
+            reason = "Required to terminate lingering task descendants"
+        )]
+        unsafe {
+            libc::kill(-pgid, libc::SIGTERM);
+        }
+        for _ in 0..10 {
+            if !process_group_alive(pgid) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        // SAFETY: Escalate to SIGKILL for stubborn descendants.
+        #[expect(
+            unsafe_code,
+            reason = "Required to terminate lingering task descendants"
+        )]
+        unsafe {
+            libc::kill(-pgid, libc::SIGKILL);
+        }
+        for _ in 0..25 {
+            if !process_group_alive(pgid) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = child_pid;
+}
+
+#[cfg(unix)]
+fn process_group_alive(pgid: i32) -> bool {
+    // SAFETY: Signal 0 probes whether any process exists in `-pgid`.
+    #[expect(unsafe_code, reason = "Required to probe process group liveness")]
+    let rc = unsafe { libc::kill(-pgid, 0) };
+    if rc == 0 {
+        return true;
+    }
+    std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
 }
 
 async fn terminate_child(child: &mut tokio::process::Child, child_pid: Option<u32>) -> Result<()> {
@@ -281,6 +378,7 @@ async fn terminate_child(child: &mut tokio::process::Child, child_pid: Option<u3
             .await
             .is_ok()
         {
+            reap_process_group(child_pid).await;
             return Ok(());
         }
         // SAFETY: Same process group as above; SIGKILL is the final fallback after SIGTERM.
@@ -292,6 +390,7 @@ async fn terminate_child(child: &mut tokio::process::Child, child_pid: Option<u3
             .await
             .is_ok()
         {
+            reap_process_group(child_pid).await;
             return Ok(());
         }
     }
@@ -302,20 +401,54 @@ async fn terminate_child(child: &mut tokio::process::Child, child_pid: Option<u3
         .map_err(|e| Error::io("kill timed-out task", e))
 }
 
-/// Set up process group on Unix so we can kill the entire process tree on Ctrl-C.
-///
-/// This creates a new process group with the spawned process as the leader,
-/// allowing us to send signals to all descendants when terminating.
+/// Set up process group on Unix so we can kill the entire process tree on Ctrl-C
+/// and reap lingering descendants on exit. When `close_extra_fds` is `true`,
+/// closes all inherited non-stdio file descriptors (`>= 3`) using strictly
+/// async-signal-safe syscalls.
 #[cfg(unix)]
-fn setup_process_group(cmd: &mut Command) {
+fn setup_process_group(cmd: &mut Command, close_extra_fds: bool) {
     // SAFETY: the child-side pre-exec closure only calls async-signal-safe
-    // setpgid and returns; it does not allocate or acquire inherited locks.
-    // setpgid(0, 0) makes the child the leader of its own process group.
-    #[expect(unsafe_code, reason = "Required for POSIX process group management")]
+    // `setpgid` and `close`/`close_range`; it never allocates or acquires locks.
+    #[expect(
+        unsafe_code,
+        reason = "Required for POSIX process group and FD hygiene"
+    )]
     unsafe {
-        cmd.pre_exec(|| {
+        cmd.pre_exec(move || {
             libc::setpgid(0, 0);
+            if close_extra_fds {
+                close_non_stdio_fds();
+            }
             Ok(())
         });
+    }
+}
+
+#[cfg(unix)]
+#[expect(
+    unsafe_code,
+    reason = "Required for async-signal-safe FD closing after fork"
+)]
+fn close_non_stdio_fds() {
+    unsafe {
+        #[cfg(target_os = "linux")]
+        {
+            // Try close_range(3, ~0U, 0) first (Linux >= 5.9).
+            if libc::syscall(libc::SYS_close_range, 3_u32, u32::MAX, 0_u32) == 0 {
+                return;
+            }
+        }
+        let mut limit = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        let max_fd = if libc::getrlimit(libc::RLIMIT_NOFILE, &raw mut limit) == 0 {
+            libc::c_int::try_from(limit.rlim_cur.min(4096)).unwrap_or(4096)
+        } else {
+            1024
+        };
+        for fd in 3..max_fd {
+            let _ = libc::close(fd);
+        }
     }
 }

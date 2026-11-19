@@ -10,6 +10,7 @@
 //! 4. Persisting outputs and metadata after a successful execution on a miss.
 
 use super::TaskCommandExt;
+use super::sandbox::EffectiveSandbox;
 use crate::{Sandbox, Task, TaskCacheMode, TaskCachePolicy};
 use cuenv_cas::{
     Action, ActionCache, ActionResult, CanonicalMessage, Cas, Command, Digest, Directory,
@@ -34,6 +35,15 @@ pub struct EligibleAction {
     pub action: Action,
     /// The key the action cache is consulted with.
     pub digest: Digest,
+    /// The canonical `Command` referenced by `action.command_digest`.
+    pub command: Command,
+    /// Digest of `command` in the local CAS.
+    pub command_digest: Digest,
+    /// Whether the action's environment or task env contains any secret values.
+    ///
+    /// Secret-bearing tasks are kept local-only and never published to a shared
+    /// remote cache.
+    pub contains_secrets: bool,
     /// Every input file the action declares, already hashed, each carrying
     /// both where it lives on disk and where the action expects to see it.
     ///
@@ -105,6 +115,13 @@ pub struct TaskCacheConfig {
     /// the workspace means an interrupted run leaves nothing in the user's
     /// checkout.
     pub cache_root: PathBuf,
+    /// Optional post-run remote publisher.
+    ///
+    /// Ordinary CAS writes (`cas.put_bytes`, `cas.put_file`) stay local-only.
+    /// When present, this publisher runs **only after** a strictly confined
+    /// task exits 0, its descendants have been reaped, outputs have been
+    /// projected, and the local cache entry has been recorded.
+    pub publisher: Option<Arc<dyn cuenv_cas::ActionPublisher>>,
 }
 
 impl std::fmt::Debug for TaskCacheConfig {
@@ -113,6 +130,7 @@ impl std::fmt::Debug for TaskCacheConfig {
             .field("vcs_hasher", &self.vcs_hasher.name())
             .field("vcs_hasher_root", &self.vcs_hasher_root)
             .field("action_semantics_version", &self.action_semantics_version)
+            .field("has_publisher", &self.publisher.is_some())
             .field(
                 "runtime_identity_properties",
                 &self.runtime_identity_properties,
@@ -178,6 +196,27 @@ pub struct BuildActionInput<'input> {
 /// Input hashing failures degrade to a [`CacheOutcome::Skipped`] so cache
 /// eligibility never changes whether the task itself is runnable.
 pub async fn build_action(input: BuildActionInput<'_>) -> Result<CacheOutcome> {
+    let default_sandbox = match input.task.sandbox() {
+        Sandbox::None => EffectiveSandbox::None,
+        Sandbox::Dir | Sandbox::Auto | Sandbox::Strict => EffectiveSandbox::Dir,
+    };
+    build_action_with_sandbox(input, &default_sandbox).await
+}
+
+/// Build the [`Action`] envelope for a task under a specific resolved
+/// [`EffectiveSandbox`] tier.
+///
+/// Preserves v4 keys for [`EffectiveSandbox::Dir`] and [`EffectiveSandbox::None`];
+/// only records `cuenv.sandbox.policy` and `cuenv.network = "disabled"` when
+/// strict OS confinement is actually enforced.
+///
+/// # Errors
+///
+/// Propagates failures from task command resolution and canonical encoding.
+pub async fn build_action_with_sandbox(
+    input: BuildActionInput<'_>,
+    effective_sandbox: &EffectiveSandbox,
+) -> Result<CacheOutcome> {
     let BuildActionInput {
         task,
         task_name,
@@ -348,6 +387,7 @@ pub async fn build_action(input: BuildActionInput<'_>) -> Result<CacheOutcome> {
             ));
         }
     };
+    let contains_secrets = !environment.secret_names().is_empty();
 
     let command_spec = task.command_spec(|command| environment.resolve_command(command))?;
     let mut arguments = Vec::with_capacity(1 + command_spec.args.len());
@@ -371,12 +411,17 @@ pub async fn build_action(input: BuildActionInput<'_>) -> Result<CacheOutcome> {
     platform_properties.insert("arch".to_string(), std::env::consts::ARCH.to_string());
     platform_properties.insert(
         "cuenv.sandbox".to_string(),
-        match task.sandbox() {
-            Sandbox::Dir => "dir",
-            Sandbox::None => "none",
-        }
-        .to_string(),
+        effective_sandbox.key_value().to_string(),
     );
+    if let Some(proof) = effective_sandbox.strict_proof() {
+        platform_properties.insert(
+            "cuenv.sandbox.policy".to_string(),
+            proof.policy_digest.clone(),
+        );
+        if proof.network_enforced {
+            platform_properties.insert("cuenv.network".to_string(), "disabled".to_string());
+        }
+    }
     if let Some(timeout) = task.timeout.as_deref() {
         // A cached success produced with a long timeout must not bypass a
         // shorter timeout configured later. REAPI models timeout on Action;
@@ -389,7 +434,7 @@ pub async fn build_action(input: BuildActionInput<'_>) -> Result<CacheOutcome> {
     }
 
     let action = Action {
-        command_digest,
+        command_digest: command_digest.clone(),
         input_root_digest,
         platform: Platform {
             properties: platform_properties,
@@ -403,6 +448,9 @@ pub async fn build_action(input: BuildActionInput<'_>) -> Result<CacheOutcome> {
     Ok(CacheOutcome::Eligible(Box::new(EligibleAction {
         action,
         digest,
+        command,
+        command_digest,
+        contains_secrets,
         inputs: execution.inputs,
         working_directory: execution.working_directory,
     })))
@@ -1055,20 +1103,25 @@ fn secure_workspace_destination(workdir: &Path, relative: &Path) -> Result<PathB
 /// Returns an error if the [`Cas`] or [`ActionCache`] persistence fails.
 pub async fn record(input: RecordInput<'_>) -> Result<()> {
     let resolved_outputs = collect_outputs(input.workdir, &input.task.outputs)?;
-    record_resolved(input, &resolved_outputs).await
+    record_resolved(input, &resolved_outputs).await.map(|_| ())
 }
 
 /// Persist a successful execution using an already-resolved output set.
 ///
 /// The executor uses this after projecting the same set back to the
 /// workspace, ensuring first-run and cache-hit output semantics agree.
+/// Returns `Ok(Some(result))` when an `ActionResult` was persisted locally,
+/// or `Ok(None)` when `exit_code != 0`.
 ///
 /// # Errors
 ///
 /// Returns an error if an output cannot be inspected, has a non-UTF-8 path,
 /// or cannot be stored in the [`Cas`], or if the captured streams or the
 /// [`ActionCache`] entry cannot be written.
-pub async fn record_resolved(input: RecordInput<'_>, resolved_outputs: &[PathBuf]) -> Result<()> {
+pub async fn record_resolved(
+    input: RecordInput<'_>,
+    resolved_outputs: &[PathBuf],
+) -> Result<Option<ActionResult>> {
     let RecordInput {
         cache,
         action_digest,
@@ -1082,7 +1135,7 @@ pub async fn record_resolved(input: RecordInput<'_>, resolved_outputs: &[PathBuf
 
     if exit_code != 0 {
         tracing::debug!(exit_code, "skipping cache write for non-zero exit code");
-        return Ok(());
+        return Ok(None);
     }
 
     let mut output_files = Vec::new();
@@ -1151,7 +1204,7 @@ pub async fn record_resolved(input: RecordInput<'_>, resolved_outputs: &[PathBuf
         .update(action_digest, &result)
         .await
         .map_err(|e| cuenv_core::Error::configuration(format!("action cache update: {e}")))?;
-    Ok(())
+    Ok(Some(result))
 }
 
 fn is_expired(result: &ActionResult, max_age: Option<&str>) -> Result<bool> {

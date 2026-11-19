@@ -11,13 +11,30 @@ package schema
 #Cache: {
 	// Remote cache to read through to. Omit for a local-only cache.
 	remote?: #RemoteCache
+
+	// Local cache settings.
+	local?: #LocalCache
 }
 
-// A cache server speaking the Bazel Remote Execution API v2.
+// Local on-disk cache settings.
+#LocalCache: {
+	// Target maximum size for `cuenv cache gc` (e.g., "20GiB", "5GB").
+	maxSize?: string
+}
+
+// Transport protocol spoken by a remote cache server.
 //
-// The endpoint must expose REAPI v2 ActionCache, CAS, Capabilities and
-// ByteStream services with SHA-256 digests. Compatibility is verified during
-// connection; provider-specific behavior may still vary.
+//   "grpc" — Bazel Remote Execution API v2 over gRPC (default, including for
+//            http:// and https:// endpoints for backwards compatibility).
+//   "http" — Bazel HTTP/REST remote cache layout (/cas/<sha256>, /ac/<sha256>).
+#CacheProtocol: "grpc" | "http"
+
+// A cache server speaking the Bazel Remote Execution API v2 or Bazel HTTP
+// remote cache protocol.
+//
+// For gRPC, the endpoint must expose REAPI v2 ActionCache, CAS, Capabilities
+// and ByteStream services with SHA-256 digests. Compatibility is verified
+// during connection; provider-specific behavior may still vary.
 #RemoteCache: {
 	// Endpoint URL. `grpcs://` is TLS, `grpc://` is plaintext. A bare
 	// host:port is rejected rather than guessed, because guessing wrong
@@ -27,16 +44,28 @@ package schema
 	// without editing CUE.
 	endpoint!: string & =~"^(grpc|grpcs|http|https)://"
 
+	// Transport protocol. Defaults to "grpc" so existing http:// and https://
+	// gRPC endpoints continue to work unchanged. Set to "http" to speak the
+	// Bazel HTTP/REST cache layout (/cas/<sha256>, /ac/<sha256>).
+	//
+	// Overridden by $CUENV_REMOTE_CACHE_PROTOCOL.
+	protocol?: #CacheProtocol | *"grpc"
+
 	// REAPI instance name. Most single-tenant servers use the empty
 	// string; multi-tenant providers use it to select a cache.
+	//
+	// For HTTP caches, when non-empty this is appended as a path prefix before
+	// `/cas` and `/ac`; note that `bazel-remote` ignores HTTP instance names
+	// for CAS and only namespaces ActionCache keys when configured, so a URL
+	// prefix alone cannot establish tenant isolation.
 	instance?: string | *""
 
-	// Reserved upload opt-in. Reading is always allowed.
+	// Upload opt-in. Reading is always allowed.
 	//
-	// Defaults to false. cuenv currently forces remote connections read-only
-	// even when this is true: directory execution roots isolate relative
-	// workspace access but do not yet confine absolute host filesystem reads.
-	// Upload will be enabled only after a strict platform sandbox lands.
+	// Defaults to false. When true, cuenv publishes Action, Command, logs,
+	// outputs, and ActionResult via a dedicated post-run publisher only after
+	// a task succeeds under validated Linux strict confinement with descendants
+	// reaped, outputs projected, and no project secrets in the environment.
 	//
 	// Overridden by $CUENV_REMOTE_CACHE_UPLOAD.
 	upload?: bool | *false
@@ -44,6 +73,39 @@ package schema
 	// Credentials. Values are never written in CUE — only the name of the
 	// environment variable holding them.
 	auth?: #CacheAuth
+
+	// CI trust-boundary settings for generated workflows (`cuenv sync ci`).
+	ci?: #RemoteCacheCi
+}
+
+// CI trust-boundary settings for remote cache credentials in generated
+// workflows (`cuenv sync ci`).
+//
+// Enforces read-only vs read-write credential separation at the CI platform's
+// credential-issuance boundary (GitHub Environments / Buildkite secret access
+// policies) rather than relying on client-side flags alone.
+#RemoteCacheCi: {
+	// Secret name holding a read-only cache credential for untrusted triggers
+	// (pull requests, forks). Omit to disable remote cache access on untrusted
+	// jobs.
+	readSecret?: string
+
+	// Secret name holding a read-write cache credential, exposed only to
+	// explicitly authorized jobs on protected refs.
+	writeSecret?: string
+
+	// GitHub Actions Environment name gating `writeSecret` to protected
+	// branches or tags (e.g. "cache-write").
+	writeEnvironment?: string
+
+	// Buildkite agent queue restricted via Buildkite secret access policies to
+	// protected branches that may access `writeSecret`.
+	writeQueue?: string
+
+	// Isolate persistent local cache directories across trust levels
+	// (untrusted PR vs protected push) by setting distinct `CUENV_CACHE_DIR`
+	// paths per trust level.
+	isolatedCacheDir?: bool | *true
 }
 
 // How to authenticate to a remote cache: exactly one of a bearer token or a

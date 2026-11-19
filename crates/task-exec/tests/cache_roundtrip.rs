@@ -53,6 +53,7 @@ fn build_executor(workspace: &Path, cache_root: &Path) -> cuenv_cas::Result<Task
         secret_salt: Some("test-salt".to_string()),
         mode_override: None,
         cache_root: cache_root.to_path_buf(),
+        publisher: None,
     };
 
     let config = ExecutorConfig {
@@ -99,6 +100,7 @@ fn unsandboxed(task: Task) -> Task {
         hermetic: Hermetic::Options(HermeticOptions {
             passthrough: Vec::new(),
             sandbox: Some(Sandbox::None),
+            network: false,
         }),
         ..task
     }

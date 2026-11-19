@@ -1094,3 +1094,144 @@ pub enum ReleaseCommands {
         version: Option<String>,
     },
 }
+
+/// Cache diagnostics and maintenance subcommands.
+#[derive(Subcommand, Debug, Clone)]
+pub enum CacheCommands {
+    /// Show local cache location and remote cache connectivity status.
+    #[command(about = "Show local cache location and remote cache connectivity status")]
+    Status {
+        /// Path to directory containing CUE files.
+        #[arg(
+            long,
+            short = 'p',
+            help = "Path to directory containing CUE files",
+            default_value = "."
+        )]
+        path: String,
+        /// Name of the CUE package to evaluate.
+        #[arg(
+            long,
+            help = "Name of the CUE package to evaluate",
+            default_value = "cuenv"
+        )]
+        package: String,
+        /// Output format (text or json).
+        #[arg(
+            long = "output",
+            short = 'o',
+            help = "Output format",
+            value_enum,
+            default_value_t = OutputFormat::Text
+        )]
+        output_format: OutputFormat,
+    },
+    /// Show local CAS and ActionCache entry counts and disk usage.
+    #[command(about = "Show local CAS and ActionCache entry counts and disk usage")]
+    Stats {
+        /// Path to directory containing CUE files.
+        #[arg(
+            long,
+            short = 'p',
+            help = "Path to directory containing CUE files",
+            default_value = "."
+        )]
+        path: String,
+        /// Output format (text or json).
+        #[arg(
+            long = "output",
+            short = 'o',
+            help = "Output format",
+            value_enum,
+            default_value_t = OutputFormat::Text
+        )]
+        output_format: OutputFormat,
+    },
+    /// Verify digest and referential integrity of the local cache.
+    #[command(about = "Verify digest and referential integrity of the local cache")]
+    Verify {
+        /// Path to directory containing CUE files.
+        #[arg(
+            long,
+            short = 'p',
+            help = "Path to directory containing CUE files",
+            default_value = "."
+        )]
+        path: String,
+        /// Remove corrupt blobs and invalid or dangling action entries.
+        #[arg(
+            long,
+            help = "Remove corrupt CAS blobs and invalid/dangling ActionCache entries"
+        )]
+        repair: bool,
+        /// Output format (text or json).
+        #[arg(
+            long = "output",
+            short = 'o',
+            help = "Output format",
+            value_enum,
+            default_value_t = OutputFormat::Text
+        )]
+        output_format: OutputFormat,
+    },
+    /// Garbage-collect aged or excess local cache entries and unreferenced blobs.
+    #[command(about = "Garbage-collect aged or excess local cache entries and unreferenced blobs")]
+    Gc {
+        /// Path to directory containing CUE files.
+        #[arg(
+            long,
+            short = 'p',
+            help = "Path to directory containing CUE files",
+            default_value = "."
+        )]
+        path: String,
+        /// Target upper bound on local cache size (e.g. 500M, 2G, 10GiB).
+        #[arg(
+            long,
+            help = "Target upper bound on local cache size (e.g. 500M, 2G, 10GiB)"
+        )]
+        max_size: Option<String>,
+        /// Evict action entries older than this duration (e.g. 7d, 24h, 30m).
+        #[arg(
+            long,
+            help = "Evict action entries older than this duration (e.g. 7d, 24h, 30m)"
+        )]
+        max_age: Option<String>,
+        /// Show what would be removed without deleting any files.
+        #[arg(long, help = "Show what would be removed without deleting any files")]
+        dry_run: bool,
+        /// Output format (text or json).
+        #[arg(
+            long = "output",
+            short = 'o',
+            help = "Output format",
+            value_enum,
+            default_value_t = OutputFormat::Text
+        )]
+        output_format: OutputFormat,
+    },
+    /// Remove unreferenced CAS blobs and stale temp directories.
+    #[command(about = "Remove unreferenced CAS blobs and stale temp directories")]
+    Prune {
+        /// Path to directory containing CUE files.
+        #[arg(
+            long,
+            short = 'p',
+            help = "Path to directory containing CUE files",
+            default_value = "."
+        )]
+        path: String,
+        /// Show what would be removed without deleting any files.
+        #[arg(long, help = "Show what would be removed without deleting any files")]
+        dry_run: bool,
+        /// Output format (text or json).
+        #[arg(
+            long = "output",
+            short = 'o',
+            help = "Output format",
+            value_enum,
+            default_value_t = OutputFormat::Text
+        )]
+        output_format: OutputFormat,
+    },
+}
