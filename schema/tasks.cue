@@ -294,11 +294,12 @@ package schema
 	let _childrenByType = {
 		group: {
 			// `cuenvRef` is reserved for what cuenv writes on a group.
-			{[childName= !~"^(type|dependsOn|maxConcurrency|description|cuenvRef)$"]: ((#Task | #TaskGroup) & {
-				_cuenvPrefix:  _name + "."
-				_cuenvSelf:    childName
-				_cuenvProject: _groupProject
-			}) | (#TaskSequence & [...({_cuenvProject: _groupProject, ...} | [...])])
+			{
+				[!~"^(type|dependsOn|maxConcurrency|description|cuenvRef)$"]~(childName,_): ((#Task | #TaskGroup) & {
+					_cuenvPrefix:  _name + "."
+					_cuenvSelf:    childName
+					_cuenvProject: _groupProject
+				}) | (#TaskSequence & [...({_cuenvProject: _groupProject, ...} | [...])])
 			}
 		}
 	}

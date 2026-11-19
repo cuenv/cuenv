@@ -620,7 +620,7 @@ fn create_monorepo_test_env() -> TestResult<(TempDir, String)> {
     fs::write(
         cue_mod_dir.join("module.cue"),
         r#"module: "test.example/monorepo"
-language: version: "v0.9.0"
+language: version: "v0.18.0"
 "#,
     )?;
 

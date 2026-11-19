@@ -1,21 +1,27 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/fstest"
 
 	"cuelang.org/go/cue"
 	"cuelang.org/go/cue/ast"
 	"cuelang.org/go/cue/load"
 	"cuelang.org/go/cue/parser"
+	"cuelang.org/go/mod/modfile"
+	"cuelang.org/go/mod/module"
 )
 
 func embedModule(t *testing.T) string {
 	t.Helper()
 	return writeCueModule(t, map[string]string{
+		"cue.mod/module.cue": "module: \"example.com/bridge@v0\"\nlanguage: version: \"v0.18.0\"\n",
 		"env.cue": `@extern(embed)
 package app
 
@@ -32,6 +38,167 @@ imported: schema.value
 		"schema/types.cue": "@extern(embed)\npackage schema\nvalue: _ @embed(file=\"i.json\")\n",
 		"schema/i.json":    `{"v": "old"}`,
 	})
+}
+
+func TestFrozenEmbeddedOverlayBytes(t *testing.T) {
+	dir := embedModule(t)
+	cueSource := "@extern(embed)\npackage app\n\n// The overlay supplies both sources.\nvalue: _ @embed(file=\"b.bin\", type=binary)\n"
+	embedBytes := []byte{0x00, 0xfe, '\r', '\n'}
+	config := load.Config{
+		Dir: dir, Package: "app",
+		Overlay: map[string]load.Source{
+			filepath.Join(dir, "env.cue"): load.FromString(cueSource),
+			filepath.Join(dir, "b.bin"):   load.FromBytes(embedBytes),
+		},
+	}
+	graph, failure := freezeConsistentGraph(config)
+	if failure != "" {
+		t.Fatal(failure)
+	}
+	if len(graph.Nodes[0].Files) != 1 || graph.Nodes[0].Files[0].Source != cueSource {
+		t.Fatal("frozen CUE source differs from the overlay")
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatal(err)
+	}
+	value, err := graph.build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := value.LookupPath(cue.ParsePath("value")).Bytes()
+	if err != nil || string(got) != string(embedBytes) {
+		t.Fatalf("embedded overlay bytes = %v, %v", got, err)
+	}
+}
+
+func TestFrozenEmbeddedVirtualLocation(t *testing.T) {
+	fsys := fstest.MapFS{
+		"project/cue.mod/module.cue": {Data: []byte("module: \"example.test/app@v0\"\nlanguage: version: \"v0.18.0\"\n")},
+		"project/app/env.cue":        {Data: []byte("@extern(embed)\npackage app\nvalue: _ @embed(glob=\"data/*.json\")\n")},
+		"project/app/data/one.json":  {Data: []byte("42")},
+	}
+	graph, failure := freezeConsistentGraph(load.Config{
+		Dir: "/project/app", ModuleRoot: "/project", Package: "app", FS: fsys,
+		FromFSPath: func(path string) string { return "memory:" + path },
+	})
+	if failure != "" {
+		t.Fatal(failure)
+	}
+	clear(fsys)
+	instance, err := graph.instance()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := instance.RootLoc.String(); got != "memory:/project" {
+		t.Fatalf("module location = %q", got)
+	}
+	if got := instance.DirLoc.String(); got != "memory:/project/app" {
+		t.Fatalf("package location = %q", got)
+	}
+	if got := instance.Files[0].Pos().File().FSLoc().String(); got != "memory:/project/app/env.cue" {
+		t.Fatalf("file location = %q", got)
+	}
+	value, err := graph.build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := value.LookupPath(cue.MakePath(cue.Str("value"), cue.Str("data/one.json"))).Int64()
+	if err != nil || got != 42 {
+		t.Fatalf("embedded virtual file = %d, %v", got, err)
+	}
+}
+
+func TestFrozenEmbeddedNestedModule(t *testing.T) {
+	for _, attribute := range []string{`file="nested/value.json"`, `glob="nested/*.json"`} {
+		t.Run(attribute, func(t *testing.T) {
+			dir := writeCueModule(t, map[string]string{
+				"cue.mod/module.cue":        "module: \"example.test/app@v0\"\nlanguage: version: \"v0.18.0\"\n",
+				"env.cue":                   "@extern(embed)\npackage app\nvalue: _ @embed(" + attribute + ")\n",
+				"nested/cue.mod/module.cue": "module: \"example.test/nested@v0\"\nlanguage: version: \"v0.18.0\"\n",
+				"nested/value.json":         "42",
+			})
+			graph, failure := freezeConsistentGraph(load.Config{Dir: dir, Package: "app"})
+			if failure != "" {
+				t.Fatal(failure)
+			}
+			if err := os.RemoveAll(dir); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := graph.build(); err == nil || !strings.Contains(err.Error(), "in different module") {
+				t.Fatalf("nested module error = %v", err)
+			}
+		})
+	}
+}
+
+type frozenEmbedRegistry struct {
+	dir  string
+	dep  module.Version
+	file *modfile.File
+}
+
+func (r frozenEmbedRegistry) ModFile(_ context.Context, version module.Version) (*modfile.File, error) {
+	if version != r.dep {
+		return nil, fmt.Errorf("unexpected module %s", version)
+	}
+	return r.file, nil
+}
+
+func (r frozenEmbedRegistry) Fetch(_ context.Context, version module.Version) (module.SourceLoc, error) {
+	if version != r.dep {
+		return module.SourceLoc{}, fmt.Errorf("unexpected module %s", version)
+	}
+	return module.SourceLoc{FS: module.OSDirFS(r.dir), Dir: "."}, nil
+}
+
+func (r frozenEmbedRegistry) ModuleVersions(_ context.Context, path string) ([]string, error) {
+	if path != r.dep.Path() {
+		return nil, fmt.Errorf("unexpected module path %s", path)
+	}
+	return []string{r.dep.Version()}, nil
+}
+
+func TestFrozenEmbeddedRegistryImport(t *testing.T) {
+	const depModule = "module: \"example.test/dep@v1\"\nlanguage: version: \"v0.18.0\"\n"
+	depDir := writeCueModule(t, map[string]string{
+		"cue.mod/module.cue": depModule,
+		"library/env.cue":    "@extern(embed)\npackage library\nvalue: _ @embed(file=\"value.json\")\n",
+		"library/value.json": "42",
+	})
+	rootDir := writeCueModule(t, map[string]string{
+		"cue.mod/module.cue": "module: \"example.test/app@v0\"\nlanguage: version: \"v0.18.0\"\ndeps: \"example.test/dep@v1\": {v: \"v1.2.3\", default: true}\n",
+		"env.cue":            "package app\nimport \"example.test/dep/library\"\nvalue: library.value\n",
+	})
+	dep := module.MustNewVersion("example.test/dep@v1", "v1.2.3")
+	mod, err := modfile.Parse([]byte(depModule), "cue.mod/module.cue")
+	if err != nil {
+		t.Fatal(err)
+	}
+	graph, failure := freezeConsistentGraph(load.Config{
+		Dir: rootDir, Package: "app",
+		Registry: frozenEmbedRegistry{dir: depDir, dep: dep, file: mod},
+	})
+	if failure != "" {
+		t.Fatal(failure)
+	}
+	if err := os.RemoveAll(depDir); err != nil {
+		t.Fatal(err)
+	}
+	instance, err := graph.instance()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if imported := instance.LookupImport("example.test/dep/library"); imported == nil || imported.ModuleVersion != dep {
+		t.Fatalf("unversioned registry import = %#v", imported)
+	}
+	value, err := graph.build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := value.LookupPath(cue.ParsePath("value")).Int64()
+	if err != nil || got != 42 {
+		t.Fatalf("embedded registry dependency value = %d, %v", got, err)
+	}
 }
 
 func embeddedValues(t *testing.T, graph frozenGraph) map[string]string {

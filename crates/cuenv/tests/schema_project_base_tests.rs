@@ -38,7 +38,7 @@ fn write_local_cuenv_module(root: &Path) -> TestResult {
     fs::create_dir_all(root.join("cue.mod"))?;
     fs::write(
         root.join("cue.mod/module.cue"),
-        "module: \"github.com/cuenv/cuenv\"\nlanguage: {\n\tversion: \"v0.14.1\"\n}\n",
+        "module: \"github.com/cuenv/cuenv\"\nlanguage: {\n\tversion: \"v0.18.0\"\n}\n",
     )?;
 
     // Copy the real schema package into the temporary module so imports work.

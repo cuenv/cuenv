@@ -1098,7 +1098,7 @@ mod tests {
         std::fs::create_dir(directory.path().join("schema"))?;
         std::fs::write(
             directory.path().join("cue.mod/module.cue"),
-            "module: \"example.com/native\"\nlanguage: version: \"v0.14.1\"\n",
+            "module: \"example.com/native\"\nlanguage: version: \"v0.18.0\"\n",
         )?;
         let repository = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         // `infrastructure.cue` and the definitions its state token uses.
