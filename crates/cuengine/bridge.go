@@ -6,6 +6,7 @@ package main
 import "C"
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -207,6 +208,15 @@ func parseModuleFile(moduleRoot string) (*modfile.File, string, error) {
 		return nil, moduleFile, err
 	}
 	return file, moduleFile, nil
+}
+
+func emptyModuleEvaluation(moduleRoot string, skippedDirectories []SkippedDirectory) string {
+	// Module-level loader errors may carry no package identity. Check the
+	// module file before reporting that the requested package is absent.
+	if _, moduleFile, err := parseModuleFile(moduleRoot); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return createErrorResponse(ErrorCodeInvalidInput, fmt.Sprintf("Invalid CUE module file %s: %v", moduleFile, err), nil)
+	}
+	return emptyResultResponse(skippedDirectories)
 }
 
 //export cue_module_dependency_version
@@ -585,7 +595,7 @@ func evaluateModuleResponse(goModuleRoot string, goPackageName string, goOptions
 		// package is absent, not that CUE evaluation itself failed. Returning an
 		// empty result keeps absence distinct from syntax/build errors below.
 		if effectivePackageName != "" {
-			result = emptyResultResponse(skippedDirectories)
+			result = emptyModuleEvaluation(goModuleRoot, skippedDirectories)
 			return result
 		}
 		message := fmt.Sprintf("No CUE instances found in %s", evalDir)
@@ -797,7 +807,7 @@ func evaluateModuleResponse(goModuleRoot string, goPackageName string, goOptions
 		// directory contains only another package (or no package declaration).
 		// Preserve that as an empty success; load/build errors remain failures.
 		if effectivePackageName != "" && len(loadErrors) == 0 && len(buildErrors) == 0 {
-			result = emptyResultResponse(skippedDirectories)
+			result = emptyModuleEvaluation(goModuleRoot, skippedDirectories)
 			return result
 		}
 		failures := append(append([]string{}, loadErrors...), buildErrors...)

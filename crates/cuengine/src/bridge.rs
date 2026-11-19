@@ -510,7 +510,7 @@ pub struct SourcesRequest<'request> {
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ImportedInstance {
-    /// The import path, as written by the package that imports it.
+    /// The canonical CUE import path.
     pub import_path: String,
     /// The import path of the package that imports it first; empty when the
     /// instance itself does.

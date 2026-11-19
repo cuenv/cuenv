@@ -51,7 +51,7 @@ type instanceSourcesOptions struct {
 
 // importedInstance is one package an instance imports.
 type importedInstance struct {
-	// The import path, as written by the package that imports it.
+	// The canonical CUE import path.
 	ImportPath string `json:"importPath"`
 	// The import path of the package that imports it first; empty when the
 	// instance itself does.
@@ -227,13 +227,14 @@ func (r *fieldReader) importedInstances(root *build.Instance) []importedInstance
 	for len(queue) > 0 {
 		next := queue[0]
 		queue = queue[1:]
-		if _, done := seen[next.inst.ImportPath]; done {
+		path := ast.ParseImportPath(next.inst.ImportPath).Canonical().String()
+		if _, done := seen[path]; done {
 			continue
 		}
-		seen[next.inst.ImportPath] = struct{}{}
-		records = append(records, r.record(next.inst, next.importer))
+		seen[path] = struct{}{}
+		records = append(records, r.record(next.inst, path, next.importer))
 		for _, imported := range next.inst.Imports {
-			queue = append(queue, pending{inst: imported, importer: next.inst.ImportPath})
+			queue = append(queue, pending{inst: imported, importer: path})
 		}
 	}
 	sort.Slice(records, func(left, right int) bool {
@@ -244,13 +245,13 @@ func (r *fieldReader) importedInstances(root *build.Instance) []importedInstance
 
 // record describes one imported package. The package is built on its own to
 // look its fields up; a root in error still yields the fields that are not.
-func (r *fieldReader) record(inst *build.Instance, importer string) importedInstance {
+func (r *fieldReader) record(inst *build.Instance, importPath, importer string) importedInstance {
 	directory := inst.Dir
 	if relative, inside := moduleRelative(r.moduleRoot, inst.Dir); inside {
 		directory = relative
 	}
 	return importedInstance{
-		ImportPath: inst.ImportPath,
+		ImportPath: importPath,
 		ImportedBy: importer,
 		Directory:  directory,
 		Package:    inst.PkgName,

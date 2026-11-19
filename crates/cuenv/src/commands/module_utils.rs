@@ -60,8 +60,8 @@ const GROUP_AS_INPUT_HINT: &str = "hint: groups cannot be inputs yet; list the `
 ///
 /// - a path of a file reference fails at `…inputs.<n>.paths.<m>: invalid
 ///   value`, and the raw text of that check is a regular expression;
-/// - a task or group used as an input fails at `…inputs.<n>: conflicting
-///   values {…}` with the task's or group's value;
+/// - a task or group used as an input reports a conflict at `…inputs.<n>`
+///   that includes the task's or group's struct value;
 /// - a string input that leaves the project fails at
 ///   `…._cuenvInputCheck."<input>": …`, after which its path from the module
 ///   root is given, where the error says which file the project is in.
@@ -91,12 +91,12 @@ enum InputNode {
 }
 
 /// The kind of node used as an input, when a line of the error is the
-/// schema rejecting one: `<…>.inputs.<n>: conflicting values {<value>} and
-/// …`, where the value is a task (it has a `command` or `script`) or a group
+/// schema rejecting one: `<…>.inputs.<n>: conflicting values` with a struct
+/// operand that is a task (it has a `command` or `script`) or a group
 /// (`type: "group"`).
 fn input_node_kind(message: &str) -> Option<InputNode> {
     message.lines().find_map(|line| {
-        let (field, value) = line.split_once(": conflicting values {")?;
+        let (field, operands) = line.split_once(": conflicting values ")?;
         let field = field.split_whitespace().last()?;
         let segments: Vec<&str> = field.split('.').collect();
         let [.., "inputs", index] = segments.as_slice() else {
@@ -105,6 +105,8 @@ fn input_node_kind(message: &str) -> Option<InputNode> {
         if index.is_empty() || !index.bytes().all(|byte| byte.is_ascii_digit()) {
             return None;
         }
+        let value = operands.strip_prefix("string and ").unwrap_or(operands);
+        let value = value.strip_prefix('{')?;
         if value.starts_with("type:\"group\"") || value.contains(",type:\"group\"") {
             Some(InputNode::Group)
         } else if value.starts_with("command:")
@@ -340,8 +342,11 @@ mod tests {
         let group = "tasks.build.inputs.1: conflicting values {type:\"group\",lint:\
                      {command:\"true\",inputs:[\"articles/**\"]}} and string (mismatched types \
                      struct and string):";
+        let string_first = "tasks.build.inputs.1: conflicting values string and \
+                            {command:\"sh\",outputs:[\"dist/built.txt\"]} (mismatched types string and struct):";
 
         assert!(with_input_hints(task.to_string()).ends_with(TASK_AS_INPUT_HINT));
+        assert!(with_input_hints(string_first.to_string()).ends_with(TASK_AS_INPUT_HINT));
         assert!(with_input_hints(group.to_string()).ends_with(GROUP_AS_INPUT_HINT));
         // A struct that is no task is left alone.
         let other = "tasks.build.inputs.1: conflicting values {paths:[\"a\"]} and string";

@@ -36,9 +36,9 @@ exponential regression; it is never checked in as a fixture, since plain
 three projects (`tests/schema-compat/testdata/modules/task-references`) under
 every supported CUE release.
 
-The fork is now pinned at
+The next pin was
 [`badfad1`](https://github.com/rawkode/cue/commit/badfad1109de70ce104a0637d9d853cf7ead536d),
-the next commit on the same branch, which evaluates the operands that
+which evaluates the operands that
 `Value.Expr` returns where the value settled; see
 [Operands of a superseded disjunct](#operands-of-a-superseded-disjunct).
 
@@ -60,6 +60,19 @@ The schema keeps its types. `dependsOn` on `#Task`, `#TaskGroup`,
 `#Watch.rebuild` are typed with `#TaskNode` unions. #515 had made `dependsOn`
 untyped to avoid the exponential evaluation described below; this release
 restores the types.
+
+## CUE v0.18
+
+The embedded bridge and the Nix development shell use the
+[CUE v0.18.0-rc.4 fork](https://github.com/rawkode/cue/commit/3bf061f29993f7e4d70096ad39392f03a079da8e).
+The evaluator shares typed task graphs through imported packages and checks
+recursive references retained by a selected disjunct for structural cycles.
+During disjunct evaluation, it completes a forward reference only after
+checking that the target and its dependencies cannot read the pending branch.
+It preserves the provenance API used to trace runtime values and lets a frozen
+instance resolve `@embed` from its captured files in their source directories.
+Frozen evaluation checks the completed values behind lets and inline expressions
+so conflicts introduced by runtime fills are reported before specialization.
 
 ## Typed references
 

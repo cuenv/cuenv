@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 /// One package a project imports, as the binding of names reads it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ImportRecord {
-    /// The import path, as written.
+    /// The canonical CUE import path.
     pub import_path: String,
     /// The import path of the package that imports it; empty when the
     /// consuming project does.

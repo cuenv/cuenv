@@ -235,15 +235,14 @@ func freezeBuildGraph(root *build.Instance, sources map[*ast.File]string) (*froz
 }
 
 // build evaluates the snapshot.
-func (graph frozenGraph) build() (cue.Value, error) {
-	return graph.evaluate(cuecontext.New())
-}
-
-func (graph frozenGraph) evaluate(runtime *cue.Context) (cue.Value, error) {
+func (graph frozenGraph) build(options ...cuecontext.Option) (cue.Value, error) {
 	instance, err := graph.instance()
 	if err != nil {
 		return cue.Value{}, err
 	}
+	// A specialization must observe conflicts that surface after filling
+	// references used by lets and inline expressions.
+	runtime := cuecontext.New(append(options, cuecontext.CompleteInternalReferences())...)
 	value := runtime.BuildInstance(instance)
 	if value.Err() != nil {
 		return cue.Value{}, value.Err()

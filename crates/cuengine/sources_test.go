@@ -112,7 +112,7 @@ func TestInstanceSourcesDescribeEveryImportedPackage(t *testing.T) {
 		t.Fatalf("drafts ancestors, nearest first: %+v", drafts.Ancestors)
 	}
 
-	other := importNamed(t, sources, "example.com/refs/other:other")
+	other := importNamed(t, sources, "example.com/refs/other")
 	if other.Package != "other" || fieldText(other.Fields, "name") != `"other"` || len(other.Ancestors) != 0 {
 		t.Fatalf("other: %+v", other)
 	}
