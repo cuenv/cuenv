@@ -277,3 +277,43 @@ fn a_groups_dependencies_are_every_childs() {
     let lint = ir.tasks.iter().find(|task| task.id == "lint").unwrap();
     assert!(lint.depends_on.is_empty() && lint.external_dependencies.is_empty());
 }
+
+#[test]
+fn service_dependencies_are_excluded_from_task_graph_and_recorded_in_hints() {
+    let mut project = Project::new("app");
+    project.tasks.insert(
+        "build".to_string(),
+        TaskNode::Task(Box::new(Task {
+            command: "cargo build".to_string(),
+            ..Default::default()
+        })),
+    );
+    project.tasks.insert(
+        "integration".to_string(),
+        TaskNode::Task(Box::new(Task {
+            command: "cargo test --test integration".to_string(),
+            depends_on: vec![
+                TaskDependency::from_name("build"),
+                TaskDependency::from_service_name("postgres"),
+            ],
+            ..Default::default()
+        })),
+    );
+
+    let ir = Compiler::new(project).compile().unwrap();
+    let integration = ir
+        .tasks
+        .iter()
+        .find(|task| task.id == "integration")
+        .expect("integration task compiled");
+
+    assert_eq!(integration.depends_on, vec!["build"]);
+    assert_eq!(
+        integration.provider_hints,
+        Some(serde_json::json!({
+            "dagger": {
+                "services": ["postgres"]
+            }
+        }))
+    );
+}

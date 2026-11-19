@@ -438,7 +438,7 @@ func TestFrozenSharingModesAgree(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				unshared, err := graph.evaluate(cuecontext.New(cuecontext.CUE_DEBUG("sharing=false")))
+				unshared, err := graph.build(cuecontext.CUE_DEBUG("sharing=false"))
 				if err != nil {
 					t.Fatal(err)
 				}

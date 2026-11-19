@@ -28,6 +28,7 @@ impl ProbeRunner for CommandProbe {
             .args(&self.args)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
+            .kill_on_drop(true)
             .status()
             .await;
 

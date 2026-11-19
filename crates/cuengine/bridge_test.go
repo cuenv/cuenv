@@ -176,6 +176,16 @@ func exactPackage(moduleRoot string) evaluation {
 	return evaluation{moduleRoot: moduleRoot, packageName: packageNamed(testPackageName)}
 }
 
+func TestNamedPackageEvaluationSupportsCUE018(t *testing.T) {
+	moduleRoot := writeCueModule(t, map[string]string{
+		"cue.mod/module.cue": "module: \"example.com/bridge@v0\"\nlanguage: version: \"v0.18.0\"\n",
+		"env.cue":            packageSource("name: \"example\""),
+	})
+	if name := exactPackage(moduleRoot).instance(t, ".")["name"]; name != "example" {
+		t.Errorf("expected name example, got %v", name)
+	}
+}
+
 func decodeEnvelope(t *testing.T, response string) testEnvelope {
 	t.Helper()
 	var envelope testEnvelope

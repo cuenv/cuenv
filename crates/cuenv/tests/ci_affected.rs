@@ -153,6 +153,7 @@ impl Monorepo {
             .env_remove("BUILDKITE")
             .env_remove("GITHUB_TOKEN")
             .env_remove("GH_TOKEN")
+            .env("NO_GRAPHICS", "1")
             .env("CUENV_STATE_DIR", self.root().join("state"))
             .arg("ci")
             .args(["--from", &self.base])

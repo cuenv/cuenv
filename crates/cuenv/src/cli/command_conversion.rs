@@ -123,6 +123,8 @@ impl Commands {
                 skip_dependencies,
                 continue_on_error,
                 dry_run,
+                backend,
+                dagger_engine,
                 task_args,
             } => Command::Task {
                 path,
@@ -141,6 +143,8 @@ impl Commands {
                 } else {
                     cuenv_core::DryRun::No
                 },
+                backend,
+                dagger_engine,
                 task_args,
             },
             _ => unreachable!("task command conversion called for another command family"),

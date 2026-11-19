@@ -901,6 +901,7 @@ fn bind_anchor(
 fn projects_in_dependencies(dependencies: &[crate::TaskDependency]) -> Vec<String> {
     dependencies
         .iter()
+        .filter(|dependency| dependency.is_task())
         .filter_map(|dependency| ExternalTaskName::parse(dependency.task_name()))
         .map(|external| external.project.to_string())
         .collect()
@@ -1132,7 +1133,10 @@ impl Rewrite<'_> {
     /// when another project of the run bound that name: it is left as
     /// written, and a graph that reaches `node` fails.
     fn dependencies(&mut self, node: BindingTask<'_>, dependencies: &mut [crate::TaskDependency]) {
-        for dependency in dependencies {
+        for dependency in dependencies
+            .iter_mut()
+            .filter(|dependency| dependency.is_task())
+        {
             let spelled = match ExternalTaskName::parse(&dependency.name) {
                 Some(external) => {
                     if let Some(target) = self.projects.get(external.project) {

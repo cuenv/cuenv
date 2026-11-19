@@ -7,7 +7,7 @@
 //! run was asked for.
 
 use std::collections::{BTreeMap, HashMap};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use cuenv_core::Result;
@@ -23,6 +23,18 @@ use tokio::sync::{Mutex, OnceCell};
 
 /// An environment that is built once, by whichever task needs it first.
 type BuiltEnvironment = Arc<OnceCell<Environment>>;
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum EnvironmentTarget {
+    Host,
+    Backend,
+}
+
+#[derive(Debug)]
+struct HostRuntime {
+    environment: Environment,
+    activation_steps: Vec<ResolvedToolActivationStep>,
+}
 
 /// The project whose tasks' environments are built.
 #[derive(Clone, Copy)]
@@ -40,20 +52,19 @@ pub(super) struct ProjectEnvironmentSpec<'spec> {
 /// is never resolved.
 #[derive(Debug)]
 pub(super) struct ProjectTaskEnvironments {
-    /// The runtime's environment, before the project's variables.
-    runtime_env: Environment,
-    activation_steps: Vec<ResolvedToolActivationStep>,
+    project_root: PathBuf,
+    runtime: Option<Runtime>,
+    host: OnceCell<HostRuntime>,
     /// The project's `env` and contexts; `None` for a project without `env`.
     selection: Option<TaskSelection>,
     /// The environments built so far. Each is built once; building one does
     /// not hold up a task that needs another.
-    resolved: Mutex<HashMap<TaskEnvKey, BuiltEnvironment>>,
+    resolved: Mutex<HashMap<(TaskEnvKey, EnvironmentTarget), BuiltEnvironment>>,
 }
 
 impl ProjectTaskEnvironments {
-    /// Validate the project's contexts, resolve its runtime and download its
-    /// tools.
-    pub(super) async fn prepare(spec: ProjectEnvironmentSpec<'_>) -> Result<Self> {
+    /// Validate the project's contexts before any task starts.
+    pub(super) fn prepare(spec: ProjectEnvironmentSpec<'_>) -> Result<Self> {
         let ProjectEnvironmentSpec {
             manifest,
             project_root,
@@ -73,8 +84,9 @@ impl ProjectTaskEnvironments {
             })
             .transpose()?;
         Ok(Self {
-            runtime_env: runtime_environment(manifest, project_root).await?,
-            activation_steps: lockfile_activation_steps(manifest, project_root).await?,
+            project_root: project_root.to_path_buf(),
+            runtime: manifest.runtime.clone(),
+            host: OnceCell::new(),
             selection,
             resolved: Mutex::default(),
         })
@@ -89,28 +101,53 @@ impl ProjectTaskEnvironments {
             .transpose()
     }
 
-    /// The project variables of a name that is not one task, such as a
-    /// group; `None` for a project without `env`.
-    pub(super) fn group_env(&self, name: &str) -> Result<Option<TaskEnv>> {
-        self.selection
-            .as_ref()
-            .map(|selection| selection.for_group(name))
-            .transpose()
-    }
-
     /// The environment with a task's project variables, built once for the
     /// tasks that select the same ones.
-    pub(super) async fn environment(&self, task_env: Option<&TaskEnv>) -> Result<Environment> {
-        let key = task_env.map_or_default(|task_env| task_env.key().clone());
+    async fn environment(
+        &self,
+        task_env: Option<&TaskEnv>,
+        target: EnvironmentTarget,
+    ) -> Result<Environment> {
+        let key = (
+            task_env.map_or_default(|task_env| task_env.key().clone()),
+            target,
+        );
         let cell = Arc::clone(self.resolved.lock().await.entry(key).or_default());
-        let environment = cell.get_or_try_init(|| self.build(task_env)).await?;
+        let environment = cell
+            .get_or_try_init(|| self.build(task_env, target))
+            .await?;
         Ok(environment.clone())
     }
 
     /// The environment with a task's project variables; without any for a
     /// project that has no `env`.
-    async fn build(&self, task_env: Option<&TaskEnv>) -> Result<Environment> {
-        let mut environment = self.runtime_env.clone();
+    async fn build(
+        &self,
+        task_env: Option<&TaskEnv>,
+        target: EnvironmentTarget,
+    ) -> Result<Environment> {
+        let host = match target {
+            EnvironmentTarget::Host => Some(
+                self.host
+                    .get_or_try_init(|| async {
+                        Ok::<_, cuenv_core::Error>(HostRuntime {
+                            environment: runtime_environment(
+                                self.runtime.as_ref(),
+                                &self.project_root,
+                            )
+                            .await?,
+                            activation_steps: lockfile_activation_steps(
+                                self.runtime.as_ref(),
+                                &self.project_root,
+                            )
+                            .await?,
+                        })
+                    })
+                    .await?,
+            ),
+            EnvironmentTarget::Backend => None,
+        };
+        let mut environment = host.map_or_else(Environment::new, |host| host.environment.clone());
 
         let env_vars = task_env.map_or_default(TaskEnv::variables);
         let (resolved, secrets) = Environment::resolve_all_with_secrets(&env_vars).await?;
@@ -129,12 +166,16 @@ impl ProjectTaskEnvironments {
             }
         }
 
-        for step in &self.activation_steps {
+        for step in host.into_iter().flat_map(|host| &host.activation_steps) {
             let current = environment.get(&step.var);
             if let Some(new_value) =
                 cuenv_tool_runtime::apply_resolved_tool_activation(current, step)
             {
-                environment.set(step.var.clone(), new_value);
+                if environment.is_secret_var(&step.var) {
+                    environment.set_secret(step.var.clone(), new_value);
+                } else {
+                    environment.set(step.var.clone(), new_value);
+                }
             }
         }
         Ok(environment)
@@ -155,9 +196,6 @@ struct ExternalProjectEnvironments {
 pub(super) struct RunTaskEnvironments {
     /// The project the run was asked for.
     own: ProjectTaskEnvironments,
-    /// The key of the requested task, whose environment every task of the
-    /// run's own project runs with unless its own key differs.
-    shared: TaskEnvKey,
     /// The projects whose tasks run as dependencies, by what their tasks
     /// are qualified with.
     external: BTreeMap<String, ExternalProjectEnvironments>,
@@ -167,8 +205,6 @@ pub(super) struct RunTaskEnvironments {
 pub(super) struct RunEnvironments<'run> {
     /// The environments of the project the run was asked for.
     pub(super) own: ProjectTaskEnvironments,
-    /// The key of the requested task.
-    pub(super) shared: TaskEnvKey,
     /// The tasks of the run, which say which other projects it reaches.
     pub(super) scope: &'run TaskScope,
     /// The selected environment (`-e`).
@@ -180,7 +216,6 @@ impl RunTaskEnvironments {
     pub(super) fn new(run: RunEnvironments<'_>) -> Self {
         let RunEnvironments {
             own,
-            shared,
             scope,
             environment,
         } = run;
@@ -197,24 +232,14 @@ impl RunTaskEnvironments {
                 )
             })
             .collect();
-        Self {
-            own,
-            shared,
-            external,
-        }
-    }
-
-    /// Whether any task runs with an environment other than the shared one.
-    pub(super) fn differs_by_task(&self) -> bool {
-        self.own.selection.is_some() || !self.external.is_empty()
+        Self { own, external }
     }
 
     /// The environment of a task of another project: that project's own.
-    async fn external_environment(
+    async fn external_environments(
         &self,
         external: ExternalTaskName<'_>,
-        task: &Task,
-    ) -> Result<Environment> {
+    ) -> Result<&ProjectTaskEnvironments> {
         let Some(project) = self.external.get(external.project) else {
             return Err(cuenv_core::Error::configuration(format!(
                 "Task '{}' belongs to project '{}', which this run has not loaded. It is not \
@@ -223,43 +248,58 @@ impl RunTaskEnvironments {
                 external.project
             )));
         };
-        let environments = project
+        project
             .prepared
-            .get_or_try_init(|| {
+            .get_or_try_init(|| async {
                 ProjectTaskEnvironments::prepare(ProjectEnvironmentSpec {
                     manifest: &project.project.manifest,
                     project_root: &project.project.root,
                     environment: project.environment.as_deref(),
                 })
             })
-            .await?;
-        // The project's contexts and policies know the task by its own name.
-        let task_env = environments.task_env(external.task, task)?;
-        environments.environment(task_env.as_ref()).await
+            .await
+    }
+
+    async fn for_target(
+        &self,
+        name: &str,
+        task: &Task,
+        target: EnvironmentTarget,
+    ) -> Result<Option<Environment>> {
+        let (environments, local_name) = if let Some(external) = ExternalTaskName::parse(name) {
+            (self.external_environments(external).await?, external.task)
+        } else {
+            (&self.own, name)
+        };
+        let task_env = environments.task_env(local_name, task)?;
+        environments
+            .environment(task_env.as_ref(), target)
+            .await
+            .map(Some)
     }
 }
 
 impl TaskEnvironments for RunTaskEnvironments {
     fn environment_for<'a>(&'a self, name: &'a str, task: &'a Task) -> TaskEnvironmentFuture<'a> {
-        Box::pin(async move {
-            if let Some(external) = ExternalTaskName::parse(name) {
-                return self.external_environment(external, task).await.map(Some);
-            }
-            match self.own.task_env(name, task)? {
-                Some(task_env) if *task_env.key() != self.shared => {
-                    self.own.environment(Some(&task_env)).await.map(Some)
-                }
-                _ => Ok(None),
-            }
-        })
+        Box::pin(self.for_target(name, task, EnvironmentTarget::Host))
+    }
+
+    fn backend_environment_for<'a>(
+        &'a self,
+        name: &'a str,
+        task: &'a Task,
+    ) -> TaskEnvironmentFuture<'a> {
+        Box::pin(self.for_target(name, task, EnvironmentTarget::Backend))
     }
 }
 
-async fn runtime_environment(manifest: &Project, project_root: &Path) -> Result<Environment> {
+async fn runtime_environment(
+    runtime: Option<&Runtime>,
+    project_root: &Path,
+) -> Result<Environment> {
     let mut runtime_env = Environment::new();
     let runtime_env_vars =
-        cuenv_core::runtime::resolve_runtime_environment(project_root, manifest.runtime.as_ref())
-            .await?;
+        cuenv_core::runtime::resolve_runtime_environment(project_root, runtime).await?;
     for (key, value) in runtime_env_vars {
         runtime_env.set(key, value);
     }
@@ -269,10 +309,10 @@ async fn runtime_environment(manifest: &Project, project_root: &Path) -> Result<
 /// The lockfile's tool activation steps, after downloading the tools; none
 /// unless the project uses the tools runtime.
 async fn lockfile_activation_steps(
-    manifest: &Project,
+    runtime: Option<&Runtime>,
     project_root: &Path,
 ) -> Result<Vec<ResolvedToolActivationStep>> {
-    if !matches!(manifest.runtime, Some(Runtime::Tools(_))) {
+    if !matches!(runtime, Some(Runtime::Tools(_))) {
         return Ok(Vec::new());
     }
     crate::commands::tools::ensure_tools_downloaded(Some(project_root))

@@ -129,6 +129,21 @@ pub enum Commands {
             default_value_t = false
         )]
         dry_run: bool,
+        /// Execution backend for tasks (auto, host, or dagger).
+        #[arg(
+            long = "backend",
+            default_value = "auto",
+            value_enum,
+            help = "Execution backend for tasks (auto, host, or dagger)"
+        )]
+        backend: crate::commands::backend::ExecutionBackendArg,
+        /// Dagger Engine target (`local`, `cloud`, or remote URI).
+        #[arg(
+            long = "dagger-engine",
+            value_name = "TARGET",
+            help = "Dagger Engine target (local, cloud, or remote engine URI)"
+        )]
+        dagger_engine: Option<String>,
         /// Arguments to pass to the task (positional and --named values).
         #[arg(help = "Arguments to pass to the task (positional and --named values)")]
         task_args: Vec<String>,

@@ -92,11 +92,30 @@ package schema
 	}
 }
 
+// Dagger 1.0 workspace & Dang module emitter configuration
+#DaggerConfig: {
+	// Generated Dang module name (defaults to "ci")
+	moduleName?: string
+	// Directory for the generated module (defaults to ".dagger/modules/<moduleName>")
+	modulePath?: string
+	// Directory containing dagger.toml, relative to the repository root (defaults to ".")
+	workspaceDir?: string
+	// Expose container services to dagger start (defaults to true)
+	emitServices?: bool
+	// Default container image for tasks without #ContainerRuntime/#DaggerRuntime
+	defaultImage?: string
+	// Bundled Linux cuenv executable, relative to the repository root, for thin checks
+	cuenvBinary?: string
+	// Minimum engineVersion written to dagger-module.toml (default: "v1.0.0-beta.28")
+	engineVersion?: string
+}
+
 // Provider-specific configuration
 #ProviderConfig: {
 	github?:    #GitHubConfig
 	buildkite?: #BuildkiteConfig
 	gitlab?:    #GitLabConfig
+	dagger?:    #DaggerConfig
 }
 
 // Artifact download configuration for pipeline tasks
@@ -202,7 +221,7 @@ package schema
 	workspaceMember?: [...string]
 
 	// Runtime type detection (active if project uses any of these runtime types)
-	// Values: "nix", "devenv", "container", "oci", "tools"
+	// Values: "nix", "devenv", "container", "dagger", "oci", "tools"
 	runtimeType?: [...string]
 
 	// Cuenv source mode detection (for cuenv installation strategy)
@@ -256,7 +275,7 @@ package schema
 
 // CI provider names for workflow generation
 // Used to specify which CI providers should emit workflow manifests
-#CIProvider: "github" | "buildkite" | "gitlab"
+#CIProvider: "github" | "buildkite" | "gitlab" | "dagger"
 
 #Pipeline: {
 	// Generation mode for this pipeline (default: "thin")

@@ -27,6 +27,7 @@ members = [
     "crates/gitlab",
     "crates/bitbucket",
     "crates/buildkite",
+    "crates/dagger",
     "crates/homebrew",
     # Secret provider crates
     "crates/1password",
@@ -81,6 +82,7 @@ cuenv-github = { path = "crates/github", version = "0.76.1" }
 cuenv-gitlab = { path = "crates/gitlab", version = "0.76.1" }
 cuenv-bitbucket = { path = "crates/bitbucket", version = "0.76.1" }
 cuenv-buildkite = { path = "crates/buildkite", version = "0.76.1" }
+cuenv-dagger = { path = "crates/dagger", version = "0.76.1" }
 cuenv-homebrew = { path = "crates/homebrew", version = "0.76.1" }
 # Secret provider crates
 cuenv-1password = { path = "crates/1password", version = "0.76.1" }

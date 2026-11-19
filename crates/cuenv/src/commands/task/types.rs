@@ -45,6 +45,12 @@ pub struct TaskExecutionRequest<'request> {
     /// Dry run mode: export DAG as JSON without executing
     pub dry_run: DryRun,
 
+    /// Execution backend selector (auto, host, or dagger)
+    pub backend: crate::commands::backend::ExecutionBackendArg,
+
+    /// Optional Dagger Engine target (`local`, `cloud`, or remote URI)
+    pub dagger_engine: Option<String>,
+
     /// Executor for cached module evaluation (required - single CUE eval per process)
     pub executor: &'request CommandExecutor,
 }
@@ -61,6 +67,8 @@ impl fmt::Debug for TaskExecutionRequest<'_> {
             .field("skip_dependencies", &self.skip_dependencies)
             .field("continue_on_error", &self.continue_on_error)
             .field("dry_run", &self.dry_run)
+            .field("backend", &self.backend)
+            .field("dagger_engine", &self.dagger_engine)
             .field("executor", &"<CommandExecutor>")
             .finish()
     }
@@ -163,6 +171,8 @@ impl<'request> TaskExecutionRequest<'request> {
             skip_dependencies: false,
             continue_on_error: false,
             dry_run: DryRun::No,
+            backend: crate::commands::backend::ExecutionBackendArg::Auto,
+            dagger_engine: None,
             executor,
         }
     }
@@ -187,6 +197,8 @@ impl<'request> TaskExecutionRequest<'request> {
             skip_dependencies: false,
             continue_on_error: false,
             dry_run: DryRun::No,
+            backend: crate::commands::backend::ExecutionBackendArg::Auto,
+            dagger_engine: None,
             executor,
         }
     }
@@ -208,6 +220,8 @@ impl<'request> TaskExecutionRequest<'request> {
             skip_dependencies: false,
             continue_on_error: false,
             dry_run: DryRun::No,
+            backend: crate::commands::backend::ExecutionBackendArg::Auto,
+            dagger_engine: None,
             executor,
         }
     }
@@ -229,6 +243,8 @@ impl<'request> TaskExecutionRequest<'request> {
             skip_dependencies: false,
             continue_on_error: false,
             dry_run: DryRun::No,
+            backend: crate::commands::backend::ExecutionBackendArg::Auto,
+            dagger_engine: None,
             executor,
         }
     }
@@ -296,6 +312,23 @@ impl<'request> TaskExecutionRequest<'request> {
     #[must_use]
     pub const fn with_dry_run(mut self) -> Self {
         self.dry_run = DryRun::Yes;
+        self
+    }
+
+    /// Set the execution backend selector (`auto`, `host`, or `dagger`).
+    #[must_use]
+    pub const fn with_backend(
+        mut self,
+        backend: crate::commands::backend::ExecutionBackendArg,
+    ) -> Self {
+        self.backend = backend;
+        self
+    }
+
+    /// Set the Dagger Engine target (`local`, `cloud`, or remote URI).
+    #[must_use]
+    pub fn with_dagger_engine(mut self, engine: impl Into<String>) -> Self {
+        self.dagger_engine = Some(engine.into());
         self
     }
 }

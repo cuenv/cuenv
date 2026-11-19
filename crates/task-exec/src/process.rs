@@ -3,8 +3,11 @@
 use super::{TaskResult, process_registry};
 use cuenv_core::{Error, OutputCapture, Result};
 use std::process::Stdio;
+use std::sync::Arc;
 use std::time::Duration;
-use tokio::process::Command;
+use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
+use tokio::process::{Child, Command};
+use tokio::task::JoinHandle;
 
 /// Outcome of a single host process attempt.
 ///
@@ -42,63 +45,18 @@ async fn run_captured_process(
     mut command: Command,
     timeout: Option<Duration>,
 ) -> Result<TaskAttempt> {
-    use tokio::io::{AsyncBufReadExt, BufReader};
-
     let start_time = std::time::Instant::now();
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut process = TaskProcess::spawn(name, &mut command).await?;
+    let stdout_task = Capture::spawn(name, "stdout", process.child.stdout.take());
+    let stderr_task = Capture::spawn(name, "stderr", process.child.stderr.take());
 
-    #[cfg(unix)]
-    setup_process_group(&mut command);
-
-    let mut child = command
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| Error::io(format!("spawn task {}", name), e))?;
-
-    let child_pid = child.id();
-    if let Some(pid) = child_pid {
-        process_registry::global_registry()
-            .register(pid, name.to_string())
-            .await;
-    }
-
-    let stdout_handle = child.stdout.take();
-    let stderr_handle = child.stderr.take();
-
-    let name_for_stdout = name.to_string();
-    let stdout_task = tokio::spawn(async move {
-        let mut lines = Vec::new();
-        if let Some(stdout) = stdout_handle {
-            let mut reader = BufReader::new(stdout).lines();
-            while let Ok(Some(line)) = reader.next_line().await {
-                cuenv_events::emit_task_output!(name_for_stdout, "stdout", line);
-                lines.push(line);
-            }
-        }
-        lines
-    });
-
-    let name_for_stderr = name.to_string();
-    let stderr_task = tokio::spawn(async move {
-        let mut lines = Vec::new();
-        if let Some(stderr) = stderr_handle {
-            let mut reader = BufReader::new(stderr).lines();
-            while let Ok(Some(line)) = reader.next_line().await {
-                cuenv_events::emit_task_output!(name_for_stderr, "stderr", line);
-                lines.push(line);
-            }
-        }
-        lines
-    });
-
-    let status = match wait_or_terminate(name, &mut child, timeout).await? {
+    let outcome = wait_or_terminate(name, &mut process.child, timeout).await?;
+    drop(process);
+    let (stdout, stderr) = tokio::join!(stdout_task.finish(), stderr_task.finish());
+    let status = match outcome {
         WaitOutcome::Exited(status) => status,
         WaitOutcome::TimedOut(timeout) => {
-            if let Some(pid) = child_pid {
-                process_registry::global_registry().unregister(pid).await;
-            }
-            let stdout = stdout_task.await.unwrap_or_default().join("\n");
-            let stderr = stderr_task.await.unwrap_or_default().join("\n");
             return Ok(TaskAttempt::TimedOut(timeout_result(TimedOutTask {
                 name,
                 timeout,
@@ -108,16 +66,7 @@ async fn run_captured_process(
             })));
         }
     };
-
-    if let Some(pid) = child_pid {
-        process_registry::global_registry().unregister(pid).await;
-    }
-
-    let stdout_lines = stdout_task.await.unwrap_or_default();
-    let stderr_lines = stderr_task.await.unwrap_or_default();
     let duration_ms = u64::try_from(start_time.elapsed().as_millis()).unwrap_or(u64::MAX);
-    let stdout = stdout_lines.join("\n");
-    let stderr = stderr_lines.join("\n");
     let exit_code = status.code().unwrap_or(-1);
     let success = status.success();
 
@@ -143,30 +92,17 @@ async fn run_inherited_process(
     mut command: Command,
     timeout: Option<Duration>,
 ) -> Result<TaskAttempt> {
-    #[cfg(unix)]
-    setup_process_group(&mut command);
-
-    let mut child = command
+    command
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
-        .stdin(Stdio::inherit())
-        .spawn()
-        .map_err(|e| Error::io(format!("spawn task {}", name), e))?;
-
-    let child_pid = child.id();
-    if let Some(pid) = child_pid {
-        process_registry::global_registry()
-            .register(pid, name.to_string())
-            .await;
-    }
-
+        .stdin(Stdio::inherit());
+    let mut process = TaskProcess::spawn(name, &mut command).await?;
     let start_time = std::time::Instant::now();
-    let status = match wait_or_terminate(name, &mut child, timeout).await? {
+    let outcome = wait_or_terminate(name, &mut process.child, timeout).await?;
+    drop(process);
+    let status = match outcome {
         WaitOutcome::Exited(status) => status,
         WaitOutcome::TimedOut(timeout) => {
-            if let Some(pid) = child_pid {
-                process_registry::global_registry().unregister(pid).await;
-            }
             return Ok(TaskAttempt::TimedOut(timeout_result(TimedOutTask {
                 name,
                 timeout,
@@ -176,10 +112,6 @@ async fn run_inherited_process(
             })));
         }
     };
-
-    if let Some(pid) = child_pid {
-        process_registry::global_registry().unregister(pid).await;
-    }
 
     let exit_code = status.code().unwrap_or(-1);
     let success = status.success();
@@ -197,6 +129,84 @@ async fn run_inherited_process(
     }))
 }
 
+struct TaskProcess {
+    child: Child,
+    registered_pid: Option<u32>,
+    registry: Arc<process_registry::ProcessRegistry>,
+    registration: Arc<()>,
+}
+
+impl TaskProcess {
+    async fn spawn(name: &str, command: &mut Command) -> Result<Self> {
+        #[cfg(unix)]
+        command.process_group(0);
+        let child = command
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|error| Error::io(format!("spawn task {name}"), error))?;
+        let process = Self {
+            registered_pid: child.id(),
+            child,
+            registry: process_registry::global_registry(),
+            registration: Arc::new(()),
+        };
+        if let Some(pid) = process.registered_pid {
+            process
+                .registry
+                .register_tracked(pid, name.to_string(), Arc::downgrade(&process.registration))
+                .await;
+        }
+        Ok(process)
+    }
+}
+
+impl Drop for TaskProcess {
+    fn drop(&mut self) {
+        // Tokio returns no id after reaping, so the cancellation path never
+        // signals a group by a PID the completed child no longer owns.
+        #[cfg(unix)]
+        if let Some(pid) = self.child.id() {
+            process_registry::signal_process_group(pid, rustix::process::Signal::KILL);
+        }
+        if let Some(pid) = self.registered_pid {
+            self.registry.forget_tracked(pid, &self.registration);
+        }
+    }
+}
+
+struct Capture(JoinHandle<Vec<String>>);
+
+impl Capture {
+    fn spawn(
+        name: &str,
+        stream: &'static str,
+        output: Option<impl AsyncRead + Unpin + Send + 'static>,
+    ) -> Self {
+        let name = name.to_string();
+        Self(tokio::spawn(async move {
+            let mut lines = Vec::new();
+            if let Some(output) = output {
+                let mut reader = BufReader::new(output).lines();
+                while let Ok(Some(line)) = reader.next_line().await {
+                    cuenv_events::emit_task_output!(name, stream, line);
+                    lines.push(line);
+                }
+            }
+            lines
+        }))
+    }
+
+    async fn finish(mut self) -> String {
+        (&mut self.0).await.unwrap_or_default().join("\n")
+    }
+}
+
+impl Drop for Capture {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 /// Whether a child exited on its own or was terminated for exceeding its timeout.
 enum WaitOutcome {
     Exited(std::process::ExitStatus),
@@ -208,7 +218,7 @@ enum WaitOutcome {
 /// timeout handling, so the SIGTERM/SIGKILL ladder lives in exactly one path.
 async fn wait_or_terminate(
     name: &str,
-    child: &mut tokio::process::Child,
+    child: &mut Child,
     timeout: Option<Duration>,
 ) -> Result<WaitOutcome> {
     let Some(timeout) = timeout else {
@@ -266,28 +276,17 @@ fn format_duration(duration: Duration) -> String {
     }
 }
 
-async fn terminate_child(child: &mut tokio::process::Child, child_pid: Option<u32>) -> Result<()> {
+async fn terminate_child(child: &mut Child, child_pid: Option<u32>) -> Result<()> {
     #[cfg(unix)]
     if let Some(pid) = child_pid {
-        let pgid = i32::try_from(pid)
-            .map_err(|e| Error::execution(format!("invalid child pid {pid}: {e}")))?;
-        // SAFETY: The child was started in its own process group by `setup_process_group`.
-        // Sending SIGTERM to `-pgid` targets that process group so descendants exit too.
-        #[expect(unsafe_code, reason = "Required for POSIX process group termination")]
-        unsafe {
-            libc::kill(-pgid, libc::SIGTERM);
-        }
+        process_registry::signal_process_group(pid, rustix::process::Signal::TERM);
         if tokio::time::timeout(Duration::from_millis(500), child.wait())
             .await
             .is_ok()
         {
             return Ok(());
         }
-        // SAFETY: Same process group as above; SIGKILL is the final fallback after SIGTERM.
-        #[expect(unsafe_code, reason = "Required for POSIX process group termination")]
-        unsafe {
-            libc::kill(-pgid, libc::SIGKILL);
-        }
+        process_registry::signal_process_group(pid, rustix::process::Signal::KILL);
         if tokio::time::timeout(Duration::from_millis(500), child.wait())
             .await
             .is_ok()
@@ -300,22 +299,4 @@ async fn terminate_child(child: &mut tokio::process::Child, child_pid: Option<u3
         .kill()
         .await
         .map_err(|e| Error::io("kill timed-out task", e))
-}
-
-/// Set up process group on Unix so we can kill the entire process tree on Ctrl-C.
-///
-/// This creates a new process group with the spawned process as the leader,
-/// allowing us to send signals to all descendants when terminating.
-#[cfg(unix)]
-fn setup_process_group(cmd: &mut Command) {
-    // SAFETY: the child-side pre-exec closure only calls async-signal-safe
-    // setpgid and returns; it does not allocate or acquire inherited locks.
-    // setpgid(0, 0) makes the child the leader of its own process group.
-    #[expect(unsafe_code, reason = "Required for POSIX process group management")]
-    unsafe {
-        cmd.pre_exec(|| {
-            libc::setpgid(0, 0);
-            Ok(())
-        });
-    }
 }

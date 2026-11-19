@@ -5,6 +5,15 @@ import (
 	"testing"
 )
 
+func TestNamedPackageEvaluationReportsInvalidModuleLanguage(t *testing.T) {
+	moduleRoot := writeCueModule(t, map[string]string{
+		"cue.mod/module.cue": "module: \"example.com/bridge@v0\"\nlanguage: version: \"v999.0.0\"\n",
+		"env.cue":            packageSource("name: \"example\""),
+	})
+	bridgeError := evaluation{moduleRoot: moduleRoot, packageName: packageNamed(testPackageName)}.failure(t)
+	assertContains(t, bridgeError.Message, "module.cue", "v999.0.0", "too new")
+}
+
 func writeTwoErrorModule(t *testing.T) string {
 	t.Helper()
 	return writeCueModule(t, map[string]string{

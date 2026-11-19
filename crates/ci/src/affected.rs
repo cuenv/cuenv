@@ -486,6 +486,7 @@ impl<S: BuildHasher> ReachWalk<'_, S> {
         let external: Vec<String> = node
             .depends_on()
             .iter()
+            .filter(|dependency| dependency.kind == cuenv_core::tasks::DependencyKind::Task)
             .map(|dependency| dependency.task_name())
             .filter(|dependency| dependency.starts_with('#'))
             .map(str::to_string)
@@ -583,6 +584,7 @@ fn node_dependency_names(node: &TaskNode) -> BTreeSet<String> {
     let own = node
         .depends_on()
         .iter()
+        .filter(|dependency| dependency.kind == cuenv_core::tasks::DependencyKind::Task)
         .map(|dependency| dependency.task_name().to_string());
     let nested: Vec<&TaskNode> = match node {
         TaskNode::Task(_) => Vec::new(),

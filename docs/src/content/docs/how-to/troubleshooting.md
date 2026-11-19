@@ -88,6 +88,9 @@ error: constraint violation
 
 ### Import Errors
 
+If the error names a module language version, check `cue.mod/module.cue`
+and the CUE version embedded in your cuenv build.
+
 ```
 error: cannot find package "github.com/myorg/schemas"
 ```

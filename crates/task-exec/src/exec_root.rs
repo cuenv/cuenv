@@ -163,6 +163,23 @@ pub fn prepare(cache_root: &Path, action_digest: &str, inputs: &[HashedInput]) -
     Ok(root)
 }
 
+/// Project declared outputs from a staged execution working directory.
+///
+/// # Errors
+///
+/// Returns an error if a declaration cannot be resolved or an output cannot
+/// be installed into the workspace.
+pub fn project_declared_outputs(staged: &Path, workdir: &Path, patterns: &[String]) -> Result<()> {
+    let resolved = super::cache::collect_outputs(staged, patterns)?;
+    let existing = super::cache::collect_outputs(workdir, patterns)?;
+    project_outputs(ProjectOutputs {
+        exec_root: staged,
+        workdir,
+        resolved: &resolved,
+        existing: &existing,
+    })
+}
+
 /// Inputs to [`project_outputs`].
 #[derive(Clone, Copy)]
 pub struct ProjectOutputs<'project> {

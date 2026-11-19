@@ -81,6 +81,16 @@ pub trait TaskEnvironments: std::fmt::Debug + Send + Sync {
     /// The environment for one task, or `None` when it runs with the shared
     /// one.
     fn environment_for<'a>(&'a self, name: &'a str, task: &'a Task) -> TaskEnvironmentFuture<'a>;
+
+    /// The environment for a task that runs on an external backend.
+    /// Implementations with host runtime activation can omit it here.
+    fn backend_environment_for<'a>(
+        &'a self,
+        name: &'a str,
+        task: &'a Task,
+    ) -> TaskEnvironmentFuture<'a> {
+        self.environment_for(name, task)
+    }
 }
 
 /// What a task of another project runs with in place of the run's own
@@ -90,7 +100,7 @@ pub trait TaskEnvironments: std::fmt::Debug + Send + Sync {
 /// reads its inputs, writes its outputs and keys its results as it would in
 /// a run of its own project. Its environment comes from
 /// [`ExecutorConfig::task_environments`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ProjectExecution {
     /// The project's directory, which its inputs and outputs are relative to.
     pub project_root: PathBuf,
@@ -98,6 +108,10 @@ pub struct ProjectExecution {
     pub cue_module_root: Option<PathBuf>,
     /// Caching infrastructure carrying the project's own runtime identity.
     pub cache: Option<TaskCacheConfig>,
+    /// The owning project's default runtime.
+    pub runtime: Option<cuenv_core::manifest::Runtime>,
+    /// Services declared by the owning project.
+    pub services: std::collections::HashMap<String, cuenv_core::manifest::Service>,
 }
 
 /// Task executor configuration
@@ -135,6 +149,16 @@ pub struct ExecutorConfig {
     /// a task runs and what it is keyed with; `task_environments` has to
     /// supply its environment, or it runs with `environment`.
     pub external_projects: BTreeMap<String, ProjectExecution>,
+    /// Optional external execution backend (e.g. Dagger Engine).
+    pub backend: Option<Arc<dyn super::backend::TaskBackend>>,
+    /// Project-level default runtime, used when a task does not declare its own.
+    pub project_runtime: Option<cuenv_core::manifest::Runtime>,
+    /// Project services available for `#Service` entries in task `dependsOn`.
+    pub services: std::collections::HashMap<String, cuenv_core::manifest::Service>,
+    /// Project name for ephemeral service session metadata.
+    pub project_name: String,
+    /// Ephemeral service manager for host-executed tasks that depend on services.
+    pub service_manager: Option<Arc<dyn super::backend::EphemeralServiceManager>>,
 }
 
 impl Default for ExecutorConfig {
@@ -151,6 +175,11 @@ impl Default for ExecutorConfig {
             cache: None,
             sandbox_hasher_root: None,
             external_projects: BTreeMap::new(),
+            backend: None,
+            project_runtime: None,
+            services: std::collections::HashMap::new(),
+            project_name: String::new(),
+            service_manager: None,
         }
     }
 }
@@ -274,15 +303,82 @@ impl TaskExecutor {
         reject_unbound_file_references(name, task)?;
         reject_unmaterialized_mapping(name, task)?;
 
-        let task_environment = self.task_environment(name, task).await?;
+        let effective_runtime = task.runtime.as_ref().or(frame.runtime);
 
-        // Input resolution and directory isolation remain available when
-        // result caching is disabled. A sandbox-only config supplies the
-        // hasher and execution-root location without permitting cache I/O.
-        let cache = match frame.cache.cloned() {
-            Some(cache) => Some(cache),
-            None if task.sandbox().uses_exec_root() => Some(self.sandbox_only_cache()?),
-            None => None,
+        // An external backend owns result caching, while the executor
+        // still resolves the task's input and working-directory semantics.
+        if let Some(backend) = self.config.backend.as_ref()
+            && backend.handles_task(task, effective_runtime)
+        {
+            let mut task_environment = match &self.config.task_environments {
+                Some(environments) => environments.backend_environment_for(name, task).await?,
+                None => None,
+            }
+            .unwrap_or_else(|| self.config.environment.clone());
+            if backend.manages_own_cache() {
+                cuenv_events::emit_task_cache_skipped!(
+                    name,
+                    cuenv_events::CacheSkipReason::ExternalBackend {
+                        backend: backend.name().to_string(),
+                    }
+                );
+            }
+            for key in task.env_passthrough() {
+                if !task_environment.contains(key)
+                    && let Ok(value) = std::env::var(key)
+                {
+                    task_environment.set(key.clone(), value);
+                }
+            }
+            let own_name = ExternalTaskName::parse(name).map_or(name, |external| external.task);
+            let resolved = super::env::resolve_task_environment(own_name, &task.env).await?;
+            for (key, value) in resolved.values {
+                if resolved.secret_names.contains(&key) {
+                    task_environment.set_secret(key, value);
+                } else {
+                    task_environment.set(key, value);
+                }
+            }
+            cuenv_events::register_secrets(resolved.secret_values);
+            let workdir = Self::workdir_in(frame, task)?;
+            return self
+                .execute_task_via_backend(BackendExecution {
+                    backend: backend.as_ref(),
+                    name,
+                    task,
+                    environment: &task_environment,
+                    frame,
+                    workdir: &workdir,
+                    runtime: effective_runtime,
+                })
+                .await;
+        }
+
+        let mut task_environment = self.task_environment(name, task).await?;
+        Self::ensure_task_home(task, &mut task_environment)?;
+
+        // Live services disable the result cache. Sandboxed tasks still
+        // stage declared inputs and project declared outputs.
+        let service_deps: Vec<String> = task.service_dependencies().map(str::to_string).collect();
+        let services_reason = "task depends on live host services";
+        let cache = if service_deps.is_empty() {
+            match frame.cache.cloned() {
+                Some(cache) => Some(cache),
+                None if task.sandbox().uses_exec_root() => Some(self.sandbox_only_cache()?),
+                None => None,
+            }
+        } else if task.sandbox().uses_exec_root() {
+            let mut cache = self.sandbox_only_cache()?;
+            cache.cache_disabled_reason = Some(services_reason.to_string());
+            Some(cache)
+        } else {
+            cuenv_events::emit_task_cache_skipped!(
+                name,
+                cuenv_events::CacheSkipReason::Disabled {
+                    reason: Some(services_reason.to_string()),
+                }
+            );
+            None
         };
         let mut cache_handle: Option<CacheHandle> = if let Some(cache) = cache {
             let workdir = Self::workdir_in(frame, task)?;
@@ -444,18 +540,39 @@ impl TaskExecutor {
             None
         };
 
-        // Real execution. Both backends produce the same `TaskResult`. A
-        // sandboxed task runs in its exec root; everything else runs where it
-        // always did.
+        let services = if service_deps.is_empty() {
+            None
+        } else {
+            let manager = self.config.service_manager.as_ref().ok_or_else(|| {
+                Error::configuration(format!(
+                    "task '{name}' depends on service(s) [{}], but no ephemeral service manager is configured",
+                    service_deps.join(", ")
+                ))
+            })?;
+            Some(
+                manager
+                    .start(super::backend::EphemeralServiceStart {
+                        project_root: frame.project_root,
+                        project_name: frame.project_name,
+                        services: frame.services,
+                        requested: &service_deps,
+                    })
+                    .await?,
+            )
+        };
         let start = std::time::Instant::now();
         let context = TaskExecutionContext {
             name,
             task,
             environment: &task_environment,
         };
-        let result = self
+        let outcome = self
             .execute_task_with_retries(context, cache_handle.as_mut())
-            .await?;
+            .await;
+        if let Some(services) = services {
+            services.shutdown().await;
+        }
+        let result = outcome?;
         let duration_ms = start.elapsed().as_millis();
 
         let resolved_outputs = if result.success {
@@ -520,15 +637,16 @@ impl TaskExecutor {
             Some(environments) => environments.environment_for(name, task).await?,
             None => None,
         };
-        let mut environment = selected.unwrap_or_else(|| self.config.environment.clone());
-        if !task.is_hermetic() || environment.get("HOME").is_some() || task.env.contains_key("HOME")
-        {
-            return Ok(environment);
-        }
+        Ok(selected.unwrap_or_else(|| self.config.environment.clone()))
+    }
 
-        let home = super::hermetic_home::writable_task_home()?;
-        environment.set("HOME".to_string(), home.to_string_lossy().into_owned());
-        Ok(environment)
+    fn ensure_task_home(task: &Task, environment: &mut Environment) -> Result<()> {
+        if task.is_hermetic() && environment.get("HOME").is_none() && !task.env.contains_key("HOME")
+        {
+            let home = super::hermetic_home::writable_task_home()?;
+            environment.set("HOME".to_string(), home.to_string_lossy().into_owned());
+        }
+        Ok(())
     }
 
     /// Materialize the exec root a sandboxed task runs in.
@@ -624,6 +742,146 @@ impl TaskExecutor {
         }
     }
 
+    async fn execute_task_via_backend(
+        &self,
+        execution: BackendExecution<'_>,
+    ) -> Result<TaskResult> {
+        let BackendExecution {
+            backend,
+            name,
+            task,
+            environment,
+            frame,
+            workdir,
+            runtime,
+        } = execution;
+
+        let staged = self.stage_backend_workspace(&execution).await?;
+        let workspace_root = staged.as_ref().map_or_else(
+            || {
+                if workdir.starts_with(frame.project_root) {
+                    frame.project_root
+                } else {
+                    frame.module_root
+                }
+            },
+            |workspace| workspace.root.as_path(),
+        );
+        let workspace_workdir = staged
+            .as_ref()
+            .map_or(workdir, |workspace| workspace.workdir.as_path())
+            .strip_prefix(workspace_root)
+            .map_err(|_| {
+                Error::configuration(format!("task '{name}' runs outside its workspace"))
+            })?;
+
+        let retry_attempts = task.retry.as_ref().map_or(0, |retry| retry.attempts);
+        let max_attempts = retry_attempts.saturating_add(1);
+        let retry_delay = task
+            .retry
+            .as_ref()
+            .and_then(|retry| retry.delay.as_deref())
+            .map(|delay| parse_task_duration("retry.delay", delay))
+            .transpose()?;
+        let timeout = task
+            .timeout
+            .as_deref()
+            .map(|timeout| parse_task_duration("timeout", timeout))
+            .transpose()?;
+
+        let mut attempt = 1_u32;
+        loop {
+            let outcome = backend
+                .execute_attempt(super::backend::BackendAttemptRequest {
+                    name,
+                    task,
+                    environment,
+                    project_root: frame.project_root,
+                    workdir,
+                    workspace_root,
+                    workspace_workdir,
+                    runtime,
+                    services: frame.services,
+                    timeout,
+                    capture_output: self.config.capture_output,
+                })
+                .await?;
+            let result = match outcome {
+                TaskAttempt::TimedOut(result) => return Ok(result),
+                TaskAttempt::Completed(result) => result,
+            };
+            if result.success || attempt >= max_attempts {
+                return Ok(result);
+            }
+
+            attempt = attempt.saturating_add(1);
+            cuenv_events::emit_task_retrying!(name, attempt, max_attempts);
+            if let Some(delay) = retry_delay {
+                tokio::time::sleep(delay).await;
+            }
+        }
+    }
+
+    async fn stage_backend_workspace(
+        &self,
+        execution: &BackendExecution<'_>,
+    ) -> Result<Option<BackendWorkspace>> {
+        let BackendExecution {
+            task,
+            name,
+            frame,
+            environment,
+            workdir,
+            ..
+        } = *execution;
+        if !task.sandbox().uses_exec_root() {
+            return Ok(None);
+        }
+        let cache = self.sandbox_only_cache()?;
+        let outcome = super::cache::build_action(BuildActionInput {
+            task,
+            task_name: name,
+            environment,
+            cache: &cache,
+            workdir,
+            project_root: frame.project_root,
+            module_root: frame.module_root,
+        })
+        .await?;
+        let super::cache::CacheOutcome::Skipped { reason, execution } = outcome else {
+            return Err(Error::configuration(
+                "unexpected result cache action while staging backend inputs",
+            ));
+        };
+        let execution = execution.ok_or_else(|| {
+            Error::configuration(format!(
+                "could not stage inputs for task '{name}': {reason}"
+            ))
+        })?;
+        let root = super::exec_root::prepare(&cache.cache_root, "backend", &execution.inputs)?;
+        let workdir = root.workdir(&execution.working_directory)?;
+        let mount = frame
+            .project_root
+            .strip_prefix(&cache.vcs_hasher_root)
+            .ok()
+            .filter(|project| {
+                execution.working_directory.starts_with(project)
+                    && execution
+                        .inputs
+                        .iter()
+                        .all(|input| input.relative_path.starts_with(project))
+            })
+            .map_or_else(
+                || root.path().to_path_buf(),
+                |project| root.path().join(project),
+            );
+        Ok(Some(BackendWorkspace {
+            _staging: root,
+            root: mount,
+            workdir,
+        }))
+    }
+
     /// Reproduce a [`TaskResult`] from a cache hit and emit the same
     /// lifecycle events the executor would emit on a normal run, so
     /// downstream renderers (CLI / TUI / JSON) see no behavioral
@@ -690,7 +948,7 @@ impl TaskExecutor {
     /// `#project:task`, the project it was loaded from.
     fn frame_for<'frame>(
         &'frame self,
-        name: &str,
+        name: &'frame str,
         task: &'frame Task,
     ) -> Result<TaskFrame<'frame>> {
         let Some(external) = ExternalTaskName::parse(name) else {
@@ -714,6 +972,9 @@ impl TaskExecutor {
                 .as_deref()
                 .unwrap_or(&project.project_root),
             cache: project.cache.as_ref(),
+            runtime: project.runtime.as_ref(),
+            services: &project.services,
+            project_name: external.project,
         })
     }
 
@@ -730,6 +991,9 @@ impl TaskExecutor {
                 .as_deref()
                 .unwrap_or(&self.config.project_root),
             cache: self.config.cache.as_ref(),
+            runtime: self.config.project_runtime.as_ref(),
+            services: &self.config.services,
+            project_name: &self.config.project_name,
         }
     }
 
@@ -978,7 +1242,11 @@ impl TaskExecutor {
             // Execute only the default task, using the group prefix directly
             // since "default" is implicit when invoking the group name
             let task_name = format!("{}.default", prefix);
-            let outcome = self.execute_node(&task_name, default_task, all_tasks).await;
+            let mut default_task = default_task.clone();
+            default_task.inherit_service_dependencies(&group.depends_on);
+            let outcome = self
+                .execute_node(&task_name, &default_task, all_tasks)
+                .await;
             if emit_lifecycle {
                 emit_group_completion(GroupCompletion {
                     prefix,
@@ -1041,7 +1309,8 @@ impl TaskExecutor {
         let max_parallel = group_concurrency_limit(self.config.max_parallel, group.max_concurrency);
         for (name, child_node) in &group.children {
             let task_name = format!("{}.{}", prefix, name);
-            let child_node = child_node.clone();
+            let mut child_node = child_node.clone();
+            child_node.inherit_service_dependencies(&group.depends_on);
             let all_tasks = Arc::clone(&all_tasks);
             let executor = self.clone_with_config();
             join_set.spawn(async move {
@@ -1223,6 +1492,25 @@ struct TaskFrame<'frame> {
     module_root: &'frame Path,
     /// The project's caching infrastructure, when it has one.
     cache: Option<&'frame TaskCacheConfig>,
+    runtime: Option<&'frame cuenv_core::manifest::Runtime>,
+    services: &'frame std::collections::HashMap<String, cuenv_core::manifest::Service>,
+    project_name: &'frame str,
+}
+
+struct BackendExecution<'exec> {
+    backend: &'exec dyn super::backend::TaskBackend,
+    name: &'exec str,
+    task: &'exec Task,
+    environment: &'exec Environment,
+    frame: TaskFrame<'exec>,
+    workdir: &'exec Path,
+    runtime: Option<&'exec cuenv_core::manifest::Runtime>,
+}
+
+struct BackendWorkspace {
+    _staging: super::exec_root::ExecRoot,
+    root: PathBuf,
+    workdir: PathBuf,
 }
 
 fn resolve_task_directory(

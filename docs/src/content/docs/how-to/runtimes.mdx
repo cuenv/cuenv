@@ -14,7 +14,7 @@ runtime: schema.#NixRuntime
 Now `cuenv task build`, `cuenv exec -- cargo test`, and CI all see the same toolchain. And when one task needs something different — a heavier container, a pinned binary — you override it on that single task.
 
 :::caution[Status varies by variant]
-The `#Runtime` union has five members, and they are **not** at the same maturity. Nix, devenv, and tools runtimes are solid. OCI is partial. The container runtime is schema-only and does nothing today. Read the [status table](#status-by-variant) below before you build on a variant, and cross-check the authoritative [schema status](/reference/schema/status/) page.
+The `#Runtime` union has six members, and they are **not** at the same maturity. Nix, devenv, tools, container, and Dagger runtimes are implemented. OCI is partial. Read the [status table](#status-by-variant) below before you build on a variant, and cross-check the authoritative [schema status](/reference/schema/status/) page.
 :::
 
 ## The runtime union
@@ -22,18 +22,19 @@ The `#Runtime` union has five members, and they are **not** at the same maturity
 `#Runtime` is a CUE union — exactly one of these shapes (from `schema/runtime.cue`):
 
 ```cue
-#Runtime: #NixRuntime | #DevenvRuntime | #ContainerRuntime | #OCIRuntime | #ToolsRuntime
+#Runtime: {#NixRuntime} | {#DevenvRuntime} | {#ContainerRuntime} | {#DaggerRuntime} | {#OCIRuntime} | {#ToolsRuntime}
 ```
 
 You select a variant by assigning it directly. The `type` field discriminates which one you mean:
 
-| Variant            | `type`        | What it gives a task                                          |
-| ------------------ | ------------- | ------------------------------------------------------------- |
-| `#NixRuntime`      | `"nix"`       | A Nix flake devShell environment                              |
-| `#DevenvRuntime`   | `"devenv"`    | A [devenv](https://devenv.sh) shell environment               |
-| `#ToolsRuntime`    | (tools)       | Hermetic, version-pinned binaries from GitHub/OCI/Nix/Rustup  |
-| `#OCIRuntime`      | `"oci"`       | Specific binaries extracted from whole OCI images onto `PATH` |
-| `#ContainerRuntime`| `"container"` | (schema-only — see below)                                     |
+| Variant             | `type`        | What it gives a task                                                        |
+| ------------------- | ------------- | --------------------------------------------------------------------------- |
+| `#NixRuntime`       | `"nix"`       | A Nix flake devShell environment                                            |
+| `#DevenvRuntime`    | `"devenv"`    | A [devenv](https://devenv.sh) shell environment                             |
+| `#ToolsRuntime`     | (tools)       | Hermetic, version-pinned binaries from GitHub/OCI/Nix/Rustup                |
+| `#ContainerRuntime` | `"container"` | Runs the task inside a container image via the Dagger 1.0 Engine            |
+| `#DaggerRuntime`    | `"dagger"`    | Full Dagger 1.0 container runtime (image/Dockerfile, cache volumes, engine) |
+| `#OCIRuntime`       | `"oci"`       | Specific binaries extracted from whole OCI images onto `PATH`               |
 
 ## Project default vs per-task override
 
@@ -73,15 +74,16 @@ This is the same pattern across every variant: the project `runtime` is the base
 
 cuenv is honest about what works. The matrix in [`docs/design/specs/schema-coverage-matrix.md`](/reference/schema/status/) is authoritative; this is the runtime slice of it:
 
-| Variant             | Status          | Use it?                                                                                  |
-| ------------------- | --------------- | ---------------------------------------------------------------------------------------- |
-| `#NixRuntime`       | **Stable**      | Yes. Preferred for reproducible toolchains. See [Nix integration](/how-to/nix/).         |
-| `#DevenvRuntime`    | **Stable**      | Yes, if your project already uses devenv. See [below](#devenv-runtime).                  |
-| `#ToolsRuntime`     | **Stable**      | Yes. Best for pinning individual CLI tools. See [Tools](/how-to/tools/).                  |
-| `#OCIRuntime`       | **Partial**     | Yes, with caveats — `sync lock` + the `#OCIActivate` hook. See [below](#oci-runtime).    |
-| `#ContainerRuntime` | **schema-only** | No. Returns no container environment today. Do not rely on it. See [below](#container-runtime). |
+| Variant             | Status      | Use it?                                                                                            |
+| ------------------- | ----------- | -------------------------------------------------------------------------------------------------- |
+| `#NixRuntime`       | **Stable**  | Yes. Preferred for reproducible toolchains. See [Nix integration](/how-to/nix/).                   |
+| `#DevenvRuntime`    | **Stable**  | Yes, if your project already uses devenv. See [below](#devenv-runtime).                            |
+| `#ToolsRuntime`     | **Stable**  | Yes. Best for pinning individual CLI tools. See [Tools](/how-to/tools/).                           |
+| `#ContainerRuntime` | **Beta**    | Runs tasks in a container image on the Dagger 1.0 beta engine. See [Dagger](/how-to/dagger/). |
+| `#DaggerRuntime`    | **Beta**    | Supports Dockerfile builds, cache volumes, and container services on the Dagger 1.0 beta engine. See [Dagger](/how-to/dagger/). |
+| `#OCIRuntime`       | **Partial** | Yes, with caveats — `sync lock` + the `#OCIActivate` hook. See [below](#oci-runtime).              |
 
-How each variant supplies an environment differs under the hood. Nix and devenv runtimes are resolved by `cuenv` itself (it runs `nix print-dev-env` / `devenv print-dev-env` and sources the result, per `crates/core/src/runtime.rs`). OCI binaries are extracted by the `#OCIActivate` hook.
+How each variant supplies an environment differs under the hood. Nix and devenv runtimes are resolved by `cuenv` itself (it runs `nix print-dev-env` / `devenv print-dev-env` and sources the result, per `crates/core/src/runtime.rs`). Container and Dagger runtimes execute directly on the Dagger 1.0 Engine via `crates/dagger`. OCI binaries are extracted by the `#OCIActivate` hook.
 
 ## OCI runtime
 
@@ -183,21 +185,31 @@ runtime: schema.#DevenvRuntime & {path: "./infra"}
 `#DevenvRuntime` is the *runtime* form. There is a separate standalone `#Devenv` hook for projects that prefer to wire devenv as an explicit hook. See [Nix integration](/how-to/nix/) for the hook-driven approach, including the `#NixFlake` hook that is the analogue for plain Nix flakes.
 :::
 
-## Container runtime
+## Container and Dagger runtimes
 
-`#ContainerRuntime` is **schema-only**. The shape exists in `schema/runtime.cue` for a future "just run this task in this image" use case, but runtime environment acquisition returns no container environment today.
+`#ContainerRuntime` and `#DaggerRuntime` execute tasks inside containers on the **Dagger 1.0 Engine**. `#ContainerRuntime` covers the simple "run this task in this image" case, while `#DaggerRuntime` adds Dockerfile builds, persistent `cacheVolumes`, target `platform`, `workdir`, engine targeting (`local`, `cloud`, or remote URI), and `disableDaggerInDagger`:
 
 ```cue
-// schema-only: this does NOT run your task in a container yet.
-runtime: schema.#ContainerRuntime & {image: "node:20"}
+// Simple container image via Dagger 1.0:
+runtime: schema.#ContainerRuntime & {image: "node:20-alpine"}
+
+// Full Dagger 1.0 runtime with cache volumes:
+runtime: schema.#DaggerRuntime & {
+    image:   "rust:1.100-slim"
+    workdir: "/work"
+    cacheVolumes: [
+        {key: "cargo-registry", path: "/usr/local/cargo/registry"},
+    ]
+}
 ```
 
-Do not recommend or depend on `#ContainerRuntime`. cuenv does not run tasks in containers today.
+Tasks running on the Dagger backend bypass `cuenv-cas` and rely on Dagger Engine caching. Any `#Service` listed in `dependsOn` is attached automatically via `withServiceBinding`. See [Dagger 1.0 Backend & Ephemeral Services](/how-to/dagger/) for full details.
 
 ## Where to go next
 
 <div>
 
+- [Dagger 1.0 Backend & Ephemeral Services](/how-to/dagger/) — `#ContainerRuntime`, `#DaggerRuntime`, Dagger workspace sync/export, and task-scoped ephemeral host services.
 - [Nix integration](/how-to/nix/) — the Stable `#NixRuntime` and the `#NixFlake` / `#Devenv` hooks in depth.
 - [Tools](/how-to/tools/) — the Stable `#ToolsRuntime` for pinning individual CLI tools, including the `#Oci` single-tool source.
 - [Lockfiles](/how-to/lockfiles/) — how `cuenv sync lock` and `cuenv.lock` underpin OCI and tools runtimes.

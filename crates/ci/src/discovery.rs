@@ -9,9 +9,95 @@
 
 use cuengine::ModuleEvalOptions;
 
+use cuenv_core::module::ModuleEvaluationMetadata;
+use cuenv_core::tasks::SourceLocation;
 use cuenv_core::{ModuleEvaluation, Result};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+
+/// Collect reference, definition and caller metadata across CUE instance evaluations.
+#[derive(Default)]
+pub struct EvaluationMetadataBuilder {
+    references: HashMap<String, String>,
+    sources: HashMap<String, SourceLocation>,
+    caller_sources: HashMap<String, SourceLocation>,
+}
+
+impl EvaluationMetadataBuilder {
+    /// Add one field, using its key in the module-wide evaluation.
+    pub fn insert(&mut self, key: String, meta: cuengine::FieldMeta) {
+        let source = source_location_from_meta(&meta);
+        let caller_source = caller_source_location_from_meta(&meta);
+
+        if let Some(reference) = meta.reference {
+            self.references.insert(key.clone(), reference);
+        }
+        if let Some(source) = source {
+            self.sources.insert(key.clone(), source);
+        }
+        if let Some(caller_source) = caller_source {
+            self.caller_sources.insert(key, caller_source);
+        }
+    }
+
+    /// Produce the metadata consumed by the module evaluator.
+    #[must_use]
+    pub fn finish(self) -> ModuleEvaluationMetadata {
+        ModuleEvaluationMetadata {
+            direct_references: HashMap::new(),
+            references: non_empty(self.references),
+            sources: non_empty(self.sources),
+            caller_sources: non_empty(self.caller_sources),
+            declarations: None,
+        }
+    }
+}
+
+fn source_location_from_parts(
+    directory: &str,
+    filename: &str,
+    line: usize,
+) -> Option<SourceLocation> {
+    if filename.is_empty() {
+        return None;
+    }
+
+    let file = if filename.contains('/')
+        || filename.contains('\\')
+        || directory.is_empty()
+        || directory == "."
+    {
+        filename.to_string()
+    } else {
+        format!("{directory}/{filename}")
+    };
+
+    Some(SourceLocation {
+        file,
+        line: u32::try_from(line).unwrap_or(u32::MAX),
+        column: 0,
+    })
+}
+
+fn source_location_from_meta(meta: &cuengine::FieldMeta) -> Option<SourceLocation> {
+    if !meta.definition_filename.is_empty() {
+        return source_location_from_parts(
+            &meta.definition_directory,
+            &meta.definition_filename,
+            meta.definition_line,
+        );
+    }
+
+    source_location_from_parts(&meta.directory, &meta.filename, meta.line)
+}
+
+fn caller_source_location_from_meta(meta: &cuengine::FieldMeta) -> Option<SourceLocation> {
+    source_location_from_parts(&meta.directory, &meta.filename, meta.line)
+}
+
+fn non_empty<K, V>(map: HashMap<K, V>) -> Option<HashMap<K, V>> {
+    (!map.is_empty()).then_some(map)
+}
 
 /// Find the CUE module root by walking up from `start` looking for `cue.mod/` directory.
 #[must_use]
@@ -56,8 +142,16 @@ pub fn find_cue_module_root(start: &Path) -> Option<PathBuf> {
 /// # }
 /// ```
 pub fn evaluate_module_from_cwd() -> Result<ModuleEvaluation> {
-    const PACKAGE: &str = "cuenv";
+    evaluate_module_for_package("cuenv")
+}
 
+/// Discover and evaluate projects whose env.cue declares `package`.
+///
+/// # Errors
+///
+/// Returns an error if the working directory is not in a CUE module, no matching
+/// projects are present, or evaluation fails.
+pub fn evaluate_module_for_package(package: &str) -> Result<ModuleEvaluation> {
     let cwd =
         std::env::current_dir().map_err(|e| cuenv_core::Error::io("get current directory", e))?;
 
@@ -66,14 +160,17 @@ pub fn evaluate_module_from_cwd() -> Result<ModuleEvaluation> {
             "Not inside a CUE module. Run 'cue mod init' or navigate to a directory with cue.mod/",
         )
     })?;
+    evaluate_module_in(&module_root, package)
+}
 
+fn evaluate_module_in(module_root: &Path, package: &str) -> Result<ModuleEvaluation> {
     // Discover all directories with env.cue files matching our package
     let env_cue_dirs =
-        cuenv_core::cue::discovery::discover_env_cue_directories(&module_root, PACKAGE);
+        cuenv_core::cue::discovery::discover_env_cue_directories(module_root, package);
 
     if env_cue_dirs.is_empty() {
         return Err(cuenv_core::Error::configuration(format!(
-            "No env.cue files with package '{PACKAGE}' found in module: {}",
+            "No env.cue files with package '{package}' found in module: {}",
             module_root.display()
         )));
     }
@@ -81,22 +178,23 @@ pub fn evaluate_module_from_cwd() -> Result<ModuleEvaluation> {
     // Evaluate each directory individually (non-recursive)
     let mut all_instances = HashMap::new();
     let mut all_projects = Vec::new();
-    let mut all_meta = HashMap::new();
+    let mut metadata = EvaluationMetadataBuilder::default();
     let mut eval_errors = Vec::new();
 
     for dir in env_cue_dirs {
-        let dir_rel_path = cuenv_core::cue::discovery::compute_relative_path(&dir, &module_root);
+        let dir_rel_path = cuenv_core::cue::discovery::compute_relative_path(&dir, module_root);
         // Declarations tell a project's own stamps from those of a
         // same-named project of another package.
         let options = ModuleEvalOptions {
             recursive: false,
             with_meta: true,
             with_references: true,
+            instance_failures: cuengine::InstanceFailures::Fail,
             target_dir: Some(dir.to_string_lossy().to_string()),
             ..Default::default()
         };
 
-        match cuengine::evaluate_module(&module_root, PACKAGE, Some(&options)) {
+        match cuengine::evaluate_module(module_root, package, Some(&options)) {
             Ok(raw) => {
                 // Merge instances (key by relative path from module_root)
                 for (path_str, value) in raw.instances {
@@ -123,7 +221,7 @@ pub fn evaluate_module_from_cwd() -> Result<ModuleEvaluation> {
                 for (meta_key, meta_value) in raw.meta {
                     let adjusted_key =
                         cuenv_core::cue::discovery::adjust_meta_key_path(&meta_key, &dir_rel_path);
-                    all_meta.insert(adjusted_key, meta_value);
+                    metadata.insert(adjusted_key, meta_value);
                 }
             }
             Err(e) => {
@@ -153,72 +251,56 @@ pub fn evaluate_module_from_cwd() -> Result<ModuleEvaluation> {
         )));
     }
 
-    // Convert meta to reference map for dependsOn resolution, and keep
-    // where each project name and stamp is declared.
-    let declarations = project_declarations(&all_meta);
-    let references = if all_meta.is_empty() {
-        None
-    } else {
-        Some(
-            all_meta
-                .into_iter()
-                .filter_map(|(k, v)| v.reference.map(|r| (k, r)))
-                .collect(),
-        )
-    };
-
     let module = ModuleEvaluation::from_raw_parts(cuenv_core::module::ModuleEvaluationInput {
-        root: module_root,
+        root: module_root.to_path_buf(),
         raw_instances: all_instances,
         project_paths: all_projects,
-        metadata: cuenv_core::module::ModuleEvaluationMetadata {
-            references,
-            declarations,
-            ..cuenv_core::module::ModuleEvaluationMetadata::default()
-        },
+        metadata: metadata.finish(),
     });
     module.require_unique_project_names()?;
     Ok(module)
 }
 
-/// Where every project `name` and every project a stamp names is declared,
-/// by meta key: what tells a project's own stamps from those of a
-/// same-named project of another package. Nothing else is kept, so tasks
-/// get no source locations here.
-fn project_declarations(
-    meta: &HashMap<String, cuengine::FieldMeta>,
-) -> Option<cuenv_core::module::SourceMap> {
-    let declarations: cuenv_core::module::SourceMap = meta
-        .iter()
-        .filter(|(key, _)| {
-            key.ends_with("/name")
-                || key.ends_with(".cuenvRef.project")
-                || key.ends_with(".cuenvProject")
-        })
-        .filter_map(|(key, field)| {
-            let (file, line) = if field.definition_filename.is_empty() {
-                (&field.filename, field.line)
-            } else {
-                (&field.definition_filename, field.definition_line)
-            };
-            (!file.is_empty()).then(|| {
-                (
-                    key.clone(),
-                    cuenv_core::tasks::SourceLocation {
-                        file: file.clone(),
-                        line: u32::try_from(line).unwrap_or(u32::MAX),
-                        column: 0,
-                    },
-                )
-            })
-        })
-        .collect();
-    (!declarations.is_empty()).then_some(declarations)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn discovered_tasks_retain_their_working_directory_sources()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::Builder::new()
+            .prefix("cuenv-ci-source-")
+            .tempdir()?;
+        let root = directory.path();
+        std::fs::create_dir(root.join("cue.mod"))?;
+        std::fs::create_dir(root.join("app"))?;
+        std::fs::write(
+            root.join("cue.mod/module.cue"),
+            "module: \"test.example/sources\"\nlanguage: version: \"v0.18.0\"\n",
+        )?;
+        std::fs::write(
+            root.join("app/env.cue"),
+            "package fixture\nname: \"app\"\ntasks: probe: {command: \"true\", dir: {from: \"definition\", path: \".\"}}\n",
+        )?;
+        let module = evaluate_module_in(root, "fixture")?;
+        let project = module
+            .projects()
+            .next()
+            .ok_or("fixture project was not discovered")?
+            .to_project()?;
+        let task = project
+            .tasks
+            .get("probe")
+            .and_then(|node| node.as_task())
+            .ok_or("fixture did not contain its probe task")?;
+        let source = task
+            .source
+            .as_ref()
+            .ok_or("definition metadata was not retained")?;
+        assert_eq!(source.directory(), Some("app"));
+        assert!(task.caller_source.is_some());
+        Ok(())
+    }
 
     // ==========================================================================
     // find_cue_module_root tests

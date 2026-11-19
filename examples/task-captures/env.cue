@@ -6,7 +6,9 @@ schema.#Project
 
 name: "task-captures"
 
-ProjectTasks=tasks: {
+let ProjectTasks = tasks
+
+tasks: {
 	// A build task that emits structured output.
 	// Two named captures pull specific values from stdout.
 	build: schema.#Task & {

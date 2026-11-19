@@ -121,6 +121,10 @@ pub enum Command {
         continue_on_error: bool,
         /// Dry run mode: export DAG without executing.
         dry_run: DryRun,
+        /// Execution backend for tasks (auto, host, or dagger).
+        backend: crate::commands::backend::ExecutionBackendArg,
+        /// Optional Dagger Engine target (`local`, `cloud`, or remote URI).
+        dagger_engine: Option<String>,
         /// Additional arguments to pass to the task.
         task_args: Vec<String>,
     },

@@ -201,7 +201,6 @@ impl Compiler {
 
     /// What the project's instance is built from, when it can be loaded.
     fn configuration_sources(&self) -> Option<cuengine::InstanceSources> {
-        const PACKAGE: &str = "cuenv";
         let module_root = self.options.module_root.as_ref()?;
         let directory = match self.options.project_path.as_deref() {
             Some(project_path) if !project_path.is_empty() && project_path != "." => {
@@ -209,7 +208,7 @@ impl Compiler {
             }
             _ => module_root.clone(),
         };
-        cuengine::instance_sources(module_root, &directory, PACKAGE)
+        cuengine::instance_sources(module_root, &directory, self.project_package())
             .inspect_err(|error| {
                 tracing::debug!(
                     directory = %directory.display(),
@@ -403,7 +402,11 @@ impl Compiler {
                 .iter()
                 .map(|problem| owner.worded(problem)),
         );
-        for dep in node.depends_on() {
+        for dep in node
+            .depends_on()
+            .iter()
+            .filter(|dep| dep.kind == cuenv_core::tasks::DependencyKind::Task)
+        {
             self.collect_dependency(owner, dep.task_name(), inputs);
         }
         match node {

@@ -93,6 +93,33 @@ func TestFrozenEmbeddedFilesStayAsTheyWereFrozen(t *testing.T) {
 	}
 }
 
+func TestFrozenEmbeddedFilesKeepTheirSourceDirectory(t *testing.T) {
+	dir := writeCueModule(t, map[string]string{
+		"base.cue":        "@extern(embed)\npackage app\nbase: _ @embed(file=\"data.json\")\n",
+		"data.json":       "\"base\"",
+		"child/env.cue":   "@extern(embed)\npackage app\nchild: _ @embed(file=\"data.json\")\n",
+		"child/data.json": "\"child\"",
+	})
+	options := freezeOptions{ModuleRoot: dir, Directory: filepath.Join(dir, "child"), Package: "app"}
+	var graph frozenGraph
+	if err := json.Unmarshal(frozenPayload(t, freezeInstanceResponse(frozenJSON(t, options))), &graph); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatal(err)
+	}
+	value, err := graph.build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"base", "child"} {
+		got, err := value.LookupPath(cue.ParsePath(field)).String()
+		if err != nil || got != field {
+			t.Errorf("%s: got %q, want %q: %v", field, got, field, err)
+		}
+	}
+}
+
 // An embedded file edited while freezing is covered by the same check as a CUE file.
 func TestFrozenEmbeddedFileEditedWhileFreezing(t *testing.T) {
 	dir := embedModule(t)

@@ -1,7 +1,7 @@
 use super::TaskGraph;
 use crate::{Task, TaskGroup, TaskNode, Tasks};
 use cuenv_core::Result;
-use cuenv_task_graph::{MutableTaskNodeData, TaskResolver};
+use cuenv_task_graph::TaskResolver;
 use petgraph::graph::NodeIndex;
 use tracing::debug;
 
@@ -135,7 +135,7 @@ impl TaskGraph {
                 for node_idx in &task_nodes {
                     if let Some(node) = self.inner.node_mut(*node_idx) {
                         for dep in &group.depends_on {
-                            node.task.add_dependency(dep.task_name().to_string());
+                            node.task.add_typed_dependency(dep.clone());
                         }
                     }
                 }

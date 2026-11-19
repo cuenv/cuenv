@@ -7,12 +7,13 @@ package schema
 //   runtime: #NixRuntime
 //   runtime: #DevenvRuntime
 //   runtime: #ContainerRuntime & {image: "node:20"}
+//   runtime: #DaggerRuntime & {image: "rust:1.100", cacheVolumes: [{key: "cargo", path: "/usr/local/cargo/registry"}]}
 //   runtime: #OCIRuntime & {platforms: ["darwin-arm64"], images: [{image: "nginx:1.25-alpine", extract: [{path: "/usr/sbin/nginx"}]}]}
 //   runtime: #ToolsRuntime & {
 //       platforms: ["darwin-arm64"]
 //       tools: {jq: "1.7.1"}
 //   }
-#Runtime: {#NixRuntime} | {#DevenvRuntime} | {#ContainerRuntime} | {#OCIRuntime} | {#ToolsRuntime}
+#Runtime: {#NixRuntime} | {#DevenvRuntime} | {#ContainerRuntime} | {#DaggerRuntime} | {#OCIRuntime} | {#ToolsRuntime}
 
 // #NixRuntime activates a Nix flake devShell
 #NixRuntime: {
@@ -30,12 +31,46 @@ package schema
 	path: string | *"."
 }
 
-// #ContainerRuntime runs tasks in a container image
-// For simple "run in this image" use cases
+// #ContainerRuntime runs tasks in a container image via the Dagger Engine.
+// For simple "run in this image" use cases.
 #ContainerRuntime: {
 	type: "container"
-	// Container image (e.g., "node:20-alpine", "rust:1.75-slim")
+	// Container image (e.g., "node:20-alpine", "rust:1.100-slim")
 	image!: string
+}
+
+// #DaggerCacheVolume mounts a persistent Dagger CacheVolume into the task container.
+#DaggerCacheVolume: {
+	// Cache volume key (e.g., "cargo-registry", "go-mod-cache")
+	key!: string
+	// Mount path inside the container (e.g., "/usr/local/cargo/registry")
+	path!: string
+	// Concurrency sharing mode (maps to Dagger 1.0 CacheSharingMode)
+	sharing?: "SHARED" | "PRIVATE" | "LOCKED" | *"SHARED"
+}
+
+// #DaggerRuntime runs tasks in a container via the Dagger 1.0 Engine.
+// Supports base images or Dockerfiles, persistent cache volumes, platform
+// selection, and local/remote engine targeting (including Dagger Cloud).
+// Services referenced in a task's `dependsOn` are automatically attached
+// with `withServiceBinding`.
+#DaggerRuntime: {
+	type: "dagger"
+	// Base container image (mutually exclusive with dockerfile)
+	image?: string
+	// Path to Dockerfile relative to project root (mutually exclusive with image)
+	dockerfile?: string
+	({image!: string, dockerfile?: _|_} | {dockerfile!: string, image?: _|_})
+	// Optional target platform (e.g., "linux/amd64", "linux/arm64")
+	platform?: string
+	// Working directory inside the container (default: "/work")
+	workdir?: string | *"/work"
+	// Persistent Dagger cache volumes mounted into the container
+	cacheVolumes?: [...#DaggerCacheVolume]
+	// Engine target override: "local", "cloud", or an engine URI (overrides DAGGER_ENGINE)
+	engine?: string
+	// Disable nested Dagger API access inside the container (Dagger 1.0 default: false)
+	disableDaggerInDagger?: bool | *false
 }
 
 // #OCIRuntime fetches binaries from OCI images.

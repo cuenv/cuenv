@@ -347,6 +347,11 @@ pub enum CacheSkipReason {
         /// The contested workspace-relative path.
         path: String,
     },
+    /// Caching is delegated to an external execution backend (e.g. Dagger).
+    ExternalBackend {
+        /// Name of the external backend managing cache.
+        backend: String,
+    },
 }
 
 impl std::fmt::Display for CacheSkipReason {
@@ -371,6 +376,9 @@ impl std::fmt::Display for CacheSkipReason {
             }
             Self::InputCollision { path } => {
                 write!(f, "two inputs map to the same workspace path '{path}'")
+            }
+            Self::ExternalBackend { backend } => {
+                write!(f, "caching managed by {backend} backend")
             }
         }
     }

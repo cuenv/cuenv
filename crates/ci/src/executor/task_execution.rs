@@ -2,7 +2,7 @@
 
 #[cfg(test)]
 use super::projects::CiModule;
-use super::projects::{CiProjects, HookEnvironment, HookProject};
+use super::projects::{CiProjects, HookProject};
 use super::runner::{IRTaskRunner, TaskOutput};
 
 use super::{ExecutorError, task_env, tools};
@@ -34,7 +34,6 @@ pub(super) struct PipelineTasksRequest<'request> {
     pub(super) changed_files: &'request [PathBuf],
     pub(super) task_index: &'request TaskIndex,
     pub(super) cache_policy_override: Option<CachePolicy>,
-    pub(super) hook_env: &'request HookEnvironment,
     pub(super) continue_on_error: bool,
     pub(super) max_parallel: usize,
     /// The project's tasks and the tasks of the projects they depend on.
@@ -43,6 +42,10 @@ pub(super) struct PipelineTasksRequest<'request> {
     pub(super) projects: &'request Arc<CiProjects>,
     /// The projects in scope by directory, whose hooks a project may inherit.
     pub(super) project_configs: &'request Arc<HashMap<PathBuf, Project>>,
+    /// Optional external execution backend (e.g. Dagger Engine).
+    pub(super) backend: Option<&'request Arc<dyn cuenv_task_exec::TaskBackend>>,
+    /// Optional ephemeral service manager for host-executed tasks with service dependencies.
+    pub(super) service_manager: Option<&'request Arc<dyn cuenv_task_exec::EphemeralServiceManager>>,
 }
 
 /// What a pipeline's task scope is built from.
@@ -342,13 +345,13 @@ async fn execute_task_with_deps(
     drop(parallel_groups);
 
     let run = Arc::new(PipelineRun {
-        project_root: pipeline.project_path.to_path_buf(),
-        hook_env: Arc::clone(pipeline.hook_env),
         scope: Arc::clone(pipeline.scope),
         projects: Arc::clone(pipeline.projects),
         project_configs: Arc::clone(pipeline.project_configs),
         cache_policy_override: pipeline.cache_policy_override,
         environment: pipeline.environment.map(str::to_string),
+        backend: pipeline.backend.cloned(),
+        service_manager: pipeline.service_manager.cloned(),
     });
 
     let policy = task_walk_policy(WalkPolicy {
@@ -389,10 +392,6 @@ async fn execute_task_with_deps(
 
 /// What the tasks of one pipeline task's graph run with.
 struct PipelineRun {
-    /// Directory of the project the pipeline belongs to.
-    project_root: PathBuf,
-    /// The environment that project's hooks provide.
-    hook_env: HookEnvironment,
     scope: Arc<TaskScope>,
     projects: Arc<CiProjects>,
     project_configs: Arc<HashMap<PathBuf, Project>>,
@@ -400,6 +399,8 @@ struct PipelineRun {
     /// The environment the run selects. It applies to every project; one
     /// that does not define it uses its base variables.
     environment: Option<String>,
+    backend: Option<Arc<dyn cuenv_task_exec::TaskBackend>>,
+    service_manager: Option<Arc<dyn cuenv_task_exec::EphemeralServiceManager>>,
 }
 
 impl PipelineRun {
@@ -414,21 +415,19 @@ impl PipelineRun {
                 node.name
             ))
         })?;
-        // A task of another project receives what its own hooks and `env`
-        // provide, built the first time one of its tasks runs.
-        let (project_root, hook_env) = match owner.key {
-            None => (self.project_root.as_path(), Arc::clone(&self.hook_env)),
-            Some(_) => (
-                owner.project.root.as_path(),
-                self.projects
-                    .hook_environment(HookProject {
-                        root: &owner.project.root,
-                        config: &owner.project.manifest,
-                        ancestor_configs: &self.project_configs,
-                    })
-                    .await
-                    .map_err(|error| ExecutorError::Compilation(error.to_string()))?,
-            ),
+        let project_root = owner.project.root.as_path();
+        let hook_env = if uses_backend(self.backend.as_deref(), &node.task, &owner.project.manifest)
+        {
+            Arc::default()
+        } else {
+            self.projects
+                .hook_environment(HookProject {
+                    root: project_root,
+                    config: &owner.project.manifest,
+                    ancestor_configs: &self.project_configs,
+                })
+                .await
+                .map_err(|error| ExecutorError::Compilation(error.to_string()))?
         };
         compile_and_execute_ir(IrExecutionRequest {
             config: &owner.project.manifest,
@@ -445,6 +444,8 @@ impl PipelineRun {
                 workspace_root: self.projects.workspace_root(),
                 project_key: owner.key,
             },
+            backend: self.backend.as_ref(),
+            service_manager: self.service_manager.as_ref(),
         })
         .await
     }
@@ -574,6 +575,17 @@ struct IrExecutionRequest<'request> {
     environment: Option<&'request str>,
     hook_env: &'request BTreeMap<String, String>,
     staging: Staging<'request>,
+    backend: Option<&'request Arc<dyn cuenv_task_exec::TaskBackend>>,
+    service_manager: Option<&'request Arc<dyn cuenv_task_exec::EphemeralServiceManager>>,
+}
+
+fn uses_backend(
+    backend: Option<&dyn cuenv_task_exec::TaskBackend>,
+    task: &Task,
+    project: &Project,
+) -> bool {
+    let runtime = task.runtime.as_ref().or(project.runtime.as_ref());
+    backend.is_some_and(|backend| backend.handles_task(task, runtime))
 }
 
 async fn compile_and_execute_ir(
@@ -589,6 +601,8 @@ async fn compile_and_execute_ir(
         environment,
         hook_env,
         staging,
+        backend,
+        service_manager,
     } = request;
     let start = std::time::Instant::now();
 
@@ -603,25 +617,33 @@ async fn compile_and_execute_ir(
 
     let env_name = selected_environment(environment);
 
-    let runtime_env =
-        cuenv_core::runtime::resolve_runtime_environment(project_root, config.runtime.as_ref())
-            .await
-            .map_err(|e| ExecutorError::Compilation(e.to_string()))?;
-    if !runtime_env.is_empty() {
-        tracing::info!(
-            vars = runtime_env.len(),
-            "Resolved runtime environment for CI task execution"
-        );
-    }
+    let uses_external_backend = uses_backend(backend.map(Arc::as_ref), task, config);
+    let has_service_deps = task.service_dependencies().next().is_some();
 
-    tools::ensure_tools_downloaded(project_root).await?;
-    let activation_steps = tools::resolve_tool_activation_steps(project_root)?;
-    if !activation_steps.is_empty() {
-        tracing::debug!(
-            steps = activation_steps.len(),
-            "Applying configured tool activation operations for CI task execution"
-        );
-    }
+    let (runtime_env, activation_steps) = if uses_external_backend {
+        // The container image supplies its own programs and default environment.
+        (HashMap::new(), Vec::new())
+    } else {
+        let runtime_env =
+            cuenv_core::runtime::resolve_runtime_environment(project_root, config.runtime.as_ref())
+                .await
+                .map_err(|e| ExecutorError::Compilation(e.to_string()))?;
+        if !runtime_env.is_empty() {
+            tracing::info!(
+                vars = runtime_env.len(),
+                "Resolved runtime environment for CI task execution"
+            );
+        }
+        tools::ensure_tools_downloaded(project_root).await?;
+        let activation_steps = tools::resolve_tool_activation_steps(project_root)?;
+        if !activation_steps.is_empty() {
+            tracing::debug!(
+                steps = activation_steps.len(),
+                "Applying configured tool activation operations for CI task execution"
+            );
+        }
+        (runtime_env, activation_steps)
+    };
 
     // A named context can select variables for one task and not for another,
     // and so can a variable's policies, so the project variables are
@@ -649,23 +671,105 @@ async fn compile_and_execute_ir(
         cuenv_core::environment::Environment::resolve_all_with_secrets(&variables)
             .await
             .map_err(|e| ExecutorError::Compilation(format!("Secret resolution failed: {e}")))?;
+    let mut secret_names: std::collections::HashSet<String> = resolved
+        .keys()
+        .filter(|key| {
+            variables
+                .get(*key)
+                .is_some_and(cuenv_core::environment::EnvValue::is_secret)
+        })
+        .cloned()
+        .collect();
     cuenv_events::register_secrets(secrets);
 
-    let mut env: BTreeMap<String, String> = hook_env.clone();
+    let mut env = if uses_external_backend {
+        BTreeMap::new()
+    } else {
+        hook_env.clone()
+    };
     env.extend(runtime_env);
     env.extend(resolved);
     // The IR keeps only a task's string variables. Its secrets, numbers and
     // booleans are resolved from the project task, as `cuenv task` does, so
     // a task-level secret reaches the task in CI too.
-    let (resolved, secrets) = cuenv_task_exec::env::resolve_task_env(subject, &task.env)
+    let resolved = cuenv_task_exec::env::resolve_task_environment(subject, &task.env)
         .await
         .map_err(|e| ExecutorError::Compilation(format!("Secret resolution failed: {e}")))?;
-    cuenv_events::register_secrets(secrets);
-    env.extend(resolved);
+    cuenv_events::register_secrets(resolved.secret_values);
+    secret_names.retain(|key| !resolved.values.contains_key(key));
+    secret_names.extend(resolved.secret_names);
+    env.extend(resolved.values);
     task_env::apply_task_env(&mut env, &ir_task.env);
 
     tools::apply_tool_activation_steps(&mut env, &activation_steps);
-    ensure_home_env(&mut env);
+
+    if !uses_external_backend {
+        ensure_home_env(&mut env);
+    }
+
+    if uses_external_backend || has_service_deps {
+        if task.has_host_home_passthrough() {
+            return Err(ExecutorError::Compilation(
+                "host HOME cannot be passed through explicitly; remove the passthrough".to_string(),
+            ));
+        }
+        let mut exec_env = Environment::new();
+        for (k, v) in env {
+            if secret_names.contains(&k) {
+                exec_env.set_secret(k, v);
+            } else {
+                exec_env.set(k, v);
+            }
+        }
+        let executor = TaskExecutor::new(ExecutorConfig {
+            capture_output: cuenv_core::OutputCapture::Capture,
+            environment: exec_env,
+            project_root: project_root.to_path_buf(),
+            cue_module_root: Some(staging.module_root.to_path_buf()),
+            sandbox_hasher_root: Some(staging.workspace_root.to_path_buf()),
+            external_projects: staging
+                .project_key
+                .map(|key| {
+                    (
+                        key.to_string(),
+                        ProjectExecution {
+                            project_root: staging.project_root.to_path_buf(),
+                            cue_module_root: Some(staging.module_root.to_path_buf()),
+                            cache: None,
+                            runtime: config.runtime.clone(),
+                            services: config.services.clone(),
+                        },
+                    )
+                })
+                .into_iter()
+                .collect(),
+            backend: backend.cloned(),
+            project_runtime: config.runtime.clone(),
+            services: config.services.clone(),
+            project_name: config.name.clone(),
+            service_manager: service_manager.cloned(),
+            ..ExecutorConfig::default()
+        });
+        // CI already resolved task variables and applied tool activation
+        // against them. The executor receives their final values and metadata.
+        let mut task = task.clone();
+        task.env.clear();
+        let result = executor
+            .execute_task(task_name, &task)
+            .await
+            .map_err(|e| ExecutorError::Compilation(e.to_string()))?;
+        let duration_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+        return Ok(TaskOutput {
+            task_id: task_name.to_string(),
+            exit_code: result.exit_code.unwrap_or(-1),
+            stdout: result.stdout,
+            stderr: result.stderr,
+            success: result.success,
+            from_cache: false,
+            duration_ms,
+            captures: HashMap::new(),
+        });
+    }
 
     let mut task_to_run = ir_task;
     if let Some(policy) = cache_policy_override {
@@ -752,7 +856,7 @@ async fn execute_staged(staged: StagedTask<'_>) -> std::result::Result<TaskOutpu
     let execution = ProjectExecution {
         project_root: staging.project_root.to_path_buf(),
         cue_module_root: Some(staging.module_root.to_path_buf()),
-        cache: None,
+        ..ProjectExecution::default()
     };
     let executor = TaskExecutor::new(ExecutorConfig {
         capture_output: cuenv_core::OutputCapture::Capture,
@@ -770,6 +874,7 @@ async fn execute_staged(staged: StagedTask<'_>) -> std::result::Result<TaskOutpu
             .map(|key| (key.to_string(), execution))
             .into_iter()
             .collect(),
+        ..ExecutorConfig::default()
     });
     let result = executor
         .execute_task(task_name, task)
@@ -822,6 +927,8 @@ mod tests {
                 workspace_root: directory,
                 project_key: None,
             },
+            backend: None,
+            service_manager: None,
         })
         .await
     }
@@ -857,6 +964,97 @@ mod tests {
             .expect("task runs");
 
         assert!(output.success, "{}", output.stderr);
+    }
+
+    #[derive(Debug)]
+    struct CheckingBackend;
+
+    impl cuenv_task_exec::TaskBackend for CheckingBackend {
+        fn name(&self) -> &'static str {
+            "checking"
+        }
+
+        fn handles_task(
+            &self,
+            _task: &Task,
+            runtime: Option<&cuenv_core::manifest::Runtime>,
+        ) -> bool {
+            matches!(runtime, Some(cuenv_core::manifest::Runtime::Dagger(_)))
+        }
+
+        fn execute_attempt<'a>(
+            &'a self,
+            request: cuenv_task_exec::BackendAttemptRequest<'a>,
+        ) -> cuenv_task_exec::BackendAttemptFuture<'a> {
+            Box::pin(async move {
+                assert_eq!(request.name, "#content:build");
+                assert!(request.services.contains_key("database"));
+                assert!(!request.environment.contains("HOST_HOOK_ONLY"));
+                assert_eq!(
+                    request.environment.get("TOKEN"),
+                    Some("prefix-fixture-secret")
+                );
+                assert!(request.environment.is_secret_var("TOKEN"));
+                Ok(cuenv_task_exec::TaskAttempt::Completed(
+                    cuenv_task_exec::TaskResult {
+                        name: request.name.to_string(),
+                        exit_code: Some(0),
+                        stdout: String::new(),
+                        stderr: String::new(),
+                        success: true,
+                    },
+                ))
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_cross_project_ci_task_reaches_its_container_backend()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let root = directory.path().canonicalize()?;
+        let project: Project = serde_json::from_value(serde_json::json!({
+            "name": "content",
+            "runtime": {"type": "nix", "flake": "./fixture-with-no-flake"},
+            "services": {"database": {"entrypoint": {"command": "true"}}},
+            "tasks": {
+                "build": {
+                    "command": "true",
+                    "runtime": {"type": "dagger", "image": "alpine:3.21"},
+                    "dependsOn": [{"_name": "database", "kind": "service"}],
+                    "env": {
+                        "TOKEN": ["prefix-", {"resolver": "exec", "command": "echo", "args": ["fixture-secret"]}]
+                    }
+                }
+            }
+        }))?;
+        let task = project
+            .tasks
+            .get("build")
+            .and_then(|node| node.as_task())
+            .ok_or("fixture must define an executable build task")?;
+        let backend: Arc<dyn cuenv_task_exec::TaskBackend> = Arc::new(CheckingBackend);
+        let output = compile_and_execute_ir(IrExecutionRequest {
+            config: &project,
+            task_name: "#content:build",
+            task,
+            subject: "build",
+            project_root: &root,
+            cache_policy_override: None,
+            environment: None,
+            hook_env: &BTreeMap::from([("HOST_HOOK_ONLY".to_string(), "hook token".to_string())]),
+            staging: Staging {
+                project_root: &root,
+                module_root: &root,
+                workspace_root: &root,
+                project_key: Some("content"),
+            },
+            backend: Some(&backend),
+            service_manager: None,
+        })
+        .await?;
+        assert!(output.success, "{}", output.stderr);
+        Ok(())
     }
 
     #[tokio::test]
@@ -956,6 +1154,8 @@ mod tests {
                 workspace_root: directory.path(),
                 project_key: None,
             },
+            backend: None,
+            service_manager: None,
         })
         .await
         .expect("task runs");

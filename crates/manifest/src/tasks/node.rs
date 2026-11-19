@@ -73,6 +73,36 @@ impl Tasks {
 }
 
 impl TaskNode {
+    /// Inherit a group's service dependencies when reaching one of its
+    /// children directly. A nested group carries them into its own children.
+    pub fn inherit_service_dependencies(&mut self, dependencies: &[TaskDependency]) {
+        match self {
+            Self::Task(task) => {
+                for dependency in dependencies
+                    .iter()
+                    .filter(|dependency| dependency.is_service())
+                {
+                    task.add_typed_dependency(dependency.clone());
+                }
+            }
+            Self::Group(group) => {
+                for dependency in dependencies
+                    .iter()
+                    .filter(|dependency| dependency.is_service())
+                {
+                    if !group.depends_on.contains(dependency) {
+                        group.depends_on.push(dependency.clone());
+                    }
+                }
+            }
+            Self::Sequence(steps) => {
+                for step in steps {
+                    step.inherit_service_dependencies(dependencies);
+                }
+            }
+        }
+    }
+
     /// Check if this is a single task
     #[must_use]
     pub fn is_task(&self) -> bool {

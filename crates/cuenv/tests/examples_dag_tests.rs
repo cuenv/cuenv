@@ -151,6 +151,12 @@ fn get_example_expectations() -> Vec<ExampleExpectations> {
             has_env: false,
         },
         ExampleExpectations {
+            name: "dagger-basic",
+            min_task_count: 2,
+            has_hooks: false,
+            has_env: false,
+        },
+        ExampleExpectations {
             name: "test-fail",
             min_task_count: 0, // No tasks, just a failing hook
             has_hooks: true,

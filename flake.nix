@@ -159,10 +159,25 @@
           pname = "libcue-bridge";
           version = "0.0.0";
           src = cueBridgeSource;
-          vendorHash = "sha256-va6WxRq2nELlhOOPf1IzJl3LaCAu0ZaYSP9ik28kpaY=";
+          vendorHash = "sha256-fijCVLYLgkSU+DQSYHJ2mc5WpGXB+I3I4Wqvz6zz9wo=";
           nativeBuildInputs = pkgs.lib.optionals (!pkgs.stdenv.hostPlatform.isDarwin) [ pkgs.binutils ];
         };
         buildGoModule126 = pkgs.buildGoModule.override { go = pkgs.go_1_26; };
+
+        # Match the evaluator in crates/cuengine/go.mod for development and CI.
+        cueCli = buildGoModule126 {
+          pname = "cue";
+          version = "0.18.0-rc.4";
+          src = pkgs.fetchFromGitHub {
+            owner = "rawkode";
+            repo = "cue";
+            rev = "3bf061f29993f7e4d70096ad39392f03a079da8e";
+            hash = "sha256-zTWZ6Z9Mx//IGpqpbQiBvIfgcp8gyCINvFKIW/vT5iA=";
+          };
+          vendorHash = "sha256-5KTIGS0IrclWIQYjPSNW9Qd5gctPZPCd0htSRgIXBvc=";
+          subPackages = [ "cmd/cue" ];
+          doCheck = false;
+        };
 
         # The archives alone. Every Rust derivation depends on this one, so it
         # runs no tests: they are `cue-bridge-test`, a flake check of its own.
@@ -444,7 +459,7 @@
         commonArgs = {
           inherit src;
           strictDeps = true;
-          nativeBuildInputs = with pkgs; [ go pkg-config cue git zig ];
+          nativeBuildInputs = with pkgs; [ go pkg-config cueCli git zig ];
           buildInputs = platformBuildInputs;
           preBuild = ''
             ${setupBridge}
@@ -927,7 +942,7 @@
         # Development tools configuration
         devTools = with pkgs; [
           go_1_26
-          cue
+          cueCli
           antora
           cargo-nextest
           cargo-deny
