@@ -5,7 +5,7 @@ use crate::ir::{
     ArtifactDownload, CachePolicy, IntermediateRepresentation, OutputDeclaration, OutputType,
     SecretConfig, Task as IrTask,
 };
-use cuenv_core::tasks::{InputPattern, Task, TaskGroup, TaskNode};
+use cuenv_core::tasks::{DependencyKind, InputPattern, Task, TaskGroup, TaskNode};
 use cuenv_task_exec::TaskCommandExt as _;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -186,6 +186,7 @@ impl Compiler {
         let local: Vec<String> = group
             .depends_on
             .iter()
+            .filter(|dependency| dependency.kind == DependencyKind::Task)
             .map(cuenv_core::tasks::TaskDependency::task_name)
             .filter(|dependency| !is_external(dependency))
             .flat_map(|dependency| self.expand_dependency_to_leaf_tasks(dependency, prefix))
@@ -193,8 +194,15 @@ impl Compiler {
         let external: Vec<&str> = group
             .depends_on
             .iter()
+            .filter(|dependency| dependency.kind == DependencyKind::Task)
             .map(cuenv_core::tasks::TaskDependency::task_name)
             .filter(|dependency| is_external(dependency))
+            .collect();
+        let group_services: Vec<String> = group
+            .depends_on
+            .iter()
+            .filter(|dependency| dependency.kind == DependencyKind::Service)
+            .map(|dependency| dependency.task_name().to_string())
             .collect();
         for task in ir.tasks.iter_mut().skip(first) {
             for dependency in &local {
@@ -210,6 +218,9 @@ impl Compiler {
                 {
                     task.external_dependencies.push((*dependency).to_string());
                 }
+            }
+            if !group_services.is_empty() {
+                append_dagger_service_hints(task, &group_services);
             }
         }
         Ok(())
@@ -369,12 +380,14 @@ impl Compiler {
             depends_on: task
                 .depends_on
                 .iter()
+                .filter(|dependency| dependency.kind == DependencyKind::Task)
                 .filter(|dependency| !is_external(dependency.task_name()))
                 .flat_map(|d| self.expand_dependency_to_leaf_tasks(d.task_name(), id))
                 .collect(),
             external_dependencies: task
                 .depends_on
                 .iter()
+                .filter(|dependency| dependency.kind == DependencyKind::Task)
                 .map(cuenv_core::tasks::TaskDependency::task_name)
                 .filter(|dependency| is_external(dependency))
                 .map(str::to_string)
@@ -398,7 +411,23 @@ impl Compiler {
                 .and_then(|ci| ci.github.as_ref())
                 .map_or_default(|gh| gh.permissions.clone()),
             github_execution,
-            provider_hints: None,
+            provider_hints: {
+                let services: Vec<&str> = task
+                    .depends_on
+                    .iter()
+                    .filter(|dependency| dependency.kind == DependencyKind::Service)
+                    .map(cuenv_core::tasks::TaskDependency::task_name)
+                    .collect();
+                if services.is_empty() {
+                    None
+                } else {
+                    Some(serde_json::json!({
+                        "dagger": {
+                            "services": services,
+                        }
+                    }))
+                }
+            },
         })
     }
 
@@ -443,4 +472,34 @@ fn artifact_name_for_task(task_id: &str) -> String {
 /// Whether a dependency names a task of another project (`#project:task`).
 fn is_external(dependency: &str) -> bool {
     dependency.starts_with('#')
+}
+
+/// Merge service dependency names into `task.provider_hints["dagger"]["services"]`.
+fn append_dagger_service_hints(task: &mut IrTask, services: &[String]) {
+    let root = task
+        .provider_hints
+        .get_or_insert_with(|| serde_json::json!({}));
+    let Some(root_obj) = root.as_object_mut() else {
+        return;
+    };
+    let dagger = root_obj
+        .entry("dagger")
+        .or_insert_with(|| serde_json::json!({}));
+    let Some(dagger_obj) = dagger.as_object_mut() else {
+        return;
+    };
+    let list = dagger_obj
+        .entry("services")
+        .or_insert_with(|| serde_json::json!([]));
+    let Some(arr) = list.as_array_mut() else {
+        return;
+    };
+    for svc in services {
+        if !arr
+            .iter()
+            .any(|existing| existing.as_str() == Some(svc.as_str()))
+        {
+            arr.push(serde_json::Value::String(svc.clone()));
+        }
+    }
 }

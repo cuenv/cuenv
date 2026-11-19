@@ -135,6 +135,16 @@ pub struct ExecutorConfig {
     /// a task runs and what it is keyed with; `task_environments` has to
     /// supply its environment, or it runs with `environment`.
     pub external_projects: BTreeMap<String, ProjectExecution>,
+    /// Optional external execution backend (e.g. Dagger Engine).
+    pub backend: Option<Arc<dyn super::backend::TaskBackend>>,
+    /// Project-level default runtime, used when a task does not declare its own.
+    pub project_runtime: Option<cuenv_core::manifest::Runtime>,
+    /// Project services available for `#Service` entries in task `dependsOn`.
+    pub services: std::collections::HashMap<String, cuenv_core::manifest::Service>,
+    /// Project name for ephemeral service session metadata.
+    pub project_name: String,
+    /// Ephemeral service manager for host-executed tasks that depend on services.
+    pub service_manager: Option<Arc<dyn super::backend::EphemeralServiceManager>>,
 }
 
 impl Default for ExecutorConfig {
@@ -151,6 +161,11 @@ impl Default for ExecutorConfig {
             cache: None,
             sandbox_hasher_root: None,
             external_projects: BTreeMap::new(),
+            backend: None,
+            project_runtime: None,
+            services: std::collections::HashMap::new(),
+            project_name: String::new(),
+            service_manager: None,
         }
     }
 }
@@ -275,6 +290,72 @@ impl TaskExecutor {
         reject_unmaterialized_mapping(name, task)?;
 
         let task_environment = self.task_environment(name, task).await?;
+        let effective_runtime = task
+            .runtime
+            .as_ref()
+            .or(self.config.project_runtime.as_ref());
+
+        // External execution backend (e.g. Dagger Engine). When the backend
+        // manages its own cache, bypass cuenv-cas and local exec_root.
+        if let Some(backend) = self.config.backend.as_ref()
+            && backend.handles_task(task, effective_runtime)
+        {
+            if backend.manages_own_cache() {
+                cuenv_events::emit_task_cache_skipped!(
+                    name,
+                    cuenv_events::CacheSkipReason::ExternalBackend {
+                        backend: backend.name().to_string(),
+                    }
+                );
+            }
+            let workdir = Self::workdir_in(frame, task)?;
+            return self
+                .execute_task_via_backend(BackendExecution {
+                    backend: backend.as_ref(),
+                    name,
+                    task,
+                    environment: &task_environment,
+                    project_root: frame.project_root,
+                    workdir: &workdir,
+                    runtime: effective_runtime,
+                })
+                .await;
+        }
+
+        // Host execution with `#Service` entries in `dependsOn`: start
+        // ephemeral services for the duration of the task, skip cuenv-cas,
+        // and guarantee teardown even on failure or timeout.
+        let service_deps: Vec<String> = task.service_dependencies().map(str::to_string).collect();
+        if !service_deps.is_empty() {
+            let manager = self.config.service_manager.as_ref().ok_or_else(|| {
+                Error::configuration(format!(
+                    "task '{name}' depends on service(s) [{}], but no ephemeral service manager is configured",
+                    service_deps.join(", ")
+                ))
+            })?;
+            cuenv_events::emit_task_cache_skipped!(
+                name,
+                cuenv_events::CacheSkipReason::Disabled {
+                    reason: Some("task depends on live host services".to_string()),
+                }
+            );
+            let guard = manager
+                .start(super::backend::EphemeralServiceStart {
+                    project_root: frame.project_root,
+                    project_name: &self.config.project_name,
+                    services: &self.config.services,
+                    requested: &service_deps,
+                })
+                .await?;
+            let context = TaskExecutionContext {
+                name,
+                task,
+                environment: &task_environment,
+            };
+            let outcome = self.execute_task_with_retries(context, None).await;
+            guard.shutdown().await;
+            return outcome;
+        }
 
         // Input resolution and directory isolation remain available when
         // result caching is disabled. A sandbox-only config supplies the
@@ -620,6 +701,65 @@ impl TaskExecutor {
             }
             if let Some(handle) = cache_handle.as_deref_mut() {
                 Self::reset_exec_root(name, task, handle)?;
+            }
+        }
+    }
+
+    async fn execute_task_via_backend(
+        &self,
+        execution: BackendExecution<'_>,
+    ) -> Result<TaskResult> {
+        let BackendExecution {
+            backend,
+            name,
+            task,
+            environment,
+            project_root,
+            workdir,
+            runtime,
+        } = execution;
+
+        let retry_attempts = task.retry.as_ref().map_or(0, |retry| retry.attempts);
+        let max_attempts = retry_attempts.saturating_add(1);
+        let retry_delay = task
+            .retry
+            .as_ref()
+            .and_then(|retry| retry.delay.as_deref())
+            .map(|delay| parse_task_duration("retry.delay", delay))
+            .transpose()?;
+        let timeout = task
+            .timeout
+            .as_deref()
+            .map(|timeout| parse_task_duration("timeout", timeout))
+            .transpose()?;
+
+        let mut attempt = 1_u32;
+        loop {
+            let outcome = backend
+                .execute_attempt(super::backend::BackendAttemptRequest {
+                    name,
+                    task,
+                    environment,
+                    project_root,
+                    workdir,
+                    runtime,
+                    services: &self.config.services,
+                    timeout,
+                    capture_output: self.config.capture_output,
+                })
+                .await?;
+            let result = match outcome {
+                TaskAttempt::TimedOut(result) => return Ok(result),
+                TaskAttempt::Completed(result) => result,
+            };
+            if result.success || attempt >= max_attempts {
+                return Ok(result);
+            }
+
+            attempt = attempt.saturating_add(1);
+            cuenv_events::emit_task_retrying!(name, attempt, max_attempts);
+            if let Some(delay) = retry_delay {
+                tokio::time::sleep(delay).await;
             }
         }
     }
@@ -1223,6 +1363,16 @@ struct TaskFrame<'frame> {
     module_root: &'frame Path,
     /// The project's caching infrastructure, when it has one.
     cache: Option<&'frame TaskCacheConfig>,
+}
+
+struct BackendExecution<'exec> {
+    backend: &'exec dyn super::backend::TaskBackend,
+    name: &'exec str,
+    task: &'exec Task,
+    environment: &'exec Environment,
+    project_root: &'exec Path,
+    workdir: &'exec Path,
+    runtime: Option<&'exec cuenv_core::manifest::Runtime>,
 }
 
 fn resolve_task_directory(

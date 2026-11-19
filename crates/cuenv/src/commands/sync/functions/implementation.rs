@@ -102,10 +102,10 @@ struct BuildkiteSyncRequest<'request> {
 // ============================================================================
 
 /// CI providers with implemented `cuenv sync ci` emitters.
-const SUPPORTED_SYNC_PROVIDERS: &[&str] = &["github", "buildkite"];
+const SUPPORTED_SYNC_PROVIDERS: &[&str] = &["github", "buildkite", "dagger"];
 
 /// CI providers recognized by the schema, including schema-only providers.
-const KNOWN_CI_PROVIDERS: &[&str] = &["github", "buildkite", "gitlab"];
+const KNOWN_CI_PROVIDERS: &[&str] = &["github", "buildkite", "dagger", "gitlab"];
 
 /// Validate provider names against known providers.
 ///
@@ -256,6 +256,14 @@ pub async fn execute_sync_ci(
                     options: request.options,
                 };
                 execute_sync_buildkite(&buildkite_request)
+            }
+            "dagger" => {
+                let dagger_request = super::dagger::DaggerSyncRequest {
+                    repo_root: &repo_root,
+                    options: request.options,
+                    projects: &target_projects,
+                };
+                super::dagger::execute_sync_dagger(&dagger_request)
             }
             _ => Err(cuenv_core::Error::configuration(format!(
                 "Unsupported CI sync provider: {prov}. Supported: {}",

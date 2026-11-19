@@ -294,8 +294,12 @@ fn canonicalize_node(
                 let mut clone = task.as_ref().clone();
                 let mut canonical_deps = Vec::new();
                 for dep in &task.depends_on {
-                    let canonical_name = canonicalize_dep(dep.task_name())?;
-                    canonical_deps.push(super::TaskDependency::from_name(canonical_name));
+                    if dep.kind == cuenv_core::tasks::DependencyKind::Task {
+                        let canonical_name = canonicalize_dep(dep.task_name())?;
+                        canonical_deps.push(super::TaskDependency::from_name(canonical_name));
+                    } else {
+                        canonical_deps.push(dep.clone());
+                    }
                 }
                 clone.depends_on = canonical_deps;
                 clone

@@ -489,6 +489,7 @@ async fn execute_service_task_dependencies(
                 )
             })
             .collect(),
+        ..ExecutorConfig::default()
     });
 
     executor.execute_graph(&task_graph).await?;

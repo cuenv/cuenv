@@ -129,6 +129,7 @@ impl CacheSkipReason {
             Self::HashFailed { reason } => scrub(reason),
             Self::UnknownProject { project } => scrub(project),
             Self::InputCollision { path } => scrub(path),
+            Self::ExternalBackend { backend } => scrub(backend),
             Self::EmptyInputs
             | Self::NonPathRef
             | Self::NoResolvedInputs

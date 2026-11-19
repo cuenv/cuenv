@@ -8,6 +8,7 @@
 //! Use `cuenv sync rules` for those.
 
 mod codegen;
+mod dagger;
 mod github;
 mod implementation;
 

@@ -22,6 +22,13 @@ use cuenv_core::Result;
 pub async fn execute_runner(args: &CiArgs) -> Result<()> {
     let provider = providers::detect_ci_provider(args.from.clone());
     let effective_path = resolve_path_filter(&args.path)?;
+    let backend =
+        crate::commands::backend::build_task_backend(crate::commands::backend::BackendOptions {
+            backend: args.backend,
+            dagger_engine: args.dagger_engine.clone(),
+            working_dir: None,
+        })?;
+    let service_manager = Some(crate::commands::backend::ephemeral_service_manager());
 
     executor::run_ci(RunCiRequest {
         provider,
@@ -39,6 +46,8 @@ pub async fn execute_runner(args: &CiArgs) -> Result<()> {
         environment: args.environment.clone(),
         path_filter: effective_path,
         max_parallel: args.effective_jobs(),
+        backend,
+        service_manager,
     })
     .await
 }

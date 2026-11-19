@@ -1,3 +1,5 @@
+/// Execution backend selection (host, Dagger 1.0) and ephemeral service wiring.
+pub mod backend;
 /// Build container images defined in CUE configuration.
 pub mod build;
 /// Interactive changeset picker for selecting changes to include.

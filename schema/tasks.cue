@@ -206,8 +206,8 @@ package schema
 	// the action may depend on. See #Hermetic.
 	hermetic?: bool | #Hermetic | *true
 
-	// Dependencies - reference other tasks or images for compile-time validation
-	dependsOn?: [...(#TaskNode | #ContainerImage)]
+	// Dependencies - reference other tasks, services, or images for compile-time validation
+	dependsOn?: [...(#TaskNode | #Service | #ContainerImage)]
 
 	// Labels for task discovery via #TaskMatcher
 	labels?: [...string]
@@ -270,8 +270,8 @@ package schema
 	// Type discriminator - must be "group"
 	type: "group"
 
-	// Dependencies on other tasks
-	dependsOn?: [...#TaskNode]
+	// Dependencies on other tasks or services
+	dependsOn?: [...(#TaskNode | #Service)]
 
 	// Limit concurrent executions (0 = unlimited)
 	maxConcurrency?: int

@@ -33,6 +33,8 @@ impl<'task_handler> TaskHandler<'task_handler> {
             skip_dependencies,
             continue_on_error,
             dry_run,
+            backend,
+            dagger_engine,
             task_args,
         } = command
         else {
@@ -69,7 +71,10 @@ impl<'task_handler> TaskHandler<'task_handler> {
         if let Some(env) = environment {
             request = request.with_environment(env);
         }
-        request = request.with_format(format);
+        request = request.with_format(format).with_backend(backend);
+        if let Some(engine) = dagger_engine {
+            request = request.with_dagger_engine(engine);
+        }
         if tui {
             request = request.with_tui();
         }

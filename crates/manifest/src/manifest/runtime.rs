@@ -16,8 +16,10 @@ pub enum Runtime {
     Nix(NixRuntime),
     /// Activate devenv shell before execution
     Devenv(DevenvRuntime),
-    /// Simple container execution
+    /// Simple container execution (via Dagger Engine)
     Container(ContainerRuntime),
+    /// Full Dagger 1.0 container runtime configuration
+    Dagger(Box<DaggerRuntime>),
     /// OCI-based binary fetching from container images
     Oci(OciRuntime),
     /// Multi-source tool management (GitHub, OCI, Nix)
@@ -59,8 +61,64 @@ pub struct DevenvRuntime {
 /// Simple container runtime configuration
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ContainerRuntime {
-    /// Container image (e.g., "node:20-alpine", "rust:1.75-slim")
+    /// Container image (e.g., "node:20-alpine", "rust:1.100-slim")
     pub image: String,
+}
+
+/// Concurrency sharing mode for a Dagger cache volume.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum DaggerCacheSharingMode {
+    /// Concurrent access allowed (Dagger default).
+    #[default]
+    Shared,
+    /// Dedicated copy per concurrent container.
+    Private,
+    /// Exclusive lock across concurrent containers.
+    Locked,
+}
+
+/// Persistent Dagger cache volume mounted into a task container.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DaggerCacheVolume {
+    /// Cache volume key (e.g., "cargo-registry", "go-mod-cache").
+    pub key: String,
+    /// Mount path inside the container (e.g., "/usr/local/cargo/registry").
+    pub path: String,
+    /// Concurrency sharing mode.
+    #[serde(default)]
+    pub sharing: DaggerCacheSharingMode,
+}
+
+fn default_dagger_workdir() -> String {
+    "/work".to_string()
+}
+
+/// Full Dagger 1.0 container runtime configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct DaggerRuntime {
+    /// Base container image (mutually exclusive with `dockerfile`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
+    /// Path to Dockerfile relative to project root (mutually exclusive with `image`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dockerfile: Option<String>,
+    /// Optional target platform (e.g., "linux/amd64", "linux/arm64").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform: Option<String>,
+    /// Working directory inside the container (default: "/work").
+    #[serde(default = "default_dagger_workdir")]
+    pub workdir: String,
+    /// Persistent Dagger cache volumes mounted into the container.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cache_volumes: Vec<DaggerCacheVolume>,
+    /// Engine target override: "local", "cloud", or an engine URI.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine: Option<String>,
+    /// Disable nested Dagger API access inside the container.
+    #[serde(default)]
+    pub disable_dagger_in_dagger: bool,
 }
 
 /// OCI-based binary runtime configuration.

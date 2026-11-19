@@ -43,6 +43,10 @@ pub(super) struct PipelineTasksRequest<'request> {
     pub(super) projects: &'request Arc<CiProjects>,
     /// The projects in scope by directory, whose hooks a project may inherit.
     pub(super) project_configs: &'request Arc<HashMap<PathBuf, Project>>,
+    /// Optional external execution backend (e.g. Dagger Engine).
+    pub(super) backend: Option<&'request Arc<dyn cuenv_task_exec::TaskBackend>>,
+    /// Optional ephemeral service manager for host-executed tasks with service dependencies.
+    pub(super) service_manager: Option<&'request Arc<dyn cuenv_task_exec::EphemeralServiceManager>>,
 }
 
 /// What a pipeline's task scope is built from.
@@ -349,6 +353,8 @@ async fn execute_task_with_deps(
         project_configs: Arc::clone(pipeline.project_configs),
         cache_policy_override: pipeline.cache_policy_override,
         environment: pipeline.environment.map(str::to_string),
+        backend: pipeline.backend.cloned(),
+        service_manager: pipeline.service_manager.cloned(),
     });
 
     let policy = task_walk_policy(WalkPolicy {
@@ -400,6 +406,8 @@ struct PipelineRun {
     /// The environment the run selects. It applies to every project; one
     /// that does not define it uses its base variables.
     environment: Option<String>,
+    backend: Option<Arc<dyn cuenv_task_exec::TaskBackend>>,
+    service_manager: Option<Arc<dyn cuenv_task_exec::EphemeralServiceManager>>,
 }
 
 impl PipelineRun {
@@ -445,6 +453,8 @@ impl PipelineRun {
                 workspace_root: self.projects.workspace_root(),
                 project_key: owner.key,
             },
+            backend: self.backend.as_ref(),
+            service_manager: self.service_manager.as_ref(),
         })
         .await
     }
@@ -574,6 +584,8 @@ struct IrExecutionRequest<'request> {
     environment: Option<&'request str>,
     hook_env: &'request BTreeMap<String, String>,
     staging: Staging<'request>,
+    backend: Option<&'request Arc<dyn cuenv_task_exec::TaskBackend>>,
+    service_manager: Option<&'request Arc<dyn cuenv_task_exec::EphemeralServiceManager>>,
 }
 
 async fn compile_and_execute_ir(
@@ -589,6 +601,8 @@ async fn compile_and_execute_ir(
         environment,
         hook_env,
         staging,
+        backend,
+        service_manager,
     } = request;
     let start = std::time::Instant::now();
 
@@ -649,6 +663,7 @@ async fn compile_and_execute_ir(
         cuenv_core::environment::Environment::resolve_all_with_secrets(&variables)
             .await
             .map_err(|e| ExecutorError::Compilation(format!("Secret resolution failed: {e}")))?;
+    let secret_values: std::collections::HashSet<String> = secrets.iter().cloned().collect();
     cuenv_events::register_secrets(secrets);
 
     let mut env: BTreeMap<String, String> = hook_env.clone();
@@ -660,12 +675,55 @@ async fn compile_and_execute_ir(
     let (resolved, secrets) = cuenv_task_exec::env::resolve_task_env(subject, &task.env)
         .await
         .map_err(|e| ExecutorError::Compilation(format!("Secret resolution failed: {e}")))?;
+    let task_secret_values: std::collections::HashSet<String> = secrets.iter().cloned().collect();
     cuenv_events::register_secrets(secrets);
     env.extend(resolved);
     task_env::apply_task_env(&mut env, &ir_task.env);
 
     tools::apply_tool_activation_steps(&mut env, &activation_steps);
     ensure_home_env(&mut env);
+
+    let effective_runtime = task.runtime.as_ref().or(config.runtime.as_ref());
+    let uses_external_backend = backend.is_some_and(|b| b.handles_task(task, effective_runtime));
+    let has_service_deps = task.service_dependencies().next().is_some();
+
+    if uses_external_backend || has_service_deps {
+        let mut exec_env = Environment::new();
+        for (k, v) in env {
+            if secret_values.contains(&v) || task_secret_values.contains(&v) {
+                exec_env.set_secret(k, v);
+            } else {
+                exec_env.set(k, v);
+            }
+        }
+        let executor = TaskExecutor::new(ExecutorConfig {
+            capture_output: cuenv_core::OutputCapture::Capture,
+            environment: exec_env,
+            project_root: project_root.to_path_buf(),
+            cue_module_root: Some(staging.module_root.to_path_buf()),
+            backend: backend.cloned(),
+            project_runtime: config.runtime.clone(),
+            services: config.services.clone(),
+            project_name: config.name.clone(),
+            service_manager: service_manager.cloned(),
+            ..ExecutorConfig::default()
+        });
+        let result = executor
+            .execute_task(task_name, task)
+            .await
+            .map_err(|e| ExecutorError::Compilation(e.to_string()))?;
+        let duration_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+        return Ok(TaskOutput {
+            task_id: task_name.to_string(),
+            exit_code: result.exit_code.unwrap_or(-1),
+            stdout: result.stdout,
+            stderr: result.stderr,
+            success: result.success,
+            from_cache: false,
+            duration_ms,
+            captures: HashMap::new(),
+        });
+    }
 
     let mut task_to_run = ir_task;
     if let Some(policy) = cache_policy_override {
@@ -770,6 +828,7 @@ async fn execute_staged(staged: StagedTask<'_>) -> std::result::Result<TaskOutpu
             .map(|key| (key.to_string(), execution))
             .into_iter()
             .collect(),
+        ..ExecutorConfig::default()
     });
     let result = executor
         .execute_task(task_name, task)
@@ -822,6 +881,8 @@ mod tests {
                 workspace_root: directory,
                 project_key: None,
             },
+            backend: None,
+            service_manager: None,
         })
         .await
     }
@@ -956,6 +1017,8 @@ mod tests {
                 workspace_root: directory.path(),
                 project_key: None,
             },
+            backend: None,
+            service_manager: None,
         })
         .await
         .expect("task runs");

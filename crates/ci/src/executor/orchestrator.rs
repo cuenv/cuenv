@@ -58,6 +58,10 @@ pub struct RunCiRequest {
     pub path_filter: Option<String>,
     /// Maximum parallel jobs inside each task DAG walk.
     pub max_parallel: usize,
+    /// Optional external execution backend (e.g. Dagger Engine).
+    pub backend: Option<Arc<dyn cuenv_task_exec::TaskBackend>>,
+    /// Optional ephemeral service manager for host-executed tasks with service dependencies.
+    pub service_manager: Option<Arc<dyn cuenv_task_exec::EphemeralServiceManager>>,
 }
 
 /// Run the CI pipeline logic
@@ -76,6 +80,8 @@ pub async fn run_ci(request: RunCiRequest) -> Result<()> {
         environment,
         path_filter,
         max_parallel,
+        backend,
+        service_manager,
     } = request;
 
     let context = provider.context();
@@ -108,6 +114,8 @@ pub async fn run_ci(request: RunCiRequest) -> Result<()> {
         changes: &changes,
         discovered: &discovered,
         max_parallel: max_parallel.max(1),
+        backend: backend.as_ref(),
+        service_manager: service_manager.as_ref(),
     })
     .await?;
 
@@ -282,6 +290,8 @@ struct CiProjectRunRequest<'request> {
     changes: &'request ChangedFiles,
     discovered: &'request DiscoveredCiProjects,
     max_parallel: usize,
+    backend: Option<&'request Arc<dyn cuenv_task_exec::TaskBackend>>,
+    service_manager: Option<&'request Arc<dyn cuenv_task_exec::EphemeralServiceManager>>,
 }
 
 async fn run_ci_projects(
@@ -297,6 +307,8 @@ async fn run_ci_projects(
         changes,
         discovered,
         max_parallel,
+        backend,
+        service_manager,
     } = request;
 
     // Track failures with structured errors
@@ -376,6 +388,8 @@ async fn run_ci_projects(
                 project_configs: &discovered.project_configs,
                 all_projects: &discovered.all_projects,
                 max_parallel,
+                backend,
+                service_manager,
             })
             .await;
 
@@ -738,6 +752,8 @@ struct PipelineExecutionRequest<'request> {
     project_configs: &'request HashMap<PathBuf, Project>,
     all_projects: &'request Arc<CiProjects>,
     max_parallel: usize,
+    backend: Option<&'request Arc<dyn cuenv_task_exec::TaskBackend>>,
+    service_manager: Option<&'request Arc<dyn cuenv_task_exec::EphemeralServiceManager>>,
 }
 
 /// Execute a project's pipeline and handle reporting
@@ -810,6 +826,8 @@ async fn execute_project_pipeline(
         scope: &scope,
         projects: request.all_projects,
         project_configs: &project_configs,
+        backend: request.backend,
+        service_manager: request.service_manager,
     })
     .await;
 

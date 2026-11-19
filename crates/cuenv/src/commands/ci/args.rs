@@ -55,6 +55,14 @@ pub struct CiArgs {
     /// Name of the CUE package to evaluate.
     #[arg(long, default_value = "cuenv", value_name = "PACKAGE")]
     pub package: String,
+
+    /// Execution backend for CI tasks (auto, host, or dagger).
+    #[arg(long, default_value = "auto", value_enum)]
+    pub backend: crate::commands::backend::ExecutionBackendArg,
+
+    /// Dagger Engine target (`local`, `cloud`, or remote URI).
+    #[arg(long, env = "DAGGER_ENGINE", value_name = "TARGET")]
+    pub dagger_engine: Option<String>,
 }
 
 impl CiArgs {
@@ -87,6 +95,8 @@ pub enum ExportFormat {
     GithubActions,
     /// CircleCI config.
     Circleci,
+    /// Dagger 1.0 Dang module (`main.dang`).
+    Dagger,
 }
 
 impl ExportFormat {
@@ -98,6 +108,7 @@ impl ExportFormat {
             Self::Gitlab => "gitlab",
             Self::GithubActions => "github-actions",
             Self::Circleci => "circleci",
+            Self::Dagger => "dagger",
         }
     }
 
@@ -106,6 +117,7 @@ impl ExportFormat {
     pub const fn extension(&self) -> &'static str {
         match self {
             Self::Buildkite | Self::Gitlab | Self::GithubActions | Self::Circleci => "yml",
+            Self::Dagger => "dang",
         }
     }
 }
@@ -141,9 +153,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_pipeline_name_default() {
-        let args = CiArgs {
+    fn base_args() -> CiArgs {
+        CiArgs {
             pipeline: None,
             all: false,
             export: None,
@@ -154,59 +165,35 @@ mod tests {
             environment: None,
             path: ".".to_string(),
             package: "cuenv".to_string(),
-        };
+            backend: crate::commands::backend::ExecutionBackendArg::Auto,
+            dagger_engine: None,
+        }
+    }
+
+    #[test]
+    fn test_pipeline_name_default() {
+        let args = base_args();
         assert_eq!(args.pipeline_name(), "default");
     }
 
     #[test]
     fn test_pipeline_name_explicit() {
-        let args = CiArgs {
-            pipeline: Some("release".to_string()),
-            all: false,
-            export: None,
-            output: None,
-            jobs: 0,
-            from: None,
-            dry_run: false,
-            environment: None,
-            path: ".".to_string(),
-            package: "cuenv".to_string(),
-        };
+        let mut args = base_args();
+        args.pipeline = Some("release".to_string());
         assert_eq!(args.pipeline_name(), "release");
     }
 
     #[test]
     fn test_effective_jobs_default() {
-        let args = CiArgs {
-            pipeline: None,
-            all: false,
-            export: None,
-            output: None,
-            jobs: 0,
-            from: None,
-            dry_run: false,
-            environment: None,
-            path: ".".to_string(),
-            package: "cuenv".to_string(),
-        };
+        let args = base_args();
         // Should return num_cpus, which is at least 1
         assert!(args.effective_jobs() >= 1);
     }
 
     #[test]
     fn test_effective_jobs_explicit() {
-        let args = CiArgs {
-            pipeline: None,
-            all: false,
-            export: None,
-            output: None,
-            jobs: 8,
-            from: None,
-            dry_run: false,
-            environment: None,
-            path: ".".to_string(),
-            package: "cuenv".to_string(),
-        };
+        let mut args = base_args();
+        args.jobs = 8;
         assert_eq!(args.effective_jobs(), 8);
     }
 
@@ -216,6 +203,7 @@ mod tests {
         assert_eq!(ExportFormat::Gitlab.as_str(), "gitlab");
         assert_eq!(ExportFormat::GithubActions.as_str(), "github-actions");
         assert_eq!(ExportFormat::Circleci.as_str(), "circleci");
+        assert_eq!(ExportFormat::Dagger.as_str(), "dagger");
     }
 
     #[test]
@@ -224,11 +212,13 @@ mod tests {
         assert_eq!(ExportFormat::Gitlab.extension(), "yml");
         assert_eq!(ExportFormat::GithubActions.extension(), "yml");
         assert_eq!(ExportFormat::Circleci.extension(), "yml");
+        assert_eq!(ExportFormat::Dagger.extension(), "dang");
     }
 
     #[test]
     fn test_export_format_display() {
         assert_eq!(format!("{}", ExportFormat::Buildkite), "buildkite");
         assert_eq!(format!("{}", ExportFormat::Gitlab), "gitlab");
+        assert_eq!(format!("{}", ExportFormat::Dagger), "dagger");
     }
 }

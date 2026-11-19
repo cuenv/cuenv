@@ -403,7 +403,11 @@ impl Compiler {
                 .iter()
                 .map(|problem| owner.worded(problem)),
         );
-        for dep in node.depends_on() {
+        for dep in node
+            .depends_on()
+            .iter()
+            .filter(|dep| dep.kind == cuenv_core::tasks::DependencyKind::Task)
+        {
             self.collect_dependency(owner, dep.task_name(), inputs);
         }
         match node {

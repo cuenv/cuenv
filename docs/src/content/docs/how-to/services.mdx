@@ -304,6 +304,25 @@ logs: {
 
 - **Image dependencies** are recognized in the dependency plan, but **fail fast today**. If a selected service depends on a `#ContainerImage`, `cuenv up` aborts before running any task roots with an error explaining that image execution backends are not yet wired into service startup. This is intentional — it avoids build side effects that cannot be consumed. Track progress on [Schema status](/reference/schema/status/).
 
+## Task-scoped ephemeral services
+
+Tasks and task groups can depend on `#Service` nodes directly in `dependsOn`:
+
+```cue
+let _services = services
+
+tasks: {
+    integration: schema.#Task & {
+        command: "cargo"
+        args: ["test", "--test", "integration"]
+        dependsOn: [_services.postgres]
+    }
+}
+```
+
+- On the **host backend**, cuenv starts the referenced services (and their transitive service dependencies) in an isolated ephemeral session directory, waits for each service's readiness probe, runs the task (skipping `cuenv-cas`), and tears the services down on completion, failure, or timeout.
+- On the **Dagger 1.0 backend**, cuenv attaches the referenced services to the task container via `withServiceBinding`. See [Dagger 1.0 Backend & Ephemeral Services](/how-to/dagger/).
+
 ## Troubleshooting and where to go next
 
 **Readiness timeout.** If a service never reaches ready, the probe is failing. For `http`, confirm the `url` and that the process is bound to the address the probe checks. For `port`, the probe defaults to `127.0.0.1`; a process bound only to a container or external interface will not be seen. Raise `timeout` or set `initialDelay` for slow starters, and use `cuenv logs` to read what the process actually printed.

@@ -1591,6 +1591,7 @@ dependencies = [
  "cuenv-ci",
  "cuenv-codeowners",
  "cuenv-core",
+ "cuenv-dagger",
  "cuenv-editorconfig",
  "cuenv-events",
  "cuenv-gcp",
@@ -1833,6 +1834,25 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "toml",
+ "tracing",
+]
+
+[[package]]
+name = "cuenv-dagger"
+version = "0.76.1"
+dependencies = [
+ "base64 0.22.1",
+ "cuenv-ci",
+ "cuenv-core",
+ "cuenv-events",
+ "cuenv-manifest",
+ "cuenv-task-exec",
+ "reqwest 0.13.4",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
  "tracing",
 ]
 

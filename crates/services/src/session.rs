@@ -137,6 +137,39 @@ impl SessionManager {
         Ok(Self { root })
     }
 
+    /// Create an isolated ephemeral session at a caller-chosen root directory.
+    ///
+    /// Used for task-scoped ephemeral services so they never collide with a
+    /// long-lived `cuenv up` session for the same project.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the session directories or metadata cannot be written.
+    pub fn create_ephemeral(
+        root: PathBuf,
+        project_path: &Path,
+        project_name: &str,
+    ) -> crate::Result<Self> {
+        fs::create_dir_all(root.join("state"))?;
+        fs::create_dir_all(root.join("logs"))?;
+        fs::create_dir_all(root.join("control").join("restart"))?;
+        fs::create_dir_all(root.join("control").join("stop"))?;
+
+        let info = SessionInfo {
+            version: 1,
+            started_at: Utc::now(),
+            controller_pid: std::process::id(),
+            project_path: project_path.to_string_lossy().into_owned(),
+            project_name: project_name.to_string(),
+        };
+
+        let json = serde_json::to_string_pretty(&info)
+            .map_err(|e| crate::Error::session(format!("failed to serialize session: {e}")))?;
+        fs::write(root.join("session.json"), json)?;
+
+        Ok(Self { root })
+    }
+
     /// Load an existing session.
     ///
     /// # Errors

@@ -14,6 +14,7 @@
 pub(crate) mod control;
 pub mod controller;
 pub mod duration;
+pub mod ephemeral;
 pub mod lifecycle;
 pub mod probes;
 pub(crate) mod process;
@@ -23,4 +24,5 @@ pub mod watcher;
 
 mod error;
 
+pub use ephemeral::{EphemeralServicesGuard, EphemeralServicesRequest, start_ephemeral_services};
 pub use error::{Error, Result};

@@ -37,6 +37,8 @@ struct PreparedTaskRuntime {
     cache: Option<TaskCacheConfig>,
     /// What the tasks of other projects run with, by project.
     external_projects: BTreeMap<String, ProjectExecution>,
+    /// Optional external execution backend (e.g. Dagger 1.0).
+    backend: Option<Arc<dyn cuenv_task_exec::TaskBackend>>,
 }
 
 fn load_task_execution_context(input: &TaskExecutionInput<'_>) -> Result<TaskExecutionContext> {
@@ -181,6 +183,12 @@ async fn prepare_task_runtime(
         environment: input.environment,
     });
     let cache = task_cache_for_context(context).await;
+    let backend =
+        crate::commands::backend::build_task_backend(crate::commands::backend::BackendOptions {
+            backend: input.backend,
+            dagger_engine: input.dagger_engine.map(ToOwned::to_owned),
+            working_dir: Some(context.project_root.clone()),
+        })?;
 
     Ok(PreparedTaskRuntime {
         env,
@@ -189,6 +197,7 @@ async fn prepare_task_runtime(
             .differs_by_task()
             .then(|| Arc::new(environments) as Arc<dyn TaskEnvironments>),
         cache,
+        backend,
     })
 }
 
@@ -338,5 +347,10 @@ fn task_executor_config(spec: &TaskExecutorConfigSpec<'_, '_>) -> ExecutorConfig
         cache: spec.runtime.cache.clone(),
         sandbox_hasher_root: Some(projects::workspace_root(&spec.context.project_root)),
         external_projects: spec.runtime.external_projects.clone(),
+        backend: spec.runtime.backend.clone(),
+        project_runtime: spec.context.manifest.runtime.clone(),
+        services: spec.context.manifest.services.clone(),
+        project_name: spec.context.manifest.name.clone(),
+        service_manager: Some(crate::commands::backend::ephemeral_service_manager()),
     }
 }

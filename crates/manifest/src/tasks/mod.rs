@@ -26,7 +26,7 @@ mod task;
 
 pub use cache_policy::{TaskCacheMode, TaskCachePolicy};
 pub use capture_types::{CaptureSource, TaskCapture, TaskCaptureRef};
-pub use dependency::TaskDependency;
+pub use dependency::{DependencyKind, TaskDependency};
 pub use group::TaskGroup;
 pub use hermetic::{Hermetic, HermeticOptions, Sandbox};
 pub use inputs::{

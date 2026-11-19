@@ -324,9 +324,27 @@ impl Default for Task {
 }
 
 impl Task {
-    /// Returns an iterator over dependency task names.
+    /// Returns an iterator over dependency task names (excluding service/image dependencies).
     pub fn dependency_names(&self) -> impl Iterator<Item = &str> {
-        self.depends_on.iter().map(TaskDependency::task_name)
+        self.depends_on
+            .iter()
+            .filter(|dep| dep.is_task())
+            .map(TaskDependency::task_name)
+    }
+
+    /// Returns an iterator over dependency service names declared in `dependsOn`.
+    pub fn service_dependencies(&self) -> impl Iterator<Item = &str> {
+        self.depends_on
+            .iter()
+            .filter(|dep| dep.is_service())
+            .map(TaskDependency::task_name)
+    }
+
+    /// Add a typed dependency if not already present with the same name and kind.
+    pub fn add_typed_dependency(&mut self, dep: TaskDependency) {
+        if !self.depends_on.contains(&dep) {
+            self.depends_on.push(dep);
+        }
     }
 
     /// Returns the effective cache policy for this task.
@@ -397,7 +415,10 @@ impl Task {
 
 impl cuenv_task_graph::TaskNodeData for Task {
     fn dependency_names(&self) -> impl Iterator<Item = &str> {
-        self.depends_on.iter().map(TaskDependency::task_name)
+        self.depends_on
+            .iter()
+            .filter(|dep| dep.is_task())
+            .map(TaskDependency::task_name)
     }
 }
 
