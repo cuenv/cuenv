@@ -167,6 +167,47 @@ fn dependencies(task: &Task) -> Vec<&str> {
         .collect()
 }
 
+#[test]
+fn external_group_children_inherit_service_names_from_their_own_project() -> Result<()> {
+    let module = Module::new()
+        .project(
+            "app",
+            json!({
+                "name": "app",
+                "tasks": {
+                    "test": {"command": "true", "dependsOn": ["#other:tests.check"]}
+                }
+            }),
+        )
+        .project(
+            "other",
+            json!({
+                "name": "other",
+                "services": {"database": {"entrypoint": {"command": "true"}}},
+                "tasks": {
+                    "tests": {
+                        "type": "group",
+                        "dependsOn": [{"_name": "database", "kind": "service"}],
+                        "check": {"command": "true"}
+                    }
+                }
+            }),
+        );
+    let mut scope = module.scope("app");
+    scope.reach(["test"], &module);
+    let graph = scope.graph(["test"])?;
+    let nodes = graph.topological_sort()?;
+    let check = nodes
+        .iter()
+        .find(|node| node.name == "#other:tests.check")
+        .ok_or_else(|| Error::configuration("graph did not reach the external check"))?;
+    assert_eq!(
+        check.task.service_dependencies().collect::<Vec<_>>(),
+        ["database"]
+    );
+    Ok(())
+}
+
 fn order(graph: &TaskGraph) -> Vec<String> {
     graph
         .topological_sort()

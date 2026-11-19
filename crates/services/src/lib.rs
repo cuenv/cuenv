@@ -23,6 +23,7 @@ pub mod supervisor;
 pub mod watcher;
 
 mod error;
+mod host_resources;
 
 pub use ephemeral::{EphemeralServicesGuard, EphemeralServicesRequest, start_ephemeral_services};
 pub use error::{Error, Result};

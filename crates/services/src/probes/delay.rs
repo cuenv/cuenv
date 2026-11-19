@@ -2,35 +2,27 @@
 //!
 //! Waits a fixed duration before reporting ready. Escape hatch only.
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use tokio::time::Instant;
 
 use super::{ProbeOutcome, ProbeRunner};
 
 /// Probes readiness by waiting a fixed duration.
 pub struct DelayProbe {
     delay: Duration,
-    ready: Arc<AtomicBool>,
+    started: Instant,
 }
 
 impl DelayProbe {
     /// Create a new delay probe.
     #[must_use]
     pub fn new(delay: Duration) -> Self {
-        let ready = Arc::new(AtomicBool::new(false));
-        let ready_clone = Arc::clone(&ready);
-        let delay_clone = delay;
-
-        // Spawn a background task that sets ready after the delay
-        tokio::spawn(async move {
-            tokio::time::sleep(delay_clone).await;
-            ready_clone.store(true, Ordering::Release);
-        });
-
-        Self { delay, ready }
+        Self {
+            delay,
+            started: Instant::now(),
+        }
     }
 
     /// Get the configured delay.
@@ -43,7 +35,7 @@ impl DelayProbe {
 #[async_trait]
 impl ProbeRunner for DelayProbe {
     async fn check(&self) -> ProbeOutcome {
-        if self.ready.load(Ordering::Acquire) {
+        if self.started.elapsed() >= self.delay {
             ProbeOutcome::Ready
         } else {
             ProbeOutcome::NotReady

@@ -45,6 +45,11 @@ pub struct BackendAttemptRequest<'request> {
     pub project_root: &'request Path,
     /// Resolved working directory on the host.
     pub workdir: &'request Path,
+    /// Root of the input tree to mount for the task. For an isolated task
+    /// this is a staged tree containing only declared inputs.
+    pub workspace_root: &'request Path,
+    /// Task working directory relative to `workspace_root`.
+    pub workspace_workdir: &'request Path,
     /// Effective runtime (task runtime overriding project runtime, if any).
     pub runtime: Option<&'request Runtime>,
     /// All services declared in the project (for `dependsOn` service bindings).
@@ -60,11 +65,10 @@ pub trait TaskBackend: std::fmt::Debug + Send + Sync {
     /// Human-readable backend name (e.g. `"dagger"`).
     fn name(&self) -> &'static str;
 
-    /// Whether this backend manages its own caching and input/output staging.
+    /// Whether this backend manages its own result caching.
     ///
-    /// When `true`, [`crate::TaskExecutor`] bypasses `cuenv-cas` and local
-    /// `exec_root` materialization and emits
-    /// `CacheSkipReason::ExternalBackend`.
+    /// When `true`, [`crate::TaskExecutor`] emits
+    /// `CacheSkipReason::ExternalBackend` for the result cache.
     fn manages_own_cache(&self) -> bool {
         true
     }
@@ -116,6 +120,7 @@ mod tests {
     struct MockBackend {
         calls: Arc<AtomicUsize>,
         fail_first: bool,
+        check_request: Option<fn(&BackendAttemptRequest<'_>)>,
     }
 
     impl TaskBackend for MockBackend {
@@ -131,6 +136,9 @@ mod tests {
             &'a self,
             request: BackendAttemptRequest<'a>,
         ) -> BackendAttemptFuture<'a> {
+            if let Some(check) = self.check_request {
+                check(&request);
+            }
             let calls = Arc::clone(&self.calls);
             let fail_first = self.fail_first;
             let name = request.name.to_string();
@@ -196,6 +204,7 @@ mod tests {
         let backend = Arc::new(MockBackend {
             calls: Arc::clone(&calls),
             fail_first: true,
+            check_request: None,
         });
         let dir = tempfile::tempdir().expect("tempdir");
         let executor = TaskExecutor::new(ExecutorConfig {
@@ -227,6 +236,71 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn external_backend_receives_owning_project_inputs_and_resolved_task_environment()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let project_root = dir.path().join("producer");
+        std::fs::create_dir_all(project_root.join("subdir"))?;
+        std::fs::write(project_root.join("subdir/input.txt"), "contents")?;
+        std::fs::write(project_root.join("private.txt"), "private")?;
+        let backend = Arc::new(MockBackend {
+            calls: Arc::new(AtomicUsize::new(0)),
+            fail_first: false,
+            check_request: Some(|request| {
+                assert_eq!(request.workspace_workdir, Path::new("subdir"));
+                assert!(request.workspace_root.join("subdir/input.txt").is_file());
+                assert!(!request.workspace_root.join("private.txt").exists());
+                assert_eq!(
+                    request.environment.get("TASK_TOKEN"),
+                    Some("prefix-test-secret")
+                );
+                assert!(request.environment.is_secret_var("TASK_TOKEN"));
+                assert_eq!(
+                    request.environment.get("TASK_SOURCE"),
+                    std::env::var("PATH").ok().as_deref()
+                );
+                assert!(request.services.contains_key("database"));
+            }),
+        });
+        let runtime: Runtime = serde_json::from_value(serde_json::json!({
+            "type": "dagger",
+            "image": "alpine:3.21"
+        }))?;
+        let service: Service = serde_json::from_value(serde_json::json!({
+            "entrypoint": { "command": "true" }
+        }))?;
+        let executor = TaskExecutor::new(ExecutorConfig {
+            project_root: dir.path().to_path_buf(),
+            backend: Some(backend),
+            external_projects: [(
+                "producer".to_string(),
+                crate::ProjectExecution {
+                    project_root,
+                    cue_module_root: Some(dir.path().to_path_buf()),
+                    runtime: Some(runtime),
+                    services: [("database".to_string(), service)].into(),
+                    ..crate::ProjectExecution::default()
+                },
+            )]
+            .into(),
+            ..ExecutorConfig::default()
+        });
+        let task: Task = serde_json::from_value(serde_json::json!({
+            "command": "true",
+            "dir": { "from": "module", "path": "producer/subdir" },
+            "inputs": ["subdir/input.txt"],
+            "env": {
+                "TASK_TOKEN": ["prefix-", { "resolver": "exec", "command": "echo", "args": ["test-secret"] }],
+                "TASK_SOURCE": "cuenv:passthrough:PATH"
+            }
+        }))?;
+
+        let result = executor.execute_task("#producer:test", &task).await?;
+        assert!(result.success);
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn host_task_starts_and_shuts_down_ephemeral_services_even_on_failure() {
         let starts = Arc::new(AtomicUsize::new(0));
         let shutdowns = Arc::new(AtomicUsize::new(0));
@@ -255,5 +329,38 @@ mod tests {
         assert!(!result.success);
         assert_eq!(starts.load(Ordering::SeqCst), 1);
         assert_eq!(shutdowns.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn host_services_preserve_staged_inputs_and_project_only_declared_outputs()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let manager = Arc::new(MockServiceManager {
+            starts: Arc::new(AtomicUsize::new(0)),
+            shutdowns: Arc::new(AtomicUsize::new(0)),
+        });
+        let dir = tempfile::tempdir()?;
+        std::fs::write(dir.path().join("input.txt"), "contents\n")?;
+        std::fs::write(dir.path().join("private.txt"), "private")?;
+        let executor = TaskExecutor::new(ExecutorConfig {
+            project_root: dir.path().to_path_buf(),
+            service_manager: Some(manager),
+            ..ExecutorConfig::default()
+        });
+        let mut task: Task = serde_json::from_value(serde_json::json!({
+            "command": "sh",
+            "args": ["-ec", "test ! -e private.txt; IFS= read -r value < input.txt; printf '%s' \"$value\" > output.txt; : > scratch.txt"],
+            "inputs": ["input.txt"],
+            "outputs": ["output.txt"]
+        }))?;
+        task.add_typed_dependency(TaskDependency::from_service_name("postgres"));
+
+        let result = executor.execute_task("integration", &task).await?;
+        assert!(result.success, "{}", result.stderr);
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("output.txt"))?,
+            "contents"
+        );
+        assert!(!dir.path().join("scratch.txt").exists());
+        Ok(())
     }
 }

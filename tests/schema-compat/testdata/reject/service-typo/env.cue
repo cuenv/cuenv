@@ -1,5 +1,4 @@
 // want: restartt: field not allowed
-// min-language: v0.18.0
 // Before min-language a top-level typo in a services entry written without
 // schema.#Service & is accepted. The compat check requires that.
 package compat

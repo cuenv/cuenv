@@ -29,7 +29,7 @@
 //! ```
 
 use std::collections::HashMap;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, OnceLock, Weak};
 use std::time::Duration;
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
@@ -53,8 +53,20 @@ pub fn global_registry() -> Arc<ProcessRegistry> {
 /// Maintains a mapping of PIDs to task names, allowing for graceful shutdown
 /// of all child processes when the application is terminated.
 pub struct ProcessRegistry {
-    /// Map of process IDs to task names for debugging/logging.
-    pids: Mutex<HashMap<u32, String>>,
+    pids: Mutex<HashMap<u32, RegisteredProcess>>,
+}
+
+struct RegisteredProcess {
+    name: String,
+    lifetime: Option<Weak<()>>,
+}
+
+impl RegisteredProcess {
+    fn is_registered(&self) -> bool {
+        self.lifetime
+            .as_ref()
+            .is_none_or(|lifetime| lifetime.strong_count() > 0)
+    }
 }
 
 impl ProcessRegistry {
@@ -70,9 +82,44 @@ impl ProcessRegistry {
     ///
     /// Call this immediately after spawning a child process.
     pub async fn register(&self, pid: u32, task_name: String) {
+        self.insert(
+            pid,
+            RegisteredProcess {
+                name: task_name,
+                lifetime: None,
+            },
+        )
+        .await;
+    }
+
+    pub(crate) async fn register_tracked(&self, pid: u32, task_name: String, lifetime: Weak<()>) {
+        self.insert(
+            pid,
+            RegisteredProcess {
+                name: task_name,
+                lifetime: Some(lifetime),
+            },
+        )
+        .await;
+    }
+
+    async fn insert(&self, pid: u32, process: RegisteredProcess) {
         let mut pids = self.pids.lock().await;
-        debug!(pid, task = %task_name, "Registering process");
-        pids.insert(pid, task_name);
+        pids.retain(|_, process| process.is_registered());
+        debug!(pid, task = %process.name, "Registering process");
+        pids.insert(pid, process);
+    }
+
+    /// Remove a registered child without blocking its cancellation path.
+    /// Registrations whose owner has dropped are ignored even when the lock
+    /// is held by the interrupt handler.
+    pub(crate) fn forget_tracked(&self, pid: u32, lifetime: &Arc<()>) {
+        if let Ok(mut pids) = self.pids.try_lock()
+            && let Some(registered) = pids.get(&pid).and_then(|process| process.lifetime.as_ref())
+            && std::ptr::eq(registered.as_ptr(), Arc::as_ptr(lifetime))
+        {
+            pids.remove(&pid);
+        }
     }
 
     /// Unregisters a process after it has completed.
@@ -80,14 +127,16 @@ impl ProcessRegistry {
     /// Call this after successfully waiting for the process to exit.
     pub async fn unregister(&self, pid: u32) {
         let mut pids = self.pids.lock().await;
-        if let Some(task_name) = pids.remove(&pid) {
-            debug!(pid, task = %task_name, "Unregistering process");
+        if let Some(process) = pids.remove(&pid) {
+            debug!(pid, task = %process.name, "Unregistering process");
         }
     }
 
     /// Returns the number of currently tracked processes.
     pub async fn count(&self) -> usize {
-        self.pids.lock().await.len()
+        let mut pids = self.pids.lock().await;
+        pids.retain(|_, process| process.is_registered());
+        pids.len()
     }
 
     /// Terminates all registered processes gracefully.
@@ -101,6 +150,7 @@ impl ProcessRegistry {
     /// child processes spawned by tasks are also terminated.
     pub async fn terminate_all(&self, timeout: Duration) {
         let mut pids = self.pids.lock().await;
+        pids.retain(|_, process| process.is_registered());
 
         if pids.is_empty() {
             return;
@@ -109,28 +159,24 @@ impl ProcessRegistry {
         info!(count = pids.len(), "Terminating child processes");
 
         // Phase 1: Send SIGTERM to all process groups
-        for (pid, task_name) in pids.iter() {
-            debug!(pid, task = %task_name, "Sending SIGTERM");
-            Self::send_term_signal(*pid);
+        for (pid, process) in pids.iter() {
+            if process.is_registered() {
+                debug!(pid, task = %process.name, "Sending SIGTERM");
+                Self::send_term_signal(*pid);
+            }
         }
 
         // Phase 2: Wait for processes to exit (with timeout)
         let deadline = std::time::Instant::now() + timeout;
         while !pids.is_empty() && std::time::Instant::now() < deadline {
             // Check which processes have exited
-            let mut exited = Vec::new();
-            for pid in pids.keys() {
-                if !Self::is_process_alive(*pid) {
-                    exited.push(*pid);
+            pids.retain(|pid, process| {
+                let running = process.is_registered() && Self::is_process_alive(*pid);
+                if !running {
+                    debug!(pid, task = %process.name, "Process no longer registered or running");
                 }
-            }
-
-            // Remove exited processes
-            for pid in exited {
-                if let Some(task_name) = pids.remove(&pid) {
-                    debug!(pid, task = %task_name, "Process exited gracefully");
-                }
-            }
+                running
+            });
 
             if !pids.is_empty() {
                 // Short sleep before checking again
@@ -139,9 +185,11 @@ impl ProcessRegistry {
         }
 
         // Phase 3: Force kill any remaining processes
-        for (pid, task_name) in pids.drain() {
-            warn!(pid, task = %task_name, "Force killing process after timeout");
-            Self::send_kill_signal(pid);
+        for (pid, process) in pids.drain() {
+            if process.is_registered() {
+                warn!(pid, task = %process.name, "Force killing process after timeout");
+                Self::send_kill_signal(pid);
+            }
         }
     }
 
@@ -229,7 +277,7 @@ fn unix_pid(pid: u32) -> Option<rustix::process::Pid> {
 /// Send `signal` to the process group led by `pid`, which every task process
 /// leads (see the module docs).
 #[cfg(unix)]
-fn signal_process_group(pid: u32, signal: rustix::process::Signal) {
+pub(crate) fn signal_process_group(pid: u32, signal: rustix::process::Signal) {
     let Some(group) = unix_pid(pid) else {
         warn!(
             pid,
@@ -276,6 +324,27 @@ mod tests {
 
         // Should not panic when unregistering non-existent PID
         registry.unregister(9999).await;
+        assert_eq!(registry.count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn dropped_child_registration_is_revoked_even_under_lock_contention() {
+        let registry = ProcessRegistry::new();
+        let lifetime = Arc::new(());
+        registry
+            .register_tracked(1234, "running".to_string(), Arc::downgrade(&lifetime))
+            .await;
+        assert_eq!(registry.count().await, 1);
+
+        let locked = registry.pids.lock().await;
+        registry.forget_tracked(1234, &lifetime);
+        drop(lifetime);
+        assert!(
+            locked
+                .get(&1234)
+                .is_some_and(|process| !process.is_registered())
+        );
+        drop(locked);
         assert_eq!(registry.count().await, 0);
     }
 

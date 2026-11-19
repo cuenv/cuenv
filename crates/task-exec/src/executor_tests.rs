@@ -534,6 +534,63 @@ async fn test_timeout_kills_process_tree() {
     );
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn fail_fast_stops_the_running_siblings_process_group()
+-> Result<(), Box<dyn std::error::Error>> {
+    for capture_output in [OutputCapture::Capture, OutputCapture::Stream] {
+        let project = tempfile::tempdir()?;
+        let executor = TaskExecutor::new(ExecutorConfig {
+            capture_output,
+            environment: host_path_environment(),
+            project_root: project.path().to_path_buf(),
+            ..ExecutorConfig::default()
+        });
+        let mut graph = TaskGraph::new();
+        graph.add_task(
+            "running",
+            Task {
+                command: "sh".to_string(),
+                args: vec![
+                    "-c".to_string(),
+                    "sleep 30 & printf '%s %s\\n' \"$$\" \"$!\" > process-ids; wait".to_string(),
+                ],
+                hermetic: unisolated_hermeticity(),
+                ..Task::default()
+            },
+        )?;
+        graph.add_task(
+            "failing",
+            Task {
+                command: "sh".to_string(),
+                args: vec![
+                    "-c".to_string(),
+                    "while [ ! -s process-ids ]; do sleep 0.02; done; exit 42".to_string(),
+                ],
+                timeout: Some("5s".to_string()),
+                hermetic: unisolated_hermeticity(),
+                ..Task::default()
+            },
+        )?;
+
+        let result =
+            tokio::time::timeout(Duration::from_secs(8), executor.execute_graph(&graph)).await?;
+        assert!(result.is_err_and(|error| error.to_string().contains("42")));
+        let pids = std::fs::read_to_string(project.path().join("process-ids"))?
+            .split_whitespace()
+            .map(str::parse::<i32>)
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        assert_eq!(pids.len(), 2);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while pids.iter().copied().any(process_is_running) {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await?;
+    }
+    Ok(())
+}
+
 /// Whether `pid` names a process that is still running.
 ///
 /// `kill(pid, 0)` alone is not enough. Killing the grandchild orphans it, and
@@ -1517,7 +1574,7 @@ fn executor_with_another_project(module_root: &Path) -> TaskExecutor {
             crate::ProjectExecution {
                 project_root: content,
                 cue_module_root: Some(module_root.to_path_buf()),
-                cache: None,
+                ..crate::ProjectExecution::default()
             },
         )]),
         ..ExecutorConfig::default()

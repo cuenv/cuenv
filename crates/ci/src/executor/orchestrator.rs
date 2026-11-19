@@ -27,7 +27,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use super::projects::{CiModule, CiProjects, HookProject};
+use super::projects::{CiModule, CiProjects};
 use super::task_env;
 use super::task_execution::{PipelineScope, PipelineTaskResults, PipelineTasksRequest};
 
@@ -56,6 +56,10 @@ pub struct RunCiRequest {
     pub environment: Option<String>,
     /// Optional module-root-relative project path filter.
     pub path_filter: Option<String>,
+    /// Optional exact project name within the path filter.
+    pub project: Option<String>,
+    /// CUE package to discover.
+    pub package: String,
     /// Maximum parallel jobs inside each task DAG walk.
     pub max_parallel: usize,
     /// Optional external execution backend (e.g. Dagger Engine).
@@ -79,6 +83,8 @@ pub async fn run_ci(request: RunCiRequest) -> Result<()> {
         specific_pipeline,
         environment,
         path_filter,
+        project,
+        package,
         max_parallel,
         backend,
         service_manager,
@@ -95,7 +101,8 @@ pub async fn run_ci(request: RunCiRequest) -> Result<()> {
         ChangedFiles::NoBase(why) => cuenv_events::emit_stdout!(why),
     }
 
-    let Some(discovered) = load_ci_projects(path_filter.as_deref())? else {
+    let Some(discovered) = load_ci_projects(path_filter.as_deref(), project.as_deref(), &package)?
+    else {
         return match task_selection {
             TaskSelection::Affected => Ok(()),
             TaskSelection::All => Err(cuenv_core::Error::configuration(
@@ -153,9 +160,13 @@ struct DiscoveredCiProjects {
 type ProjectDependencyMap = HashMap<String, (PathBuf, Project)>;
 type ProjectConfigMap = HashMap<PathBuf, Project>;
 
-fn load_ci_projects(path_filter: Option<&str>) -> Result<Option<DiscoveredCiProjects>> {
+fn load_ci_projects(
+    path_filter: Option<&str>,
+    project: Option<&str>,
+    package: &str,
+) -> Result<Option<DiscoveredCiProjects>> {
     // Evaluate module and discover projects
-    let module = discovery::evaluate_module_from_cwd()?;
+    let module = discovery::evaluate_module_for_package(package)?;
     let project_count = module.project_count();
     if project_count == 0 {
         tracing::info!("No cuenv projects discovered; skipping CI run.");
@@ -180,12 +191,15 @@ fn load_ci_projects(path_filter: Option<&str>) -> Result<Option<DiscoveredCiProj
     let named_projects = build_project_map(&projects);
     // A dependency runs in the project it is selected by: one name rule and
     // one checkout root serve both.
-    let all_projects = Arc::new(CiProjects::new(CiModule {
-        module_root: &module.root,
-        checkout_root: frame.root(),
-        projects: &projects,
-        named: &named_projects,
-    }));
+    let all_projects = Arc::new(
+        CiProjects::new(CiModule {
+            module_root: &module.root,
+            checkout_root: frame.root(),
+            projects: &projects,
+            named: &named_projects,
+        })
+        .with_package(package),
+    );
     let project_map = place_projects(named_projects, &frame);
     let project_directories = projects.iter().map(|(path, _)| path.clone()).collect();
 
@@ -193,13 +207,21 @@ fn load_ci_projects(path_filter: Option<&str>) -> Result<Option<DiscoveredCiProj
     let named_path = path_filter
         .filter(|filter| *filter != ".")
         .map(|filter| module.root.join(filter));
-    let projects: Vec<(PathBuf, Project)> = match &named_path {
-        Some(filter_path) => projects
-            .into_iter()
-            .filter(|(path, _)| path.starts_with(filter_path))
-            .collect(),
-        None => projects,
-    };
+    let projects: Vec<(PathBuf, Project)> = projects
+        .into_iter()
+        .filter(|(path, config)| {
+            named_path
+                .as_ref()
+                .is_none_or(|filter| path.starts_with(filter))
+                && project.is_none_or(|name| config.name == name)
+        })
+        .collect();
+    if project.is_some() && projects.len() != 1 {
+        return Err(cuenv_core::Error::configuration(format!(
+            "--project must select one project within --path; found {}",
+            projects.len()
+        )));
+    }
 
     if projects.is_empty() {
         tracing::info!(
@@ -543,6 +565,7 @@ fn changed_configurations(
                 module_root: &discovered.module_root,
                 directory,
                 module_prefix: &module_prefix,
+                package: discovered.all_projects.package(),
             }) {
                 Ok(sources) => sources.changed_by(changed_files),
                 Err(error) => {
@@ -782,16 +805,6 @@ async fn execute_project_pipeline(
     // These are typically passed via GitHub Actions secrets or similar.
     super::reporting::register_ci_secrets();
 
-    // Merge static + hook-generated environment once per project, then reuse for all tasks.
-    let hook_env = request
-        .all_projects
-        .hook_environment(HookProject {
-            root: project_path,
-            config,
-            ancestor_configs: project_configs,
-        })
-        .await?;
-
     // Build task index for resolving nested task names (e.g., "deploy.preview")
     let task_index = TaskIndex::build(&config.tasks)?;
 
@@ -820,7 +833,6 @@ async fn execute_project_pipeline(
         changed_files,
         task_index: &task_index,
         cache_policy_override,
-        hook_env: &hook_env,
         continue_on_error: pipeline_continue_on_error(config, pipeline_name),
         max_parallel,
         scope: &scope,

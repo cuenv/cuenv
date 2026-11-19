@@ -11,8 +11,7 @@
 //!    secrets, and `#Service` bindings.
 //! 2. **Dagger 1.0 workspace & Dang DSL emitter** ([`DaggerWorkspaceEmitter`]):
 //!    generates `dagger.toml`, `.dagger/modules/<name>/dagger-module.toml`, and
-//!    `.dagger/modules/<name>/main.dang` (with `@check` functions and `@up`
-//!    services) for `cuenv sync ci` and `cuenv ci --export dagger`.
+//!    `.dagger/modules/<name>/main.dang` (with `@check` functions and services) for `cuenv sync ci` and `cuenv ci --export dagger`.
 
 pub mod client;
 pub mod config;
@@ -23,7 +22,7 @@ pub mod session;
 
 pub use client::{DaggerClient, ExecOutput};
 pub use config::{BackendSelection, DaggerCiConfig, EngineTarget};
-pub use emitter::{DaggerWorkspaceEmitter, EmittedFile, WorkspaceEmitInput};
+pub use emitter::{DaggerWorkspaceEmitter, EmittedFile, WorkspacePipeline};
 pub use error::{DaggerError, Result};
 pub use runner::{DaggerBackendConfig, DaggerTaskBackend};
 pub use session::{DaggerSession, SessionConfig, SessionEndpoint};

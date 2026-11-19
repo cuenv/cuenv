@@ -1,9 +1,10 @@
 //! Readiness probes and polling.
 
 use super::{command, delay, http, log, port};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use async_trait::async_trait;
+use tokio::time::Instant;
 
 /// Outcome of a single probe check.
 #[derive(Debug, Clone)]
@@ -54,33 +55,27 @@ pub enum ProbeLoopResult {
 pub async fn run_probe_loop(probe: &dyn ProbeRunner, config: &ProbeLoopConfig) -> ProbeLoopResult {
     let start = Instant::now();
 
-    // Initial delay
-    if !config.initial_delay.is_zero() {
-        tokio::time::sleep(config.initial_delay).await;
-    }
-
-    loop {
-        let elapsed = start.elapsed();
-        if elapsed >= config.timeout {
-            return ProbeLoopResult::TimedOut {
-                after_ms: saturating_millis(elapsed),
-            };
+    let polling = async {
+        if !config.initial_delay.is_zero() {
+            tokio::time::sleep(config.initial_delay).await;
         }
-
-        match probe.check().await {
-            ProbeOutcome::Ready => {
-                return ProbeLoopResult::Ready {
-                    after_ms: saturating_millis(elapsed),
-                };
-            }
-            ProbeOutcome::NotReady => {
-                tokio::time::sleep(config.interval).await;
-            }
-            ProbeOutcome::Fatal(msg) => {
-                return ProbeLoopResult::Fatal(msg);
+        loop {
+            match probe.check().await {
+                ProbeOutcome::Ready => {
+                    return ProbeLoopResult::Ready {
+                        after_ms: saturating_millis(start.elapsed()),
+                    };
+                }
+                ProbeOutcome::NotReady => tokio::time::sleep(config.interval).await,
+                ProbeOutcome::Fatal(msg) => return ProbeLoopResult::Fatal(msg),
             }
         }
-    }
+    };
+    tokio::time::timeout(config.timeout, polling)
+        .await
+        .unwrap_or_else(|_| ProbeLoopResult::TimedOut {
+            after_ms: saturating_millis(start.elapsed()),
+        })
 }
 
 fn saturating_millis(duration: Duration) -> u64 {
@@ -166,5 +161,37 @@ pub fn create_probe(
             let runner = delay::DelayProbe::new(delay);
             Ok((Box::new(runner), config))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct PendingProbe;
+
+    #[async_trait]
+    impl ProbeRunner for PendingProbe {
+        async fn check(&self) -> ProbeOutcome {
+            std::future::pending().await
+        }
+    }
+
+    #[tokio::test]
+    async fn readiness_deadline_applies_while_probe_is_running()
+    -> Result<(), tokio::time::error::Elapsed> {
+        let config = ProbeLoopConfig {
+            interval: Duration::from_secs(1),
+            timeout: Duration::from_millis(20),
+            initial_delay: Duration::ZERO,
+        };
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            run_probe_loop(&PendingProbe, &config),
+        )
+        .await?;
+
+        assert!(matches!(result, ProbeLoopResult::TimedOut { .. }));
+        Ok(())
     }
 }

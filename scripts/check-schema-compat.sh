@@ -1,21 +1,10 @@
 #!/usr/bin/env bash
-# Evaluate the cuenv schema the way consumers do, across CUE releases and
-# module language versions.
+# Evaluate the published cuenv schema with supported CUE releases and a
+# consumer module at language v0.18.0.
 #
-# The working tree is published to an in-memory CUE registry, and each fixture
-# is copied into its own consumer module that depends on it. Every fixture is
-# then evaluated with each configured CUE release and each module language
-# version that release supports:
-#
-# - examples/**  must evaluate, and must export the same value under every
-#   (CUE, language) pair.
-# - tests/schema-compat/testdata/accept/NAME/  same contract, for focused
-#   fixtures.
-# - tests/schema-compat/testdata/reject/NAME/  must fail. A `// want: TEXT`
-#   line names the expected error text. A `// min-language: vX.Y.Z` line
-#   marks a known gap: older language versions must accept the fixture and
-#   keep the misspelled field (the text before ':' in the want line) in the
-#   export. That language version and newer must fail with the want text.
+# The working tree is published to an in-memory CUE registry. Examples and
+# accept fixtures must export under every configured release and produce the
+# same value. Reject fixtures must fail with their "// want: TEXT" diagnostic.
 #
 # Fixtures live under `testdata` so that CUE and cuenv's module-wide
 # evaluation skip them; the reject fixtures are invalid on purpose.
@@ -32,9 +21,8 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 repo="$(pwd)"
 
-# v0.15.1 is the CUE release in the Nix dev shell (nixpkgs cue).
-cue_versions="${CUENV_SCHEMA_COMPAT_CUE:-v0.15.1 v0.16.1 v0.17.1 v0.18.0-rc.1}"
-language_versions="v0.9.0 v0.14.1 v0.16.0 v0.17.0 v0.18.0"
+cue_versions="${CUENV_SCHEMA_COMPAT_CUE:-v0.18.0-rc.4}"
+consumer_language="v0.18.0"
 cache="${CUENV_SCHEMA_COMPAT_CACHE:-${XDG_CACHE_HOME:-${HOME:-/tmp}/.cache}/cuenv/schema-compat}"
 eval_timeout="${CUENV_SCHEMA_COMPAT_TIMEOUT:-60}"
 
@@ -81,16 +69,15 @@ cue_bin() {
 declare -A cue
 newest=""
 for version in $cue_versions; do
+	if version_lt "$version" "$consumer_language"; then
+		printf 'schema-compat: CUE %s cannot evaluate consumer language %s\n' "$version" "$consumer_language" >&2
+		exit 1
+	fi
 	cue[$version]="$(cue_bin "$version")"
 	if [[ -z "$newest" ]] || version_lt "$newest" "$version"; then
 		newest="$version"
 	fi
 done
-
-# A CUE release evaluates modules up to its own language version.
-supports_language() {
-	! version_lt "$1" "$2"
-}
 
 # --- The module as a release publishes it ------------------------------------
 
@@ -150,42 +137,24 @@ done
 write_module() {
 	cat >"$1/cue.mod/module.cue" <<EOF
 module: "example.com/consumer"
-language: version: "$2"
+language: version: "$consumer_language"
 deps: "github.com/cuenv/cuenv@v0": v: "v0.0.1"
 EOF
 }
 
 consumer() {
-	local dest="$1" src="$2" language="$3"
+	local dest="$1" src="$2"
 	rm -rf "$dest"
 	mkdir -p "$dest/cue.mod"
 	find "$repo/$src" -maxdepth 1 -name '*.cue' -not -name '.*' -exec cp {} "$dest/" \;
 	if [[ -f "$repo/$src/.rules.cue" ]]; then
 		cp "$repo/$src/.rules.cue" "$dest/rules.cue.txt"
 	fi
-	write_module "$dest" "$language"
-	# Language v0.18 rejects prefix aliases. That is a syntax change in the
-	# consumer's own files, not a schema concern, so rewrite them the way an
-	# upgrading consumer would: run the fix under v0.17, then move to v0.18.
-	# Never apply explicitopen here: its `schema.#Project...` rewrite turns
-	# validation off, and consumers are told not to accept it.
-	if ! version_lt "$language" v0.18.0 && [[ -n "$(find "$dest" -maxdepth 1 -name '*.cue' -print -quit)" ]]; then
-		write_module "$dest" v0.17.0
-		if ! (cd "$dest" && "${cue[$newest]}" fix --exp=aliasv2 . >"$dest/fix.log" 2>&1); then
-			record_failure "$src: cue fix --exp=aliasv2 failed: $(head -n2 "$dest/fix.log" | tr '\n' ' ')"
-		fi
-		write_module "$dest" "$language"
-	fi
+	write_module "$dest"
 }
 
-# Exports are compared by value. CUE releases differ in the order they emit
-# fields that come from imported definitions, and cuenv deserialises objects
-# by key, so field order is not part of the schema contract.
-#
-# An evaluation that outlives eval_timeout fails with that said in its
-# error, so a fixture the schema makes explode (a task with file references
-# in a pipeline once took minutes under CUE v0.17) is reported, never waited
-# for.
+# Exports are compared by value because cuenv deserialises objects by key.
+# A slow evaluation fails the fixture once it reaches eval_timeout.
 evaluate() {
 	local bin="$1" dir="$2" file="$3" out="$4" status=0
 	(
@@ -214,41 +183,34 @@ needs_module_path() {
 
 for entry in "${fixtures[@]}"; do
 	IFS='|' read -r name src file <<<"$entry"
-	mode="consumer"
 	if [[ -z "$file" ]] && needs_module_path "$src"; then
-		mode="module"
+		# The example imports packages of the published cuenv module.
+		# Its language version comes from that module's own metadata.
+		dir="$module/$src"
+	else
+		dir="$work/fixture"
+		consumer "$dir" "$src"
 	fi
 	baseline=""
 	for version in $cue_versions; do
-		for language in $language_versions; do
-			supports_language "$version" "$language" || continue
-			if [[ "$mode" == "module" ]]; then
-				# The module pins its own language version; vary only CUE.
-				[[ "$language" == "v0.14.1" ]] || continue
-				dir="$module/$src"
-			else
-				dir="$work/fixture"
-				consumer "$dir" "$src" "$language"
+		out="$work/out.json"
+		if ! evaluate "${cue[$version]}" "$dir" "$file" "$out"; then
+			record_failure "$name: CUE $version: $(head -n3 "$out.err" | tr '\n' ' ')"
+			continue
+		fi
+		if [[ -z "$baseline" ]]; then
+			baseline="$work/baseline.json"
+			cp "$out" "$baseline"
+			baseline_version="$version"
+		elif ! cmp -s "$baseline" "$out"; then
+			record_failure "$name: export under CUE $version differs from $baseline_version"
+			if [[ -n "${CUENV_SCHEMA_COMPAT_KEEP:-}" ]]; then
+				keep="$CUENV_SCHEMA_COMPAT_KEEP/${name//\//_}"
+				mkdir -p "$keep"
+				cp "$baseline" "$keep/baseline.json"
+				cp "$out" "$keep/$version.json"
 			fi
-			out="$work/out.json"
-			if ! evaluate "${cue[$version]}" "$dir" "$file" "$out"; then
-				record_failure "$name: CUE $version, language $language: $(head -n3 "$out.err" | tr '\n' ' ')"
-				continue
-			fi
-			if [[ -z "$baseline" ]]; then
-				baseline="$work/baseline.json"
-				cp "$out" "$baseline"
-				baseline_label="CUE $version, language $language"
-			elif ! cmp -s "$baseline" "$out"; then
-				record_failure "$name: export under CUE $version, language $language differs from $baseline_label"
-				if [[ -n "${CUENV_SCHEMA_COMPAT_KEEP:-}" ]]; then
-					keep="$CUENV_SCHEMA_COMPAT_KEEP/${name//\//_}"
-					mkdir -p "$keep"
-					cp "$baseline" "$keep/baseline.json"
-					cp "$out" "$keep/$version-$language.json"
-				fi
-			fi
-		done
+		fi
 	done
 done
 
@@ -258,73 +220,28 @@ for dir in tests/schema-compat/testdata/reject/*/; do
 	rejected=$((rejected + 1))
 	name="${dir%/}"
 	want="$(sed -n 's|^// want: ||p' "$dir"*.cue | head -n1)"
-	min_language="$(sed -n 's|^// min-language: ||p' "$dir"*.cue | head -n1)"
 	if [[ -z "$want" ]]; then
 		record_failure "$name: missing '// want:' line"
 		continue
 	fi
-	# The known-gap field is the label the error names, for example `nmae`
-	# in `nmae: field not allowed`.
-	gap_field=""
-	if [[ -n "$min_language" ]]; then
-		gap_field="${want%%:*}"
-		gap_field="${gap_field#"${gap_field%%[![:space:]]*}"}"
-		gap_field="${gap_field%"${gap_field##*[![:space:]]}"}"
-		if [[ -z "$gap_field" || "$gap_field" == "$want" ]]; then
-			record_failure "$name: min-language requires a '// want:' line shaped like 'field: ...'"
-			continue
-		fi
-	fi
-	gap_baseline=""
+	consumer "$work/fixture" "$name"
 	for version in $cue_versions; do
-		for language in $language_versions; do
-			supports_language "$version" "$language" || continue
-			consumer "$work/fixture" "$name" "$language"
-			out="$work/out.json"
-			if [[ -n "$min_language" ]] && version_lt "$language" "$min_language"; then
-				if ! evaluate "${cue[$version]}" "$work/fixture" "" "$out"; then
-					record_failure "$name: rejected under CUE $version, language $language; known gap should stay accepted before $min_language: $(head -n3 "$out.err" | tr '\n' ' ')"
-					continue
-				fi
-				if ! jq -e --arg field "$gap_field" '[.. | objects | select(has($field))] | length > 0' "$out" >/dev/null; then
-					record_failure "$name: CUE $version, language $language accepted the fixture but dropped field '$gap_field'"
-					continue
-				fi
-				if [[ -z "$gap_baseline" ]]; then
-					gap_baseline="$work/gap-baseline.json"
-					cp "$out" "$gap_baseline"
-					gap_baseline_label="CUE $version, language $language"
-				elif ! cmp -s "$gap_baseline" "$out"; then
-					record_failure "$name: accepted export under CUE $version, language $language differs from $gap_baseline_label"
-				fi
-				continue
-			fi
-			if evaluate "${cue[$version]}" "$work/fixture" "" "$out"; then
-				record_failure "$name: accepted under CUE $version, language $language; want error containing '$want'"
-			elif ! grep -qF -- "$want" "$out.err"; then
-				record_failure "$name: CUE $version, language $language failed without '$want': $(head -n2 "$out.err" | tr '\n' ' ')"
-			fi
-		done
+		out="$work/out.json"
+		if evaluate "${cue[$version]}" "$work/fixture" "" "$out"; then
+			record_failure "$name: accepted under CUE $version; want error containing '$want'"
+		elif ! grep -qF -- "$want" "$out.err"; then
+			record_failure "$name: CUE $version failed without '$want': $(head -n2 "$out.err" | tr '\n' ' ')"
+		fi
 	done
 done
 
 # --- Multi-directory consumer modules ---------------------------------------
 #
-# tests/schema-compat/testdata/modules/NAME/ is the tree of a whole consumer
-# module: several projects, bases, and imports between them
-# (`example.com/consumer/<dir>:cuenv`). It is written for language
-# v0.18.0 (a base is `schema.#Base...`, which does not parse before), so it
-# runs under every CUE release that supports that version. Every directory
-# holding CUE files must export, and export the same under every release.
-# tests/schema-compat/testdata/modules-reject/NAME/ is the same, except that
-# a directory whose files carry a `// want: TEXT` line must fail with it.
-# The files of both are not named env.cue: cuenv discovers every env.cue of
-# this repository as a project of its own module, and these are written for
-# language v0.18.0 or meant not to evaluate. Each fixture has its own
-# cue.mod/module.cue, so that its imports of `example.com/consumer` are never
-# part of this module; the copy evaluated here gets the module written below.
-
-module_language="v0.18.0"
+# Each module fixture contains projects and imports between them. Every
+# directory holding CUE files must export the same value under each release
+# unless a "// want: TEXT" line requires a diagnostic. The fixtures have
+# their own module files so their internal imports stay out of the cuenv
+# module published by a release.
 
 module_fixture() {
 	local dest="$1" src="$2"
@@ -334,7 +251,7 @@ module_fixture() {
 		mkdir -p "$dest/$(dirname "$file")"
 		cp "$repo/$src/$file" "$dest/$file"
 	done < <(cd "$repo/$src" && find . -name '*.cue' -not -name '.*' | sed 's|^\./||')
-	write_module "$dest" "$module_language"
+	write_module "$dest"
 }
 
 # The directories of a module fixture that hold CUE files, `.` for the root.
@@ -353,7 +270,6 @@ for dir in tests/schema-compat/testdata/modules/*/ tests/schema-compat/testdata/
 	fi
 	declare -A module_baselines=()
 	for version in $cue_versions; do
-		supports_language "$version" "$module_language" || continue
 		fixture="$work/module-fixture"
 		module_fixture "$fixture" "$name"
 		while IFS= read -r sub; do
@@ -361,21 +277,21 @@ for dir in tests/schema-compat/testdata/modules/*/ tests/schema-compat/testdata/
 			want="$(sed -n 's|^// want: ||p' "$fixture/$sub"/*.cue | head -n1)"
 			if [[ -n "$want" ]]; then
 				if evaluate "${cue[$version]}" "$fixture/$sub" "" "$out"; then
-					record_failure "$name/$sub: accepted under CUE $version, language $module_language; want error containing '$want'"
+					record_failure "$name/$sub: accepted under CUE $version; want error containing '$want'"
 				elif ! grep -qF -- "$want" "$out.err"; then
-					record_failure "$name/$sub: CUE $version, language $module_language failed without '$want': $(head -n2 "$out.err" | tr '\n' ' ')"
+					record_failure "$name/$sub: CUE $version failed without '$want': $(head -n2 "$out.err" | tr '\n' ' ')"
 				fi
 				continue
 			fi
 			if ! evaluate "${cue[$version]}" "$fixture/$sub" "" "$out"; then
-				record_failure "$name/$sub: CUE $version, language $module_language: $(head -n3 "$out.err" | tr '\n' ' ')"
+				record_failure "$name/$sub: CUE $version: $(head -n3 "$out.err" | tr '\n' ' ')"
 				continue
 			fi
 			if [[ -z "${module_baselines[$sub]:-}" ]]; then
 				module_baselines[$sub]="$work/module-baseline-${#module_baselines[@]}.json"
 				cp "$out" "${module_baselines[$sub]}"
 			elif ! cmp -s "${module_baselines[$sub]}" "$out"; then
-				record_failure "$name/$sub: export under CUE $version, language $module_language differs from an earlier release"
+				record_failure "$name/$sub: export under CUE $version differs from an earlier release"
 			fi
 		done < <(module_directories "$fixture")
 	done

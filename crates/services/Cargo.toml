@@ -30,12 +30,10 @@ glob = { workspace = true }
 async-trait = { workspace = true }
 thiserror = { workspace = true }
 miette = { workspace = true }
+tempfile = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
-
-[dev-dependencies]
-tempfile = { workspace = true }
 
 [lints]
 workspace = true

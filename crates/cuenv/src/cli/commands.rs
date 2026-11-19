@@ -140,7 +140,6 @@ pub enum Commands {
         /// Dagger Engine target (`local`, `cloud`, or remote URI).
         #[arg(
             long = "dagger-engine",
-            env = "DAGGER_ENGINE",
             value_name = "TARGET",
             help = "Dagger Engine target (local, cloud, or remote engine URI)"
         )]

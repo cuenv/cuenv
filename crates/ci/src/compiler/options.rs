@@ -61,6 +61,9 @@ pub struct CompilerOptions {
     /// be `"projects/rawkode.academy/api"`.
     pub project_path: Option<String>,
 
+    /// CUE package name for project imports (defaults to "cuenv").
+    pub project_package: Option<String>,
+
     /// Where the packages the project imports are read from, which is where
     /// the project name of a `<pkg>.#Files` reference is bound. `None` reads
     /// them from the project's instance at `module_root` and
@@ -103,6 +106,7 @@ impl std::fmt::Debug for CompilerOptions {
             .field("ci_mode", &self.ci_mode)
             .field("module_root", &self.module_root)
             .field("project_path", &self.project_path)
+            .field("project_package", &self.project_package)
             .field("file_anchors", &self.file_anchors)
             .field(
                 "module_projects",

@@ -485,6 +485,8 @@ async fn execute_service_task_dependencies(
                         project_root: project.root.clone(),
                         cue_module_root: Some(project.module_root.clone()),
                         cache: None,
+                        runtime: project.manifest.runtime.clone(),
+                        services: project.manifest.services.clone(),
                     },
                 )
             })

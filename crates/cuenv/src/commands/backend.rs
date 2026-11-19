@@ -55,16 +55,11 @@ pub fn build_task_backend(options: BackendOptions) -> Result<Option<Arc<dyn Task
                         cuenv_dagger::BackendSelection::RuntimeDriven
                     }
                 };
-                let engine = options
-                    .dagger_engine
-                    .as_deref()
-                    .map_or_default(cuenv_dagger::EngineTarget::parse);
-
                 Ok(Some(Arc::new(LazyDaggerBackend {
-                    engine,
+                    engine_override: options.dagger_engine,
                     working_dir: options.working_dir,
                     selection,
-                    inner: tokio::sync::OnceCell::new(),
+                    sessions: tokio::sync::Mutex::default(),
                 })))
             }
             #[cfg(not(feature = "dagger"))]
@@ -83,24 +78,43 @@ pub fn build_task_backend(options: BackendOptions) -> Result<Option<Arc<dyn Task
 #[cfg(feature = "dagger")]
 #[derive(Debug)]
 struct LazyDaggerBackend {
-    engine: cuenv_dagger::EngineTarget,
+    engine_override: Option<String>,
     working_dir: Option<PathBuf>,
     selection: cuenv_dagger::BackendSelection,
-    inner: tokio::sync::OnceCell<Arc<cuenv_dagger::DaggerTaskBackend>>,
+    sessions:
+        tokio::sync::Mutex<std::collections::BTreeMap<Option<String>, Arc<DaggerBackendSlot>>>,
 }
 
 #[cfg(feature = "dagger")]
+type DaggerBackendSlot = tokio::sync::OnceCell<Arc<cuenv_dagger::DaggerTaskBackend>>;
+
+#[cfg(feature = "dagger")]
 impl LazyDaggerBackend {
-    async fn get_or_init(&self) -> Result<Arc<cuenv_dagger::DaggerTaskBackend>> {
-        let backend = self
-            .inner
+    async fn get_or_init(
+        &self,
+        runtime: Option<&cuenv_core::manifest::Runtime>,
+    ) -> Result<Arc<cuenv_dagger::DaggerTaskBackend>> {
+        let engine = selected_engine(self.engine_override.as_deref(), runtime);
+        let slot = {
+            let mut sessions = self.sessions.lock().await;
+            Arc::clone(
+                sessions
+                    .entry(engine.as_ref().map(ToString::to_string))
+                    .or_default(),
+            )
+        };
+        let backend = slot
             .get_or_try_init(|| async {
-                let session = cuenv_dagger::DaggerSession::connect(cuenv_dagger::SessionConfig {
-                    engine: self.engine.clone(),
+                let config = cuenv_dagger::SessionConfig {
+                    engine: engine.clone().unwrap_or_default(),
                     working_dir: self.working_dir.clone(),
                     ..cuenv_dagger::SessionConfig::default()
-                })
-                .await
+                };
+                let session = if engine.is_some() {
+                    cuenv_dagger::DaggerSession::connect_with_engine(config).await
+                } else {
+                    cuenv_dagger::DaggerSession::connect(config).await
+                }
                 .map_err(cuenv_core::Error::from)?;
 
                 let mut config =
@@ -111,6 +125,20 @@ impl LazyDaggerBackend {
             .await?;
         Ok(Arc::clone(backend))
     }
+}
+
+#[cfg(feature = "dagger")]
+fn selected_engine(
+    cli_engine: Option<&str>,
+    runtime: Option<&cuenv_core::manifest::Runtime>,
+) -> Option<cuenv_dagger::EngineTarget> {
+    let runtime_engine = match runtime {
+        Some(cuenv_core::manifest::Runtime::Dagger(config)) => config.engine.as_deref(),
+        _ => None,
+    };
+    cli_engine
+        .or(runtime_engine)
+        .map(cuenv_dagger::EngineTarget::parse)
 }
 
 #[cfg(feature = "dagger")]
@@ -145,7 +173,7 @@ impl TaskBackend for LazyDaggerBackend {
         request: cuenv_task_exec::BackendAttemptRequest<'a>,
     ) -> cuenv_task_exec::BackendAttemptFuture<'a> {
         Box::pin(async move {
-            let backend = self.get_or_init().await?;
+            let backend = self.get_or_init(request.runtime).await?;
             backend.execute_attempt(request).await
         })
     }

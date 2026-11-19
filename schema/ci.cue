@@ -94,13 +94,19 @@ package schema
 
 // Dagger 1.0 workspace & Dang module emitter configuration
 #DaggerConfig: {
-	// Generated Dang module name (defaults to "<project>-ci")
+	// Generated Dang module name (defaults to "ci")
 	moduleName?: string
 	// Directory for the generated module (defaults to ".dagger/modules/<moduleName>")
 	modulePath?: string
+	// Directory containing dagger.toml, relative to the repository root (defaults to ".")
+	workspaceDir?: string
+	// Expose container services to dagger start (defaults to true)
+	emitServices?: bool
 	// Default container image for tasks without #ContainerRuntime/#DaggerRuntime
 	defaultImage?: string
-	// Pin engineVersion written to dagger-module.toml (e.g., "v1.0.0")
+	// Bundled Linux cuenv executable, relative to the repository root, for thin checks
+	cuenvBinary?: string
+	// Minimum engineVersion written to dagger-module.toml (default: "v1.0.0-beta.28")
 	engineVersion?: string
 }
 

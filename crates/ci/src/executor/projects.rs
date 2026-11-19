@@ -18,6 +18,7 @@ use tokio::sync::OnceCell;
 
 /// The environment a project's hooks and static `env` provide.
 pub(super) type HookEnvironment = Arc<BTreeMap<String, String>>;
+type HookEnvironmentCell = Arc<OnceCell<std::result::Result<HookEnvironment, String>>>;
 
 /// What a run knows of its module before `--path` narrows what it runs.
 #[derive(Clone, Copy)]
@@ -37,6 +38,7 @@ pub(super) struct CiModule<'module> {
 
 /// Every project of the module a run was started in, in or out of scope.
 pub(super) struct CiProjects {
+    package: String,
     module_root: PathBuf,
     checkout_root: PathBuf,
     /// The projects by directory.
@@ -44,7 +46,7 @@ pub(super) struct CiProjects {
     /// The directory each project name means.
     by_name: BTreeMap<String, PathBuf>,
     /// Hook environments built so far in this run, by project directory.
-    hook_environments: Mutex<HashMap<PathBuf, Arc<OnceCell<HookEnvironment>>>>,
+    hook_environments: Mutex<HashMap<PathBuf, HookEnvironmentCell>>,
     /// What the project in each directory imports, read the first time a
     /// file reference of it is bound in this run.
     imports: crate::imports::ImportsByDirectory,
@@ -60,6 +62,7 @@ impl CiProjects {
             named,
         } = module;
         Self {
+            package: crate::imports::PROJECT_PACKAGE.to_owned(),
             module_root: canonical(module_root),
             checkout_root: canonical(checkout_root),
             by_directory: projects
@@ -73,6 +76,15 @@ impl CiProjects {
             hook_environments: Mutex::default(),
             imports: crate::imports::ImportsByDirectory::default(),
         }
+    }
+
+    pub(super) fn with_package(mut self, package: &str) -> Self {
+        package.clone_into(&mut self.package);
+        self
+    }
+
+    pub(super) fn package(&self) -> &str {
+        &self.package
     }
 
     /// The root of the CUE module the run was started in.
@@ -104,17 +116,17 @@ impl CiProjects {
             Arc::clone(known.entry(canonical(project.root)).or_default())
         };
         let environment = cell
-            .get_or_try_init(|| async {
-                super::hook_env::build_hook_environment(
-                    project.root,
-                    project.config,
-                    project.ancestor_configs,
-                )
-                .await
-                .map(Arc::new)
+            .get_or_init(|| async {
+                super::hook_env::build_hook_environment(project, &self.package)
+                    .await
+                    .map(Arc::new)
+                    .map_err(|error| error.to_string())
             })
-            .await?;
-        Ok(Arc::clone(environment))
+            .await;
+        environment
+            .as_ref()
+            .map(Arc::clone)
+            .map_err(cuenv_core::Error::configuration)
     }
 }
 
@@ -203,7 +215,7 @@ impl ProjectSource for CiProjects {
                 crate::imports::FilesOwner {
                     module_root: &self.module_root,
                     directory: origin,
-                    package: crate::imports::PROJECT_PACKAGE,
+                    package: &self.package,
                 },
                 name,
             )

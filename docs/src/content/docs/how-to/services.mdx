@@ -320,8 +320,12 @@ tasks: {
 }
 ```
 
-- On the **host backend**, cuenv starts the referenced services (and their transitive service dependencies) in an isolated ephemeral session directory, waits for each service's readiness probe, runs the task (skipping `cuenv-cas`), and tears the services down on completion, failure, or timeout.
-- On the **Dagger 1.0 backend**, cuenv attaches the referenced services to the task container via `withServiceBinding`. See [Dagger 1.0 Backend & Ephemeral Services](/how-to/dagger/).
+- On the **host backend**, cuenv starts the referenced services (and their transitive service dependencies) in an isolated ephemeral session directory, waits for each service's readiness probe, runs the task with its normal filesystem isolation and without result caching, and tears the services down on completion or cancellation, including during startup.
+- On the **Dagger 1.0 backend**, cuenv attaches the declared container services to the task and connects their service dependencies via `withServiceBinding`. See [Dagger 1.0 Backend & Ephemeral Services](/how-to/dagger/).
+
+Host services share the host network. Within one cuenv process, tasks wait for
+conflicting ephemeral services and declared host ports to become available.
+Use distinct host ports when running services in concurrent cuenv invocations.
 
 ## Troubleshooting and where to go next
 

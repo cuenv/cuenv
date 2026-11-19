@@ -30,10 +30,7 @@ use super::selection::TaskResolution;
 use super::{help, listing, picker, selection};
 
 struct PreparedTaskRuntime {
-    env: Environment,
-    /// Environments for the tasks that do not run with `env`: those a
-    /// context selects other variables for, and those of other projects.
-    task_environments: Option<Arc<dyn TaskEnvironments>>,
+    task_environments: Arc<dyn TaskEnvironments>,
     cache: Option<TaskCacheConfig>,
     /// What the tasks of other projects run with, by project.
     external_projects: BTreeMap<String, ProjectExecution>,
@@ -161,24 +158,13 @@ async fn prepare_task_runtime(
     context: &TaskExecutionContext,
     resolution: &TaskResolution,
 ) -> Result<PreparedTaskRuntime> {
-    let requested = resolution.display_name.as_str();
     let own = ProjectTaskEnvironments::prepare(ProjectEnvironmentSpec {
         manifest: &context.manifest,
         project_root: &context.project_root,
         environment: input.environment,
-    })
-    .await?;
-    let requested_env = match &resolution.node {
-        TaskNode::Task(task) => own.task_env(requested, task)?,
-        _ => own.group_env(requested)?,
-    };
-    let env = own.environment(requested_env.as_ref()).await?;
-
+    })?;
     let environments = RunTaskEnvironments::new(RunEnvironments {
         own,
-        shared: requested_env
-            .as_ref()
-            .map_or_default(|env| env.key().clone()),
         scope: &resolution.scope,
         environment: input.environment,
     });
@@ -191,11 +177,8 @@ async fn prepare_task_runtime(
         })?;
 
     Ok(PreparedTaskRuntime {
-        env,
         external_projects: external_project_executions(&resolution.scope, cache.as_ref()),
-        task_environments: environments
-            .differs_by_task()
-            .then(|| Arc::new(environments) as Arc<dyn TaskEnvironments>),
+        task_environments: Arc::new(environments),
         cache,
         backend,
     })
@@ -252,6 +235,8 @@ fn external_project_executions(
                     project_root: project.root.clone(),
                     cue_module_root: Some(project.module_root.clone()),
                     cache,
+                    runtime: project.manifest.runtime.clone(),
+                    services: project.manifest.services.clone(),
                 },
             )
         })
@@ -339,8 +324,8 @@ fn task_executor_config(spec: &TaskExecutorConfigSpec<'_, '_>) -> ExecutorConfig
         capture_output: spec.capture_output,
         max_parallel: 0,
         continue_on_error: spec.input.continue_on_error,
-        environment: spec.runtime.env.clone(),
-        task_environments: spec.runtime.task_environments.clone(),
+        environment: Environment::new(),
+        task_environments: Some(Arc::clone(&spec.runtime.task_environments)),
         working_dir: None,
         cue_module_root: spec.context.cue_module_root.clone(),
         project_root: spec.context.project_root.clone(),

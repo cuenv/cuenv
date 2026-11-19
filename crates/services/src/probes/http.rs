@@ -28,43 +28,41 @@ impl HttpProbe {
             method,
         }
     }
+}
 
-    /// Parse the URL into (host, port, path) components.
-    ///
-    /// The probe speaks plaintext HTTP/1.1 over TCP, so `https://` URLs are
-    /// rejected: they could only ever time out against a TLS listener.
-    fn parse_url(&self) -> Result<(String, u16, String), String> {
-        let url = &self.url;
-
-        if url.starts_with("https://") {
-            return Err(format!(
-                "https readiness probes are not supported ({url}); probe a plain http:// \
-                 endpoint or use a command probe"
-            ));
-        }
-        let rest = url.strip_prefix("http://").unwrap_or(url.as_str());
-
-        let (host_port, path) = rest
-            .find('/')
-            .map_or((rest, "/"), |i| (&rest[..i], &rest[i..]));
-
-        let default_port: u16 = 80;
-
-        let (host, port) = host_port.rfind(':').map_or((host_port, default_port), |i| {
-            let port_str = &host_port[i + 1..];
-            port_str
-                .parse()
-                .map_or((host_port, default_port), |p| (&host_port[..i], p))
-        });
-
-        Ok((host.to_string(), port, path.to_string()))
+/// Parse the HTTP probe URL into (host, port, path) components.
+///
+/// The probe speaks plaintext HTTP/1.1 over TCP.
+pub(crate) fn parse_http_url(url: &str) -> Result<(&str, u16, &str), String> {
+    if url.starts_with("https://") {
+        return Err(format!(
+            "https readiness probes are not supported ({url}); probe a plain http:// \
+             endpoint or use a command probe"
+        ));
     }
+    let rest = url.strip_prefix("http://").unwrap_or(url);
+
+    let (host_port, path) = rest
+        .find('/')
+        .map_or((rest, "/"), |i| (&rest[..i], &rest[i..]));
+
+    let default_port: u16 = 80;
+
+    let (host, port) =
+        host_port
+            .rsplit_once(':')
+            .map_or((host_port, default_port), |(host, port)| {
+                port.parse()
+                    .map_or((host_port, default_port), |port| (host, port))
+            });
+
+    Ok((host, port, path))
 }
 
 #[async_trait]
 impl ProbeRunner for HttpProbe {
     async fn check(&self) -> ProbeOutcome {
-        let (host, port, path) = match self.parse_url() {
+        let (host, port, path) = match parse_http_url(&self.url) {
             Ok(parts) => parts,
             Err(message) => return ProbeOutcome::Fatal(message),
         };
@@ -122,7 +120,7 @@ mod tests {
             vec![200],
             "GET".to_string(),
         );
-        let (host, port, path) = probe.parse_url().unwrap();
+        let (host, port, path) = parse_http_url(&probe.url).unwrap();
         assert_eq!(host, "localhost");
         assert_eq!(port, 3000);
         assert_eq!(path, "/health");
@@ -135,7 +133,7 @@ mod tests {
             vec![200],
             "GET".to_string(),
         );
-        let (host, port, path) = probe.parse_url().unwrap();
+        let (host, port, path) = parse_http_url(&probe.url).unwrap();
         assert_eq!(host, "localhost");
         assert_eq!(port, 80);
         assert_eq!(path, "/health");
@@ -148,7 +146,7 @@ mod tests {
             vec![200],
             "GET".to_string(),
         );
-        let (host, port, path) = probe.parse_url().unwrap();
+        let (host, port, path) = parse_http_url(&probe.url).unwrap();
         assert_eq!(host, "localhost");
         assert_eq!(port, 8080);
         assert_eq!(path, "/");

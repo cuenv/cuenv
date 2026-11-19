@@ -32,6 +32,12 @@ tasks: {
 		args: ["test"]
 		dependsOn: [_services.db]
 	}
+	checks: schema.#TaskGroup & {
+		dependsOn: [_services.db]
+		ping: schema.#Task & {
+			command: "true"
+		}
+	}
 }
 
 ci: {

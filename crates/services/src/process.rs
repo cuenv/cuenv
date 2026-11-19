@@ -13,6 +13,21 @@ pub struct ServiceProcess<'service_process> {
     project_root: &'service_process Path,
 }
 
+pub struct ServiceChild {
+    pub child: Child,
+}
+
+impl Drop for ServiceChild {
+    fn drop(&mut self) {
+        // A cancelled supervisor may never reach graceful shutdown. Tokio
+        // clears the pid after reaping, so only signal a still-owned group.
+        #[cfg(unix)]
+        if let Some(pid) = self.child.id() {
+            force_kill_process_group(pid);
+        }
+    }
+}
+
 impl<'service_process> ServiceProcess<'service_process> {
     pub(crate) fn new(
         name: &'service_process str,
@@ -26,7 +41,7 @@ impl<'service_process> ServiceProcess<'service_process> {
         }
     }
 
-    pub(crate) async fn spawn(&self) -> crate::Result<Child> {
+    pub(crate) async fn spawn(&self) -> crate::Result<ServiceChild> {
         let (program, args) = self.resolve_command()?;
         let working_dir = self.service.dir.as_ref().map_or_else(
             || self.project_root.to_path_buf(),
@@ -39,11 +54,14 @@ impl<'service_process> ServiceProcess<'service_process> {
             .args(&args)
             .current_dir(&working_dir)
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true);
 
         configure_process_group(&mut command);
         self.apply_environment(&mut command).await?;
-        Ok(command.spawn()?)
+        Ok(ServiceChild {
+            child: command.spawn()?,
+        })
     }
 
     pub(crate) async fn stop(&self, child: &mut Child) -> Option<i32> {

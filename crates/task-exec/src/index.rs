@@ -325,8 +325,18 @@ fn canonicalize_node(
                 // For children, extract their own source file and use display name
                 let child_source = extract_source_file(child_node);
                 let child_original = child_name.clone();
+                let mut child_node = std::borrow::Cow::Borrowed(child_node);
+                if group
+                    .depends_on
+                    .iter()
+                    .any(super::TaskDependency::is_service)
+                {
+                    child_node
+                        .to_mut()
+                        .inherit_service_dependencies(&group.depends_on);
+                }
                 let canon_child = canonicalize_node(
-                    child_node,
+                    &child_node,
                     entries,
                     NodeOrigin {
                         path: &child_path,

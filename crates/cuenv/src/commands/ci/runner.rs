@@ -45,6 +45,8 @@ pub async fn execute_runner(args: &CiArgs) -> Result<()> {
         specific_pipeline: args.pipeline.clone(),
         environment: args.environment.clone(),
         path_filter: effective_path,
+        project: args.project.clone(),
+        package: args.package.clone(),
         max_parallel: args.effective_jobs(),
         backend,
         service_manager,
@@ -56,7 +58,7 @@ pub async fn execute_runner(args: &CiArgs) -> Result<()> {
 ///
 /// When the user specifies `--path .`, this should mean "the current directory"
 /// relative to the module root, not "no filter".
-fn resolve_path_filter(path: &str) -> Result<Option<String>> {
+pub(super) fn resolve_path_filter(path: &str) -> Result<Option<String>> {
     let cwd =
         std::env::current_dir().map_err(|e| cuenv_core::Error::io("get current directory", e))?;
 

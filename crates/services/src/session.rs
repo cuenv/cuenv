@@ -420,7 +420,7 @@ fn session_dir(project_path: &Path) -> PathBuf {
 ///
 /// On Unix, only `ESRCH` establishes that the process is absent. Other probe
 /// errors cannot establish that removing its session is safe.
-fn is_pid_alive(pid: u32) -> bool {
+pub(crate) fn is_pid_alive(pid: u32) -> bool {
     if pid == 0 {
         return false;
     }

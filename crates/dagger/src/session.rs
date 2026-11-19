@@ -4,6 +4,7 @@
 //! pipeline run via `Arc<DaggerSession>`, avoiding repeated engine startup and
 //! maximizing Dagger's in-session cache reuse.
 
+use std::fmt;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
@@ -19,14 +20,23 @@ use crate::config::EngineTarget;
 use crate::error::{DaggerError, Result};
 
 const SESSION_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(60);
+const SESSION_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Connection details for a running Dagger Engine GraphQL session.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct SessionEndpoint {
     /// Local TCP port exposed by `dagger session`.
     pub port: u16,
     /// Session bearer/basic-auth token.
     pub session_token: String,
+}
+
+impl fmt::Debug for SessionEndpoint {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SessionEndpoint")
+            .field("port", &self.port)
+            .finish_non_exhaustive()
+    }
 }
 
 impl SessionEndpoint {
@@ -45,6 +55,9 @@ impl SessionEndpoint {
             return None;
         }
         let port = port_str.trim().parse::<u16>().ok()?;
+        if port == 0 {
+            return None;
+        }
         Some(Self {
             port,
             session_token,
@@ -118,15 +131,30 @@ impl DaggerSession {
             return Ok(Self::from_endpoint(endpoint));
         }
 
-        let mut cmd = Command::new(&config.dagger_bin);
-        cmd.arg("session")
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
+        Self::spawn(session_command(&config), &config).await
+    }
 
+    /// Start a fresh session on an explicitly selected engine.
+    ///
+    /// An inherited session cannot be retargeted. For an explicit local
+    /// engine, remove inherited engine selectors and use the CLI's default.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DaggerError::Session`] on spawn or handshake failure.
+    pub async fn connect_with_engine(config: SessionConfig) -> Result<Self> {
+        let mut cmd = session_command(&config);
+        cmd.env_remove("DAGGER_SESSION_PORT")
+            .env_remove("DAGGER_SESSION_TOKEN")
+            .env_remove("DAGGER_ENGINE")
+            .env_remove("DAGGER_CLOUD_ENGINE")
+            .env_remove("_EXPERIMENTAL_DAGGER_RUNNER_HOST");
+        Self::spawn(cmd, &config).await
+    }
+
+    async fn spawn(mut cmd: Command, config: &SessionConfig) -> Result<Self> {
         if let Some(engine) = config.engine.env_value() {
-            cmd.env("DAGGER_ENGINE", engine);
+            cmd.arg("--engine").arg(engine);
         }
         if let Some(dir) = &config.working_dir {
             cmd.current_dir(dir);
@@ -161,24 +189,22 @@ impl DaggerSession {
                 })?;
 
         if bytes_read == 0 {
-            let status = child.wait().await.ok();
+            let status = child.try_wait().ok().flatten();
             return Err(DaggerError::Session(format!(
                 "`dagger session` exited before printing connection info (status: {status:?})"
             )));
         }
 
         let handshake: SessionHandshake = serde_json::from_str(line.trim()).map_err(|err| {
-            DaggerError::Session(format!(
-                "invalid `dagger session` handshake JSON `{}`: {err}",
-                line.trim()
-            ))
+            DaggerError::Session(format!("invalid dagger session handshake JSON: {err}"))
         })?;
+        if handshake.port == 0 || handshake.session_token.is_empty() {
+            return Err(DaggerError::Session(
+                "dagger session returned an invalid port or empty token".to_string(),
+            ));
+        }
 
-        debug!(
-            port = handshake.port,
-            engine = %config.engine,
-            "connected to Dagger session"
-        );
+        debug!(port = handshake.port, "connected to Dagger session");
 
         Ok(Self {
             endpoint: SessionEndpoint {
@@ -208,12 +234,31 @@ impl DaggerSession {
     pub async fn shutdown(&self) {
         let mut guard = self.child.lock().await;
         if let Some(mut child) = guard.take() {
-            if let Err(err) = child.start_kill() {
-                warn!(%err, "failed to signal dagger session shutdown");
+            // Closing stdin tells Dagger to close its listener and clean up.
+            drop(child.stdin.take());
+            match tokio::time::timeout(SESSION_SHUTDOWN_TIMEOUT, child.wait()).await {
+                Ok(Err(error)) => warn!(%error, "failed waiting for Dagger session"),
+                Ok(Ok(_)) => {}
+                Err(_) => {
+                    if let Err(error) = child.kill().await {
+                        warn!(%error, "failed terminating Dagger session");
+                    }
+                }
             }
-            let _ = child.wait().await;
         }
     }
+}
+
+fn session_command(config: &SessionConfig) -> Command {
+    let mut command = Command::new(&config.dagger_bin);
+    command
+        .args(["--silent", "session"])
+        // EOF on stdin immediately closes the Dagger session listener.
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .kill_on_drop(true);
+    command
 }
 
 impl Drop for DaggerSession {
@@ -246,5 +291,46 @@ mod tests {
                 .expect("valid handshake");
         assert_eq!(parsed.port, 54321);
         assert_eq!(parsed.session_token, "secret-token");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn session_input_remains_open_until_shutdown() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir()?;
+        let dagger_bin = directory.path().join("dagger");
+        std::fs::write(
+            &dagger_bin,
+            r#"#!/bin/sh
+printf '%s\n' '{"port":54321,"session_token":"test-token"}'
+while IFS= read -r line; do :; done
+printf 'closed\n' > closed
+"#,
+        )?;
+        std::fs::set_permissions(&dagger_bin, std::fs::Permissions::from_mode(0o700))?;
+        let session = DaggerSession::connect_with_engine(SessionConfig {
+            working_dir: Some(directory.path().to_path_buf()),
+            dagger_bin,
+            ..SessionConfig::default()
+        })
+        .await?;
+
+        assert_eq!(session.endpoint().port, 54321);
+        assert!(!format!("{:?}", session.endpoint()).contains("test-token"));
+        {
+            let child = session.child.lock().await;
+            assert!(
+                child
+                    .as_ref()
+                    .is_some_and(|process| process.stdin.is_some())
+            );
+        }
+        session.shutdown().await;
+        assert_eq!(
+            std::fs::read_to_string(directory.path().join("closed"))?,
+            "closed\n"
+        );
+        Ok(())
     }
 }

@@ -52,6 +52,10 @@ pub struct CiArgs {
     #[arg(long, default_value = ".", value_name = "PATH")]
     pub path: String,
 
+    /// Run or export pipelines for this exact project name within --path.
+    #[arg(long, value_name = "NAME")]
+    pub project: Option<String>,
+
     /// Name of the CUE package to evaluate.
     #[arg(long, default_value = "cuenv", value_name = "PACKAGE")]
     pub package: String,
@@ -61,7 +65,7 @@ pub struct CiArgs {
     pub backend: crate::commands::backend::ExecutionBackendArg,
 
     /// Dagger Engine target (`local`, `cloud`, or remote URI).
-    #[arg(long, env = "DAGGER_ENGINE", value_name = "TARGET")]
+    #[arg(long, value_name = "TARGET")]
     pub dagger_engine: Option<String>,
 }
 
@@ -164,6 +168,7 @@ mod tests {
             dry_run: false,
             environment: None,
             path: ".".to_string(),
+            project: None,
             package: "cuenv".to_string(),
             backend: crate::commands::backend::ExecutionBackendArg::Auto,
             dagger_engine: None,

@@ -16,7 +16,7 @@ use tracing::{debug, warn};
 #[cfg(unix)]
 use libc;
 
-use cuenv_core::manifest::Service;
+use cuenv_core::manifest::{Readiness, Service};
 use cuenv_events::{
     emit_service_failed, emit_service_output, emit_service_ready, emit_service_ready_timeout,
     emit_service_restarting, emit_service_starting, emit_service_stopped, emit_service_stopping,
@@ -150,6 +150,25 @@ enum ServiceWait {
     /// Send SIGHUP to the running process (watch `on: sync`).
     Sync,
     Stop,
+}
+
+async fn check_readiness(
+    readiness: &Readiness,
+    log_probe: Option<&LogProbe>,
+) -> crate::Result<ProbeLoopResult> {
+    // A log probe must share the instance that receives the service output.
+    if let Some(log_probe) = log_probe {
+        let common = readiness.common_fields();
+        let config = probes::build_probe_config(
+            common.and_then(|fields| fields.interval.as_deref()),
+            common.and_then(|fields| fields.timeout.as_deref()),
+            common.and_then(|fields| fields.initial_delay.as_deref()),
+        )?;
+        Ok(probes::run_probe_loop(log_probe, &config).await)
+    } else {
+        let (probe, config) = probes::create_probe(readiness)?;
+        Ok(probes::run_probe_loop(probe.as_ref(), &config).await)
+    }
 }
 
 fn abort_output_handles(
@@ -311,8 +330,13 @@ impl ServiceSupervisor {
                 error: None,
             });
 
-            let spawn_result = self.process().spawn().await;
-            let mut child = match spawn_result {
+            let process = self.process();
+            let spawn_result = tokio::select! {
+                biased;
+                () = shutdown.cancelled() => return SupervisorResult::Stopped,
+                result = process.spawn() => result,
+            };
+            let mut running = match spawn_result {
                 Ok(c) => c,
                 Err(e) => {
                     let msg = format!("failed to spawn: {e}");
@@ -330,6 +354,7 @@ impl ServiceSupervisor {
                 }
             };
 
+            let child = &mut running.child;
             let pid = child.id();
             self.log_state_update(StateUpdate {
                 lifecycle: ServiceLifecycle::Starting,
@@ -389,103 +414,63 @@ impl ServiceSupervisor {
                 })
             });
 
-            // Run readiness probe.
-            // For log probes, reuse the shared `log_probe` instance that receives
-            // fed lines from the output handlers — `create_probe` would construct a
-            // separate instance whose `matched` flag is never set.
-            let ready = if let Some(ref readiness) = self.service.readiness {
-                let probe_result = if let Some(ref shared_probe) = *log_probe {
-                    // Log probe: build config from common fields, run against the shared instance
-                    match probes::build_probe_config(
-                        readiness
-                            .common_fields()
-                            .and_then(|c| c.interval.as_deref()),
-                        readiness.common_fields().and_then(|c| c.timeout.as_deref()),
-                        readiness
-                            .common_fields()
-                            .and_then(|c| c.initial_delay.as_deref()),
-                    ) {
-                        Ok(config) => Ok(probes::run_probe_loop(shared_probe, &config).await),
-                        Err(e) => Err(e),
+            let probe_result = if let Some(readiness) = &self.service.readiness {
+                tokio::select! {
+                    biased;
+                    () = shutdown.cancelled() => {
+                        self.stop_running_process(child).await;
+                        abort_output_handles(stdout_handle, stderr_handle);
+                        return SupervisorResult::Stopped;
                     }
-                } else {
-                    // Non-log probes: create_probe is fine
-                    match probes::create_probe(readiness) {
-                        Ok((probe, config)) => {
-                            Ok(probes::run_probe_loop(probe.as_ref(), &config).await)
-                        }
-                        Err(e) => Err(e),
-                    }
-                };
-
-                match probe_result {
-                    Ok(ProbeLoopResult::Ready { after_ms }) => {
-                        emit_service_ready!(&self.name, after_ms);
-                        true
-                    }
-                    Ok(ProbeLoopResult::TimedOut { after_ms }) => {
-                        let msg = format!("readiness probe timed out after {after_ms}ms");
-                        emit_service_ready_timeout!(&self.name, after_ms);
-                        self.log_state_update(StateUpdate {
-                            lifecycle: ServiceLifecycle::Failed,
-                            pid,
-                            exit_code: None,
-                            error: Some(&msg),
-                        });
-                        if !has_signaled_readiness {
-                            let _ = readiness_tx.send(ReadinessOutcome::Failed(msg.clone()));
-                        }
-                        let _ = self.process().stop(&mut child).await;
-                        return SupervisorResult::Failed(msg);
-                    }
-                    Ok(ProbeLoopResult::Fatal(msg)) => {
-                        emit_service_failed!(&self.name, &msg);
-                        self.log_state_update(StateUpdate {
-                            lifecycle: ServiceLifecycle::Failed,
-                            pid,
-                            exit_code: None,
-                            error: Some(&msg),
-                        });
-                        if !has_signaled_readiness {
-                            let _ = readiness_tx.send(ReadinessOutcome::Failed(msg.clone()));
-                        }
-                        let _ = self.process().stop(&mut child).await;
-                        return SupervisorResult::Failed(msg);
-                    }
-                    Err(e) => {
-                        let msg = format!("probe creation failed: {e}");
-                        emit_service_failed!(&self.name, &msg);
-                        self.log_state_update(StateUpdate {
-                            lifecycle: ServiceLifecycle::Failed,
-                            pid,
-                            exit_code: None,
-                            error: Some(&msg),
-                        });
-                        if !has_signaled_readiness {
-                            let _ = readiness_tx.send(ReadinessOutcome::Failed(msg.clone()));
-                        }
-                        let _ = self.process().stop(&mut child).await;
-                        return SupervisorResult::Failed(msg);
-                    }
+                    result = check_readiness(readiness, log_probe.as_ref().as_ref()) => result,
                 }
             } else {
-                // No readiness probe — consider immediately ready
-                emit_service_ready!(&self.name, 0_u64);
-                true
+                Ok(ProbeLoopResult::Ready { after_ms: 0 })
             };
-
-            if ready {
-                backoff.reset();
+            let readiness = match probe_result {
+                Ok(ProbeLoopResult::Ready { after_ms }) => {
+                    emit_service_ready!(&self.name, after_ms);
+                    Ok(())
+                }
+                Ok(ProbeLoopResult::TimedOut { after_ms }) => {
+                    emit_service_ready_timeout!(&self.name, after_ms);
+                    Err(format!("readiness probe timed out after {after_ms}ms"))
+                }
+                Ok(ProbeLoopResult::Fatal(msg)) => {
+                    emit_service_failed!(&self.name, &msg);
+                    Err(msg)
+                }
+                Err(error) => {
+                    let msg = format!("probe creation failed: {error}");
+                    emit_service_failed!(&self.name, &msg);
+                    Err(msg)
+                }
+            };
+            if let Err(msg) = readiness {
                 self.log_state_update(StateUpdate {
-                    lifecycle: ServiceLifecycle::Ready,
+                    lifecycle: ServiceLifecycle::Failed,
                     pid,
                     exit_code: None,
-                    error: None,
+                    error: Some(&msg),
                 });
                 if !has_signaled_readiness {
-                    let _ = readiness_tx.send(ReadinessOutcome::Ready);
-                    has_signaled_readiness = true;
+                    let _ = readiness_tx.send(ReadinessOutcome::Failed(msg.clone()));
                 }
+                let _ = self.process().stop(child).await;
+                abort_output_handles(stdout_handle, stderr_handle);
+                return SupervisorResult::Failed(msg);
+            }
+
+            backoff.reset();
+            self.log_state_update(StateUpdate {
+                lifecycle: ServiceLifecycle::Ready,
+                pid,
+                exit_code: None,
+                error: None,
+            });
+            if !has_signaled_readiness {
+                let _ = readiness_tx.send(ReadinessOutcome::Ready);
+                has_signaled_readiness = true;
             }
 
             let watch_on = self
@@ -534,7 +519,7 @@ impl ServiceSupervisor {
                         break status;
                     }
                     ServiceWait::Shutdown | ServiceWait::Stop => {
-                        self.stop_running_process(&mut child).await;
+                        self.stop_running_process(child).await;
                         abort_output_handles(stdout_handle, stderr_handle);
                         return SupervisorResult::Stopped;
                     }
@@ -548,7 +533,7 @@ impl ServiceSupervisor {
                     ServiceWait::Restart(trigger) => {
                         attempt = self
                             .restart_running_process(
-                                &mut child,
+                                child,
                                 RestartStep {
                                     trigger,
                                     current_attempt: attempt,
@@ -594,7 +579,10 @@ impl ServiceSupervisor {
                     delay_ms = delay.as_millis(),
                     "Backing off before restart"
                 );
-                tokio::time::sleep(delay).await;
+                tokio::select! {
+                    () = shutdown.cancelled() => return SupervisorResult::Stopped,
+                    () = tokio::time::sleep(delay) => {}
+                }
             } else {
                 if exit_code.is_none_or(|c| c != 0) {
                     let msg = format!(

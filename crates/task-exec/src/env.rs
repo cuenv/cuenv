@@ -3,7 +3,17 @@
 use cuenv_core::environment::{EnvValue, Environment};
 use cuenv_core::{Error, Result};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+
+/// Resolved task-level variables and the metadata needed to protect secrets.
+pub struct ResolvedTaskEnvironment {
+    /// Variables the task receives.
+    pub values: HashMap<String, String>,
+    /// Keys whose values contain credentials.
+    pub secret_names: HashSet<String>,
+    /// Credentials to redact, including parts of interpolated values.
+    pub secret_values: Vec<String>,
+}
 
 /// Resolve task-level environment values into process environment variables.
 ///
@@ -19,6 +29,19 @@ pub async fn resolve_task_env(
     task_name: &str,
     task_env: &HashMap<String, Value>,
 ) -> Result<(HashMap<String, String>, Vec<String>)> {
+    let resolved = resolve_task_environment(task_name, task_env).await?;
+    Ok((resolved.values, resolved.secret_values))
+}
+
+/// Resolve task-level variables and retain the identities of secret values.
+///
+/// # Errors
+///
+/// Returns an error if a declaration is invalid or a secret cannot be resolved.
+pub async fn resolve_task_environment(
+    task_name: &str,
+    task_env: &HashMap<String, Value>,
+) -> Result<ResolvedTaskEnvironment> {
     let mut resolved = HashMap::new();
     let mut deferred = HashMap::new();
 
@@ -47,15 +70,20 @@ pub async fn resolve_task_env(
         }
     }
 
-    if deferred.is_empty() {
-        return Ok((resolved, Vec::new()));
-    }
-
-    let (deferred_resolved, secrets) =
+    let (deferred_resolved, secret_values) =
         Environment::resolve_for_task_with_secrets(task_name, &deferred).await?;
+    let secret_names = deferred_resolved
+        .keys()
+        .filter(|key| deferred.get(*key).is_some_and(EnvValue::is_secret))
+        .cloned()
+        .collect();
     resolved.extend(deferred_resolved);
 
-    Ok((resolved, secrets))
+    Ok(ResolvedTaskEnvironment {
+        values: resolved,
+        secret_names,
+        secret_values,
+    })
 }
 
 fn passthrough_object_value(value: &Value, env_key: &str) -> Option<String> {

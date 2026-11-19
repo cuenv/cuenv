@@ -117,8 +117,8 @@ pub enum SyncCommands {
             help = "Sync CI workflows for all projects in the workspace"
         )]
         all: bool,
-        /// Filter to specific provider (github, buildkite).
-        #[arg(long, help = "Filter to specific provider (github, buildkite)")]
+        /// Filter to a CI provider (github, buildkite, dagger).
+        #[arg(long, help = "Filter to a CI provider (github, buildkite, dagger)")]
         provider: Option<String>,
     },
     /// Sync VCS dependencies from CUE configuration.

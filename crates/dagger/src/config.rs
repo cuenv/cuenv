@@ -72,55 +72,48 @@ pub enum BackendSelection {
     ForceAll,
 }
 
-/// Provider configuration deserialized from `ci.providerConfig.dagger` (`schema/ci.cue` `#DaggerConfig`).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// Provider configuration from `ci.provider.dagger` (`schema/ci.cue`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DaggerCiConfig {
-    /// Target engine: `"local"`, `"cloud"`, or a remote engine URI.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub engine: Option<String>,
-    /// Generated Dagger module name under `.dagger/modules/<moduleName>/` (default: `"ci"`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Installed module name (default: `"ci"`).
     pub module_name: Option<String>,
-    /// Generated workspace root directory relative to repo root (default: `"."`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Source directory relative to the Dagger workspace.
+    pub module_path: Option<String>,
+    /// Directory containing dagger.toml, relative to the repository.
     pub workspace_dir: Option<String>,
-    /// Default base image for tasks that do not declare a container or dagger runtime.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Base image for expanded tasks with no container runtime.
     pub default_image: Option<String>,
-    /// Whether to emit `@up` service functions for project services (default: `true`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Optional prebuilt Linux cuenv executable relative to the repository.
+    pub cuenv_binary: Option<String>,
+    /// Dagger engine version required by the generated module.
+    pub engine_version: Option<String>,
+    /// Whether to make service functions available to `dagger start`.
     pub emit_services: Option<bool>,
 }
 
 impl DaggerCiConfig {
-    /// Effective generated module name (defaults to `"ci"`).
+    /// Effective module name.
     #[must_use]
     pub fn module_name(&self) -> &str {
         self.module_name.as_deref().unwrap_or("ci")
     }
 
-    /// Effective workspace directory relative to repo root (defaults to `"."`).
+    /// Effective workspace directory relative to the repository root.
     #[must_use]
     pub fn workspace_dir(&self) -> &str {
         self.workspace_dir.as_deref().unwrap_or(".")
     }
 
-    /// Effective default base image (defaults to `"alpine:3.21"`).
+    /// Effective default base image for expanded checks.
     #[must_use]
     pub fn default_image(&self) -> &str {
         self.default_image.as_deref().unwrap_or("alpine:3.21")
     }
 
-    /// Whether `@up` service functions should be emitted (defaults to `true`).
+    /// Whether service functions should be public.
     #[must_use]
     pub fn should_emit_services(&self) -> bool {
         self.emit_services.unwrap_or(true)
-    }
-
-    /// Resolved [`EngineTarget`].
-    #[must_use]
-    pub fn engine_target(&self) -> EngineTarget {
-        self.engine.as_deref().map_or_default(EngineTarget::parse)
     }
 }

@@ -13,9 +13,6 @@ use std::path::{Path, PathBuf};
 
 use cuengine::InstanceSources;
 
-/// The package cuenv evaluates in each project directory.
-const PACKAGE: &str = "cuenv";
-
 /// The files that, when one of them changes, change what a project's
 /// configuration may evaluate to. Everything is relative to the root of the
 /// checkout, the frame changed files are reported in.
@@ -46,6 +43,8 @@ pub struct ProjectInstance<'project> {
     pub module_root: &'project Path,
     /// The project's directory.
     pub directory: &'project Path,
+    /// The package the CUE loader evaluates in this directory.
+    pub package: &'project str,
     /// The module root relative to the root of the checkout: empty unless
     /// the module is nested in the repository.
     pub module_prefix: &'project Path,
@@ -59,13 +58,14 @@ impl ConfigurationSources {
     ///
     /// Fails when the instance cannot be loaded.
     pub fn load(project: ProjectInstance<'_>) -> cuenv_core::Result<Self> {
-        let sources = cuengine::instance_sources(project.module_root, project.directory, PACKAGE)
-            .map_err(|error| {
-            cuenv_core::Error::configuration(format!(
-                "Failed to list the CUE files of the project at {}: {error}",
-                project.directory.display()
-            ))
-        })?;
+        let sources =
+            cuengine::instance_sources(project.module_root, project.directory, project.package)
+                .map_err(|error| {
+                    cuenv_core::Error::configuration(format!(
+                        "Failed to list the CUE files of the project at {}: {error}",
+                        project.directory.display()
+                    ))
+                })?;
         Ok(Self::placed(project.module_prefix, &sources))
     }
 

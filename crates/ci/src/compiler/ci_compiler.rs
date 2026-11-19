@@ -29,6 +29,13 @@ pub struct Compiler {
 }
 
 impl Compiler {
+    pub(super) fn project_package(&self) -> &str {
+        self.options
+            .project_package
+            .as_deref()
+            .unwrap_or(crate::imports::PROJECT_PACKAGE)
+    }
+
     /// Create a new compiler for the given project
     #[must_use]
     pub fn new(project: Project) -> Self {
@@ -67,7 +74,7 @@ impl Compiler {
             crate::imports::imported_projects(
                 module_root,
                 &module_root.join(from),
-                crate::imports::PROJECT_PACKAGE,
+                self.project_package(),
             )
         });
         imported.as_ref().map_err(Clone::clone)?.bind(name)
@@ -75,14 +82,17 @@ impl Compiler {
 
     /// The packages the project imports, where its file references bind.
     pub(super) fn imported_projects(&self) -> Result<&ImportedProjects, String> {
-        const PACKAGE: &str = crate::imports::PROJECT_PACKAGE;
         self.imports
             .get_or_init(|| match &self.options.file_anchors {
                 Some(FileAnchors::Known(imported)) => Ok(imported.clone()),
                 Some(FileAnchors::Instance {
                     module_root,
                     directory,
-                }) => crate::imports::imported_projects(module_root, directory, PACKAGE),
+                }) => crate::imports::imported_projects(
+                    module_root,
+                    directory,
+                    self.project_package(),
+                ),
                 None => {
                     let module_root = self.options.module_root.as_ref().ok_or_else(|| {
                         "this compilation does not know where the project lies, so it cannot \
@@ -93,7 +103,11 @@ impl Compiler {
                         Some(path) if !path.is_empty() && path != "." => module_root.join(path),
                         _ => module_root.clone(),
                     };
-                    crate::imports::imported_projects(module_root, &directory, PACKAGE)
+                    crate::imports::imported_projects(
+                        module_root,
+                        &directory,
+                        self.project_package(),
+                    )
                 }
             })
             .as_ref()

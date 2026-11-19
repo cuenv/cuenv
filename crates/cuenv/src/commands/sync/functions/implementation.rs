@@ -154,6 +154,20 @@ pub async fn execute_sync_ci(
     request: CiSyncRequest<'_>,
     executor: &CommandExecutor,
 ) -> Result<String> {
+    execute_project_ci_sync(request, executor, DaggerSync::Include).await
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DaggerSync {
+    Include,
+    AlreadySynced,
+}
+
+async fn execute_project_ci_sync(
+    request: CiSyncRequest<'_>,
+    executor: &CommandExecutor,
+    dagger: DaggerSync,
+) -> Result<String> {
     tracing::info!("Starting sync ci command");
 
     let dir_path = Path::new(request.path);
@@ -239,6 +253,9 @@ pub async fn execute_sync_ci(
     let mut errors: Vec<(String, cuenv_core::Error)> = Vec::new();
 
     for prov in &valid_providers {
+        if prov == "dagger" && dagger == DaggerSync::AlreadySynced {
+            continue;
+        }
         let result = match prov.as_str() {
             "github" => {
                 let github_request = GithubSyncRequest {
@@ -258,12 +275,19 @@ pub async fn execute_sync_ci(
                 execute_sync_buildkite(&buildkite_request)
             }
             "dagger" => {
-                let dagger_request = super::dagger::DaggerSyncRequest {
-                    repo_root: &repo_root,
-                    options: request.options,
-                    projects: &target_projects,
+                // The generated workspace is shared. Regenerate all opted-in
+                // Dagger projects when syncing one project inside it.
+                let projects = {
+                    let module = executor.discover_all_modules(&target_path)?;
+                    ProjectInfo::collect_from_module(&module)?
                 };
-                super::dagger::execute_sync_dagger(&dagger_request)
+                super::dagger::execute_sync_dagger(&super::dagger::DaggerSyncRequest {
+                    repo_root: &repo_root,
+                    explicit_path: Some(&target_path),
+                    package: request.package,
+                    options: request.options,
+                    projects: &projects,
+                })
             }
             _ => Err(cuenv_core::Error::configuration(format!(
                 "Unsupported CI sync provider: {prov}. Supported: {}",
@@ -329,6 +353,34 @@ pub async fn execute_sync_ci_workspace(
     let mut outputs = Vec::new();
     let mut errors = Vec::new();
 
+    let dagger_configured = projects.iter().any(|project| {
+        project.config.ci.as_ref().is_some_and(|ci| {
+            ci.pipelines.keys().any(|name| {
+                ci.providers_for_pipeline(name)
+                    .iter()
+                    .any(|provider| provider == "dagger")
+            })
+        })
+    });
+    if request.options.provider == Some("dagger")
+        || (request.options.provider.is_none() && dagger_configured)
+    {
+        let dagger_output =
+            super::dagger::execute_sync_dagger(&super::dagger::DaggerSyncRequest {
+                repo_root: &projects[0].module_root,
+                explicit_path: None,
+                package: request.package,
+                options: request.options,
+                projects: &projects,
+            })?;
+        if !dagger_output.is_empty() {
+            outputs.push(dagger_output);
+        }
+    }
+    if request.options.provider == Some("dagger") {
+        return Ok(outputs.join("\n\n"));
+    }
+
     for project in &projects {
         // Use absolute path - relative_path is relative to module root, not CWD
         let project_path_str = project.project_path.to_string_lossy();
@@ -338,7 +390,7 @@ pub async fn execute_sync_ci_workspace(
             package: request.package,
             options: request.options,
         };
-        let result = execute_sync_ci(ci_request, executor).await;
+        let result = execute_project_ci_sync(ci_request, executor, DaggerSync::AlreadySynced).await;
 
         match result {
             Ok(output) if !output.is_empty() => {

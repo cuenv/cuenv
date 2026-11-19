@@ -79,8 +79,8 @@ cuenv is honest about what works. The matrix in [`docs/design/specs/schema-cover
 | `#NixRuntime`       | **Stable**  | Yes. Preferred for reproducible toolchains. See [Nix integration](/how-to/nix/).                   |
 | `#DevenvRuntime`    | **Stable**  | Yes, if your project already uses devenv. See [below](#devenv-runtime).                            |
 | `#ToolsRuntime`     | **Stable**  | Yes. Best for pinning individual CLI tools. See [Tools](/how-to/tools/).                           |
-| `#ContainerRuntime` | **Stable**  | Yes. Runs tasks in a container image via the Dagger 1.0 Engine. See [Dagger 1.0](/how-to/dagger/). |
-| `#DaggerRuntime`    | **Stable**  | Yes. Full Dagger 1.0 container runtime with cache volumes and services. See [Dagger 1.0](/how-to/dagger/). |
+| `#ContainerRuntime` | **Beta**    | Runs tasks in a container image on the Dagger 1.0 beta engine. See [Dagger](/how-to/dagger/). |
+| `#DaggerRuntime`    | **Beta**    | Supports Dockerfile builds, cache volumes, and container services on the Dagger 1.0 beta engine. See [Dagger](/how-to/dagger/). |
 | `#OCIRuntime`       | **Partial** | Yes, with caveats — `sync lock` + the `#OCIActivate` hook. See [below](#oci-runtime).              |
 
 How each variant supplies an environment differs under the hood. Nix and devenv runtimes are resolved by `cuenv` itself (it runs `nix print-dev-env` / `devenv print-dev-env` and sources the result, per `crates/core/src/runtime.rs`). Container and Dagger runtimes execute directly on the Dagger 1.0 Engine via `crates/dagger`. OCI binaries are extracted by the `#OCIActivate` hook.
