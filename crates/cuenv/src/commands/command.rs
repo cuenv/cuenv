@@ -416,6 +416,8 @@ pub enum Command {
     CacheGc {
         /// Path to the CUE module or project directory.
         path: String,
+        /// CUE package containing the cache configuration.
+        package: String,
         /// Optional target maximum cache size string (e.g. `2G`).
         max_size: Option<String>,
         /// Optional maximum entry age string (e.g. `7d`).

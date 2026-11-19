@@ -207,12 +207,14 @@ impl Commands {
                 },
                 CacheCommands::Gc {
                     path,
+                    package,
                     max_size,
                     max_age,
                     dry_run,
                     output_format,
                 } => Command::CacheGc {
                     path,
+                    package,
                     max_size,
                     max_age,
                     dry_run,

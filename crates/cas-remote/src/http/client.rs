@@ -5,16 +5,17 @@ use crate::client::is_valid_header_value;
 use crate::config::{Credentials, RemoteConfig, RemoteProtocol};
 use crate::error::{Error, Result};
 use cuenv_cas::Digest;
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
-use reqwest::{Client, Method, RequestBuilder, StatusCode, Url, redirect};
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue, LOCATION};
+use reqwest::{Client, Method, RequestBuilder, Response, StatusCode, Url, redirect};
 
-/// Maximum redirects allowed within the configured origin.
-const MAX_SAME_ORIGIN_REDIRECTS: usize = 5;
+/// Maximum requests made in one same-origin redirect chain.
+const MAX_REDIRECT_REQUESTS: usize = 5;
 
 /// A configured HTTP client for a Bazel HTTP/REST remote cache.
 #[derive(Clone, Debug)]
 pub struct HttpRemoteClient {
     http: Client,
+    streaming_uploads: Option<Client>,
     base_url: Url,
     config: RemoteConfig,
     auth_header: Option<(HeaderName, HeaderValue)>,
@@ -46,26 +47,23 @@ impl HttpRemoteClient {
 
         let allowed_origin = Origin::from_url(&base_url);
         let redirect_policy = redirect::Policy::custom(move |attempt| {
-            if attempt.previous().len() >= MAX_SAME_ORIGIN_REDIRECTS {
-                return attempt.error("too many HTTP redirects from remote cache");
+            match validate_redirect(attempt.url(), &allowed_origin, attempt.previous().len()) {
+                Ok(()) => attempt.follow(),
+                Err(reason) => attempt.error(reason),
             }
-            let target_origin = Origin::from_url(attempt.url());
-            if target_origin != allowed_origin {
-                return attempt.error(
-                    "remote cache attempted a cross-origin HTTP redirect; refusing to forward request",
-                );
-            }
-            attempt.follow()
         });
 
-        let http = Client::builder()
-            .timeout(config.timeout)
-            .redirect(redirect_policy)
-            .build()
-            .map_err(|e| Error::connect(&config.endpoint, e.to_string()))?;
+        let http = build_http_client(&config, redirect_policy)?;
+        // reqwest can replay buffered bodies, but streamed bodies must be
+        // rebuilt by the caller if a redirect keeps the request method.
+        let streaming_uploads = config
+            .writable
+            .then(|| build_http_client(&config, redirect::Policy::none()))
+            .transpose()?;
 
         Ok(Self {
             http,
+            streaming_uploads,
             base_url,
             config,
             auth_header,
@@ -136,7 +134,43 @@ impl HttpRemoteClient {
 
     /// Construct a request with configured credentials attached.
     pub fn request(&self, method: Method, url: Url) -> RequestBuilder {
-        let mut builder = self.http.request(method, url);
+        self.authenticated_request(&self.http, method, url)
+    }
+
+    pub(super) fn streaming_put(&self, url: Url) -> Result<RequestBuilder> {
+        let http = self.streaming_uploads.as_ref().ok_or(Error::ReadOnly {
+            operation: "upload a CAS file",
+        })?;
+        Ok(self.authenticated_request(http, Method::PUT, url))
+    }
+
+    pub(super) fn put_redirect_target(
+        &self,
+        response: &Response,
+        requests_sent: usize,
+    ) -> Result<Option<Url>> {
+        if !matches!(
+            response.status(),
+            StatusCode::MOVED_PERMANENTLY
+                | StatusCode::FOUND
+                | StatusCode::TEMPORARY_REDIRECT
+                | StatusCode::PERMANENT_REDIRECT
+        ) {
+            return Ok(None);
+        }
+        let target = response
+            .headers()
+            .get(LOCATION)
+            .and_then(|location| location.to_str().ok())
+            .and_then(|location| response.url().join(location).ok())
+            .ok_or_else(|| Error::protocol("HTTP.PUT.cas", "invalid redirect location"))?;
+        validate_redirect(&target, &Origin::from_url(&self.base_url), requests_sent)
+            .map_err(|reason| Error::protocol("HTTP.PUT.cas", reason))?;
+        Ok(Some(target))
+    }
+
+    fn authenticated_request(&self, http: &Client, method: Method, url: Url) -> RequestBuilder {
+        let mut builder = http.request(method, url);
         if let Some((name, value)) = &self.auth_header {
             let mut headers = HeaderMap::with_capacity(1);
             headers.insert(name.clone(), value.clone());
@@ -177,6 +211,31 @@ impl HttpRemoteClient {
             }),
         }
     }
+}
+
+fn build_http_client(config: &RemoteConfig, policy: redirect::Policy) -> Result<Client> {
+    Client::builder()
+        .timeout(config.timeout)
+        .redirect(policy)
+        .build()
+        .map_err(|e| Error::connect(&config.endpoint, e.to_string()))
+}
+
+fn validate_redirect(
+    target: &Url,
+    allowed_origin: &Origin,
+    requests_sent: usize,
+) -> std::result::Result<(), &'static str> {
+    if requests_sent >= MAX_REDIRECT_REQUESTS {
+        return Err("too many HTTP redirects from remote cache");
+    }
+    if &Origin::from_url(target) != allowed_origin {
+        return Err("remote cache attempted a cross-origin HTTP redirect");
+    }
+    if !target.username().is_empty() || target.password().is_some() {
+        return Err("remote cache redirected to a URL containing credentials");
+    }
+    Ok(())
 }
 
 /// Render a `reqwest::Error` together with its underlying cause chain so
@@ -259,6 +318,19 @@ fn build_auth_header(credentials: &Credentials) -> Result<Option<(HeaderName, He
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn same_origin_redirects_share_one_request_limit()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let url = Url::parse("https://cache.example.test/cas/digest")?;
+        let origin = Origin::from_url(&url);
+        assert!(validate_redirect(&url, &origin, MAX_REDIRECT_REQUESTS - 1).is_ok());
+        assert_eq!(
+            validate_redirect(&url, &origin, MAX_REDIRECT_REQUESTS),
+            Err("too many HTTP redirects from remote cache")
+        );
+        Ok(())
+    }
 
     #[test]
     fn cas_and_ac_urls_preserve_prefix_and_instance() {

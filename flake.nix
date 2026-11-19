@@ -569,7 +569,10 @@
         nextest-check = craneLib.cargoNextest (workspaceCheckArgs // ciBuildArgs // {
           cargoArtifacts = workspaceCiCargoArtifacts;
           cargoExtraArgs = workspaceAllFeaturesCargoExtraArgs;
-          nativeBuildInputs = commonArgs.nativeBuildInputs ++ [ pkgs.fish pkgs.zsh pkgs.powershell ];
+          nativeBuildInputs =
+            commonArgs.nativeBuildInputs
+            ++ [ pkgs.fish pkgs.zsh pkgs.powershell ]
+            ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.util-linux ];
           CUENV_TEST_PWSH = "${pkgs.powershell}/bin/pwsh";
           # Hook supervisor tests must exercise the CLI instead of passing when
           # an independently built binary is unavailable. They take the one

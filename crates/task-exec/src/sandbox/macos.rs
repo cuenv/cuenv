@@ -4,7 +4,7 @@
 //! under a deny-by-default Seatbelt profile, with `publish_eligible = false`
 //! until native macOS validation is completed.
 
-use super::{StrictSandboxProof, compute_policy_digest};
+use super::{NetworkPolicy, StrictSandboxOptions, StrictSandboxProof, compute_policy_digest};
 use cuenv_core::{Error, Result};
 use std::path::Path;
 use tokio::process::Command;
@@ -12,7 +12,8 @@ use tokio::process::Command;
 const SANDBOX_EXEC_BIN: &str = "/usr/bin/sandbox-exec";
 
 /// Probe whether `/usr/bin/sandbox-exec` is available on this macOS host.
-pub(crate) fn probe(network_allowed: bool) -> std::result::Result<StrictSandboxProof, String> {
+pub(crate) fn probe(network: NetworkPolicy) -> std::result::Result<StrictSandboxProof, String> {
+    let network_allowed = network == NetworkPolicy::Allowed;
     if !Path::new(SANDBOX_EXEC_BIN).exists() {
         return Err(format!("{SANDBOX_EXEC_BIN} not found"));
     }
@@ -45,14 +46,16 @@ pub(crate) struct MacosSandboxPlan {
 }
 
 impl MacosSandboxPlan {
-    pub(crate) fn prepare(
-        exec_root: &Path,
-        _workdir: &Path,
-        task_tmp: &Path,
-        task_home: &Path,
-        network_allowed: bool,
-    ) -> Result<(Self, StrictSandboxProof)> {
-        let proof = probe(network_allowed).map_err(Error::configuration)?;
+    pub(crate) fn prepare(options: StrictSandboxOptions<'_>) -> Result<(Self, StrictSandboxProof)> {
+        let StrictSandboxOptions {
+            exec_root,
+            workdir: _,
+            task_tmp,
+            task_home,
+            network,
+        } = options;
+        let network_allowed = network == NetworkPolicy::Allowed;
+        let proof = probe(network).map_err(Error::configuration)?;
 
         let exec_root_escaped = escape_seatbelt_path(exec_root);
         let tmp_escaped = escape_seatbelt_path(task_tmp);

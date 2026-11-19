@@ -174,100 +174,108 @@ impl GitHubActionsEmitter {
         }
     }
 
-    /// Apply remote cache environment variables and return a GitHub Environment
-    /// name when the workflow is authorized for write-capable cache credentials.
-    fn apply_remote_cache_step_env(
+    /// Apply cache settings to a step that runs the task executor. Returns the
+    /// GitHub Environment required to release a write-capable credential.
+    pub(super) fn apply_remote_cache_step_env(
         &self,
         step: &mut Step,
         ir: &IntermediateRepresentation,
+        job_environment: Option<&str>,
     ) -> Option<String> {
         let remote = self.remote_cache.as_ref()?;
         let ci = remote.ci.as_ref();
-        let isolated = ci.is_none_or(|c| c.isolated_cache_dir);
-        let protocol = match remote.protocol {
-            cuenv_core::manifest::CacheProtocol::Grpc => "grpc",
-            cuenv_core::manifest::CacheProtocol::Http => "http",
-        };
-        let auth_env_var = remote.auth.as_ref().and_then(|auth| {
+        let auth_env = remote.auth.as_ref().and_then(|auth| {
             auth.bearer_token_env
                 .as_deref()
-                .or_else(|| auth.header.as_ref().map(|h| h.value_env.as_str()))
+                .or_else(|| auth.header.as_ref().map(|header| header.value_env.as_str()))
+                .filter(|name| valid_cache_credential_env(name))
         });
 
-        let protected_trigger = ir.pipeline.trigger.as_ref().is_some_and(|t| {
-            t.pull_request != Some(true)
-                && (!t.branches.is_empty() || !t.tags.is_empty() || !t.release.is_empty())
-        });
-        let write_secret = ci.and_then(|c| c.write_secret.as_deref());
-        let write_env = ci.and_then(|c| c.write_environment.as_deref());
-
-        if remote.upload
-            && protected_trigger
-            && let (Some(secret), Some(env_name)) = (write_secret, write_env)
-        {
-            step.env
-                .insert("CUENV_REMOTE_CACHE".to_string(), remote.endpoint.clone());
-            step.env.insert(
-                "CUENV_REMOTE_CACHE_PROTOCOL".to_string(),
-                protocol.to_string(),
-            );
-            if !remote.instance.is_empty() {
-                step.env.insert(
-                    "CUENV_REMOTE_CACHE_INSTANCE".to_string(),
-                    remote.instance.clone(),
-                );
-            }
-            step.env
-                .insert("CUENV_REMOTE_CACHE_UPLOAD".to_string(), "true".to_string());
-            if let Some(var) = auth_env_var {
-                step.env
-                    .insert(var.to_string(), format!("${{{{ secrets.{secret} }}}}"));
-            }
-            if isolated {
-                step.env.insert(
-                    "CUENV_CACHE_DIR".to_string(),
-                    "${{ runner.temp }}/cuenv-cache/trusted".to_string(),
-                );
-            }
-            return Some(env_name.to_string());
+        if let Some(name) = auth_env {
+            step.env.shift_remove(name);
         }
 
-        // Untrusted / PR / read-only path: never expose write credentials or
-        // write environments.
-        if let Some(read_secret) = ci.and_then(|c| c.read_secret.as_deref()) {
-            step.env
-                .insert("CUENV_REMOTE_CACHE".to_string(), remote.endpoint.clone());
-            step.env.insert(
-                "CUENV_REMOTE_CACHE_PROTOCOL".to_string(),
-                protocol.to_string(),
-            );
-            if !remote.instance.is_empty() {
-                step.env.insert(
-                    "CUENV_REMOTE_CACHE_INSTANCE".to_string(),
-                    remote.instance.clone(),
-                );
-            }
-            step.env
-                .insert("CUENV_REMOTE_CACHE_UPLOAD".to_string(), "false".to_string());
-            if let Some(var) = auth_env_var {
-                step.env
-                    .insert(var.to_string(), format!("${{{{ secrets.{read_secret} }}}}"));
-            }
+        let protected_trigger = ir.pipeline.trigger.as_ref().is_some_and(|trigger| {
+            trigger.pull_request != Some(true)
+                && trigger.scheduled.is_empty()
+                && trigger.manual.as_ref().is_none_or(|manual| !manual.enabled)
+                && (!trigger.branches.is_empty()
+                    || !trigger.tags.is_empty()
+                    || !trigger.release.is_empty())
+        });
+        let write_secret = ci.and_then(|ci| ci.write_secret.as_deref());
+        let write = if remote.upload && protected_trigger {
+            write_secret
+                .filter(|secret| valid_identifier(secret))
+                .zip(ci.and_then(|ci| ci.write_environment.as_deref()))
+                .filter(|(_, environment)| {
+                    !environment.is_empty()
+                        && job_environment.is_none_or(|existing| existing == *environment)
+                })
         } else {
-            // No read-only credential configured: disable remote cache on untrusted jobs.
-            step.env
-                .insert("CUENV_REMOTE_CACHE".to_string(), String::new());
-            step.env
-                .insert("CUENV_REMOTE_CACHE_UPLOAD".to_string(), "false".to_string());
-        }
+            None
+        };
 
-        if isolated {
+        let secret = write.map(|(secret, _)| secret).or_else(|| {
+            ci.and_then(|ci| ci.read_secret.as_deref()).filter(|read| {
+                valid_identifier(read)
+                    && !write_secret.is_some_and(|write| read.eq_ignore_ascii_case(write))
+            })
+        });
+        let Some((secret, variable)) = secret.zip(auth_env) else {
+            self.disable_remote_cache_step_env(step);
+            return None;
+        };
+
+        step.env
+            .insert("CUENV_REMOTE_CACHE".into(), remote.endpoint.clone());
+        step.env.insert(
+            "CUENV_REMOTE_CACHE_PROTOCOL".into(),
+            match remote.protocol {
+                cuenv_core::manifest::CacheProtocol::Grpc => "grpc",
+                cuenv_core::manifest::CacheProtocol::Http => "http",
+            }
+            .into(),
+        );
+        step.env.insert(
+            "CUENV_REMOTE_CACHE_INSTANCE".into(),
+            remote.instance.clone(),
+        );
+        step.env.insert(
+            "CUENV_REMOTE_CACHE_UPLOAD".into(),
+            write.is_some().to_string(),
+        );
+        step.env
+            .insert(variable.to_string(), format!("${{{{ secrets.{secret} }}}}"));
+
+        if ci.is_none_or(|ci| ci.isolated_cache_dir) {
+            let cache_dir = if write.is_some() {
+                "trusted"
+            } else {
+                "untrusted"
+            };
             step.env.insert(
-                "CUENV_CACHE_DIR".to_string(),
-                "${{ runner.temp }}/cuenv-cache/untrusted".to_string(),
+                "CUENV_CACHE_DIR".into(),
+                format!("${{{{ runner.temp }}}}/cuenv-cache/{cache_dir}"),
             );
         }
-        None
+        write.map(|(_, environment)| environment.to_string())
+    }
+
+    /// Disable inherited cache settings for commands outside the task executor.
+    pub(super) fn disable_remote_cache_step_env(&self, step: &mut Step) {
+        let Some(remote) = &self.remote_cache else {
+            return;
+        };
+        step.env.insert("CUENV_REMOTE_CACHE".into(), String::new());
+        step.env
+            .insert("CUENV_REMOTE_CACHE_UPLOAD".into(), "false".into());
+        if remote.ci.as_ref().is_none_or(|ci| ci.isolated_cache_dir) {
+            step.env.insert(
+                "CUENV_CACHE_DIR".into(),
+                "${{ runner.temp }}/cuenv-cache/untrusted".into(),
+            );
+        }
     }
 
     /// Create an emitter from a `GitHubConfig` manifest configuration.
@@ -428,7 +436,7 @@ impl GitHubActionsEmitter {
     ) -> EmitterResult<(String, String)> {
         let workflow_name = Self::build_workflow_name(ir);
         let filename = format!("{}.yml", sanitize_filename(&workflow_name));
-        let yaml = self.emit_thin_with(ir, command)?;
+        let yaml = self.emit_thin_with(ir, command, TaskExecution::Direct)?;
         Ok((filename, yaml))
     }
 
@@ -436,6 +444,7 @@ impl GitHubActionsEmitter {
         &self,
         ir: &IntermediateRepresentation,
         command: &CommandWorkflow<'_>,
+        cache_execution: TaskExecution,
     ) -> EmitterResult<String> {
         use crate::workflow::stage_renderer::GitHubStageRenderer;
 
@@ -507,7 +516,18 @@ impl GitHubActionsEmitter {
 
         // Apply remote cache trust boundaries (separate RO/RW credentials,
         // GitHub Environment gating for writes, isolated runner cache dirs).
-        let cache_write_environment = self.apply_remote_cache_step_env(&mut main_step, ir);
+        let job_environment = command
+            .job_environment
+            .or(ir.pipeline.environment.as_deref());
+        let cache_write_environment = match cache_execution {
+            TaskExecution::Orchestrated => {
+                self.apply_remote_cache_step_env(&mut main_step, ir, job_environment)
+            }
+            TaskExecution::Direct => {
+                self.disable_remote_cache_step_env(&mut main_step);
+                None
+            }
+        };
 
         steps.push(main_step);
         steps.extend(command.follow_up_steps.iter().cloned());
@@ -526,10 +546,8 @@ impl GitHubActionsEmitter {
             steps.push(step);
         }
 
-        let environment = command
-            .job_environment
+        let environment = job_environment
             .map(str::to_string)
-            .or_else(|| ir.pipeline.environment.clone())
             .or(cache_write_environment);
 
         // Build single job
@@ -856,10 +874,11 @@ impl GitHubActionsEmitter {
             let mut job = self.build_simple_job(
                 task,
                 ir,
-                &SimpleJobOptions::orchestrated(
-                    ir.pipeline.environment.as_deref(),
-                    None, // project_path - not used in single-project mode
-                ),
+                &if task.github_execution == Some(cuenv_core::ci::TaskGitHubExecution::Direct) {
+                    SimpleJobOptions::direct(None)
+                } else {
+                    SimpleJobOptions::orchestrated(ir.pipeline.environment.as_deref(), None)
+                },
             );
 
             // Apply additional job configuration from task
@@ -873,11 +892,6 @@ impl GitHubActionsEmitter {
 
             // Map task dependencies to sanitized job IDs
             job.needs = task.depends_on.iter().map(|d| sanitize_job_id(d)).collect();
-
-            // Handle manual approval via environment
-            if task.manual_approval {
-                job.environment = Some(Environment::Name(self.approval_environment.clone()));
-            }
 
             // Handle concurrency group
             if let Some(group) = &task.concurrency_group {
@@ -937,6 +951,7 @@ impl Emitter for GitHubActionsEmitter {
                 leading_steps: &[],
                 additional_permissions: &[],
             },
+            TaskExecution::Orchestrated,
         )
     }
 
@@ -991,6 +1006,26 @@ impl Emitter for GitHubActionsEmitter {
 }
 
 /// Sanitize a string for use as a workflow filename
+fn valid_identifier(name: &str) -> bool {
+    let mut bytes = name.bytes();
+    bytes
+        .next()
+        .is_some_and(|byte| byte == b'_' || byte.is_ascii_alphabetic())
+        && bytes.all(|byte| byte == b'_' || byte.is_ascii_alphanumeric())
+}
+
+fn valid_cache_credential_env(name: &str) -> bool {
+    valid_identifier(name)
+        && !matches!(
+            name,
+            "CUENV_REMOTE_CACHE"
+                | "CUENV_REMOTE_CACHE_PROTOCOL"
+                | "CUENV_REMOTE_CACHE_INSTANCE"
+                | "CUENV_REMOTE_CACHE_UPLOAD"
+                | "CUENV_CACHE_DIR"
+        )
+}
+
 fn sanitize_filename(name: &str) -> String {
     name.to_lowercase()
         .replace(' ', "-")

@@ -9,6 +9,7 @@ use cuenv_cas_remote::{
 };
 use prost::Message as _;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
@@ -19,9 +20,16 @@ struct MockState {
     ac: HashMap<String, Vec<u8>>,
     required_auth: Option<(String, String)>,
     redirect_to: Option<String>,
+    put_redirects: HashMap<String, PutRedirect>,
     corrupt_cas: bool,
     oversized_ac: bool,
     seen_paths: Vec<String>,
+}
+
+struct PutRedirect {
+    status: &'static str,
+    location: String,
+    rewrite: Option<(PathBuf, Vec<u8>)>,
 }
 
 async fn spawn_mock_http_server(state: Arc<Mutex<MockState>>) -> std::io::Result<String> {
@@ -93,6 +101,19 @@ async fn handle_connection(mut stream: tokio::net::TcpStream, state: Arc<Mutex<M
             && headers.get(&name.to_ascii_lowercase()) != Some(expected)
         {
             ("401 Unauthorized", String::new(), b"unauthorized".to_vec())
+        } else if method == "PUT"
+            && let Some(redirect) = guard.put_redirects.get(&path)
+        {
+            if let Some((source, bytes)) = &redirect.rewrite
+                && std::fs::write(source, bytes).is_err()
+            {
+                return;
+            }
+            (
+                redirect.status,
+                format!("Location: {}\r\n", redirect.location),
+                Vec::new(),
+            )
         } else if let Some((_, hash)) = path.rsplit_once("/cas/") {
             match method.as_str() {
                 "HEAD" => {
@@ -357,4 +378,162 @@ async fn http_remote_integrates_with_layered_read_through_cache() {
     );
     assert_eq!(layered_cas.get(&digest).await.expect("cas"), payload);
     assert!(local_cas.contains(&digest).await.expect("promoted locally"));
+}
+
+#[tokio::test]
+async fn http_put_file_round_trips_large_artifact() -> Result<(), Box<dyn std::error::Error>> {
+    let state = Arc::new(Mutex::new(MockState::default()));
+    let base = spawn_mock_http_server(state).await?;
+    let client = HttpRemoteClient::new(
+        RemoteConfig::new(base)
+            .with_protocol(RemoteProtocol::Http)
+            .writable(),
+    )?;
+    let cas = HttpCas::new(client);
+    let temp = tempfile::tempdir()?;
+    let source = temp.path().join("artifact.bin");
+    let payload = vec![0xa5; 5 * 1024 * 1024];
+    std::fs::write(&source, &payload)?;
+
+    let digest = cas.put_file(&source).await?;
+    assert_eq!(digest, Digest::of_bytes(&payload));
+    let restored = temp.path().join("restored.bin");
+    cas.get_to_file(&digest, &restored).await?;
+    assert_eq!(std::fs::read(restored)?, payload);
+    Ok(())
+}
+
+#[tokio::test]
+async fn http_put_file_replays_same_origin_redirects() -> Result<(), Box<dyn std::error::Error>> {
+    let payload = b"artifact";
+    let digest = Digest::of_bytes(payload);
+    let original = format!("/cas/{}", digest.hash);
+    let redirected = format!("/intermediate/cas/{}", digest.hash);
+    let final_path = format!("/backend/cas/{}", digest.hash);
+    let state = Arc::new(Mutex::new(MockState {
+        required_auth: Some(("x-cache-token".into(), "redirect-token".into())),
+        put_redirects: HashMap::from([
+            (
+                original.clone(),
+                PutRedirect {
+                    status: "307 Temporary Redirect",
+                    location: redirected.clone(),
+                    rewrite: None,
+                },
+            ),
+            (
+                redirected.clone(),
+                PutRedirect {
+                    status: "308 Permanent Redirect",
+                    location: final_path.clone(),
+                    rewrite: None,
+                },
+            ),
+        ]),
+        ..Default::default()
+    }));
+    let base = spawn_mock_http_server(Arc::clone(&state)).await?;
+    let cas = HttpCas::new(HttpRemoteClient::new(
+        RemoteConfig::new(base)
+            .with_protocol(RemoteProtocol::Http)
+            .with_credentials(Credentials::Header {
+                name: "x-cache-token".into(),
+                value: "redirect-token".into(),
+            })
+            .writable(),
+    )?);
+    let temp = tempfile::tempdir()?;
+    let source = temp.path().join("artifact");
+    std::fs::write(&source, payload)?;
+
+    assert_eq!(cas.put_file(&source).await?, digest);
+    let state = state.lock().expect("lock");
+    assert_eq!(
+        state.seen_paths,
+        [
+            format!("PUT {original}"),
+            format!("PUT {redirected}"),
+            format!("PUT {final_path}"),
+        ],
+    );
+    assert_eq!(state.cas[&digest.hash], payload);
+    Ok(())
+}
+
+#[tokio::test]
+async fn http_put_file_refuses_changed_source_on_redirect() -> Result<(), Box<dyn std::error::Error>>
+{
+    let temp = tempfile::tempdir()?;
+    let source = temp.path().join("artifact");
+    let initial = vec![0x61; 128 * 1024];
+    let mut changed = initial.clone();
+    changed[0] = 0x62;
+    let digest = Digest::of_bytes(&initial);
+    let original = format!("/cas/{}", digest.hash);
+    let redirected = format!("/backend/cas/{}", digest.hash);
+    std::fs::write(&source, &initial)?;
+    let state = Arc::new(Mutex::new(MockState {
+        put_redirects: HashMap::from([(
+            original.clone(),
+            PutRedirect {
+                status: "307 Temporary Redirect",
+                location: redirected,
+                rewrite: Some((source.clone(), changed)),
+            },
+        )]),
+        ..Default::default()
+    }));
+    let base = spawn_mock_http_server(Arc::clone(&state)).await?;
+    let cas = HttpCas::new(HttpRemoteClient::new(
+        RemoteConfig::new(base)
+            .with_protocol(RemoteProtocol::Http)
+            .writable(),
+    )?);
+
+    let error = cas.put_file(&source).await.expect_err("source changed");
+    assert!(error.to_string().contains("digest mismatch"), "{error}");
+    let state = state.lock().expect("lock");
+    assert_eq!(state.seen_paths, [format!("PUT {original}")]);
+    assert!(state.cas.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn http_put_file_refuses_cross_origin_redirect() -> Result<(), Box<dyn std::error::Error>> {
+    let destination = Arc::new(Mutex::new(MockState::default()));
+    let destination_base = spawn_mock_http_server(Arc::clone(&destination)).await?;
+    let payload = b"artifact";
+    let digest = Digest::of_bytes(payload);
+    let state = Arc::new(Mutex::new(MockState {
+        put_redirects: HashMap::from([(
+            format!("/cas/{}", digest.hash),
+            PutRedirect {
+                status: "308 Permanent Redirect",
+                location: format!("{destination_base}/cas/{}", digest.hash),
+                rewrite: None,
+            },
+        )]),
+        ..Default::default()
+    }));
+    let base = spawn_mock_http_server(state).await?;
+    let cas = HttpCas::new(HttpRemoteClient::new(
+        RemoteConfig::new(base)
+            .with_protocol(RemoteProtocol::Http)
+            .with_credentials(Credentials::Bearer("redirect-token".into()))
+            .writable(),
+    )?);
+    let temp = tempfile::tempdir()?;
+    let source = temp.path().join("artifact");
+    std::fs::write(&source, payload)?;
+
+    let error = cas
+        .put_file(&source)
+        .await
+        .expect_err("cross-origin redirect");
+    assert!(error.to_string().contains("cross-origin"), "{error}");
+    assert_eq!(
+        destination.lock().expect("lock").seen_paths,
+        Vec::<String>::new(),
+    );
+    Ok(())
 }

@@ -40,7 +40,8 @@ strictly local and publishes to the remote cache only through a dedicated
 post-run publisher after **all** of the following hold:
 
 1. The task ran under validated Linux strict OS confinement (`sandbox: "strict"`
-   or `sandbox: "auto"` without fallback, with network isolation enabled).
+   or `sandbox: "auto"` without fallback), with network isolation enabled and
+   a verified read-only runtime image.
 2. The task exited with status `0` and all descendants were reaped.
 3. Output projection into the workspace succeeded.
 4. The task environment contains no project secrets.
@@ -50,6 +51,20 @@ The publisher uploads the `Command`, `Action`, stdout/stderr logs, output files,
 and nested `Tree` leaf blobs before updating `ActionResult` last. Cache hits,
 failed launches, network-enabled tasks, non-strict runs, and macOS prototype
 runs never write to the remote cache.
+
+### Provision a Linux runtime image
+
+On each publishing runner, mount an operator-managed SquashFS or EROFS image and
+set `CUENV_SANDBOX_RUNTIME_ROOT` to its absolute mount directory. Build the image
+with the tools, interpreters, and shared libraries used by the task at their
+sandbox paths. cuenv mounts the supported runtime paths from this image,
+including `/usr`, `/bin`, `/lib`, `/lib64`, and `/nix/store`, and includes their
+content digest in each action key. Use the same immutable image across runners
+that share results. Commands resolve using the task’s path inside the image.
+Linux strict runs backed by the host runtime use invocation-scoped cache keys.
+Linux runners must permit unprivileged namespaces and mounting the runtime in the sandbox.
+If the capability check fails, `sandbox: "strict"` rejects the task and
+`sandbox: "auto"` falls back to a directory sandbox.
 
 ## HTTP/REST protocol
 
@@ -73,6 +88,9 @@ URL prefix alone for tenant isolation. Object stores (S3, GCS, R2) are
 supported behind a proxy that implements the Bazel HTTP/REST cache contract.
 Credentialed redirects are restricted to the configured origin.
 
+HTTP file uploads stream from disk. gRPC uses ByteStream for blobs that
+would exceed the negotiated batch size after accounting for request overhead.
+
 ## Environment overrides
 
 CI usually should not hard-code an endpoint in CUE:
@@ -81,6 +99,7 @@ CI usually should not hard-code an endpoint in CUE:
 | --- | --- |
 | `CUENV_REMOTE_CACHE` | Sets or replaces the endpoint. Empty **disables** the remote. |
 | `CUENV_REMOTE_CACHE_PROTOCOL` | Sets or replaces the transport protocol (`grpc` or `http`). |
+| `CUENV_REMOTE_CACHE_INSTANCE` | Sets the remote instance. An empty value clears it. |
 | `CUENV_REMOTE_CACHE_UPLOAD` | `true`/`false` override for post-run publication (still gated on strict confinement). |
 | `CUENV_CACHE` | `off`, `read`, `write`, or `read-write` — narrows every task's cache mode for one run. A permission applies only when the task's own mode also grants it. |
 
@@ -121,17 +140,24 @@ cache: remote: {
 }
 ```
 
-Set exactly one of `bearerTokenEnv` and `header`; setting both is a CUE
-evaluation error. Before 0.56.8, a project that embedded `schema.#Project`
-(a bare `schema.#Project` line rather than `schema.#Project & {…}`) lost its
-`auth` value during evaluation, so the remote cache ran without credentials;
-upgrade if your remote cache rejected authenticated reads.
+Set exactly one of `bearerTokenEnv` and `header`. Use a dedicated environment
+variable for the cache credential.
 
-When `ci` is configured, generated GitHub Actions and Buildkite workflows
-enforce trust at the credential-issuance boundary: pull-request jobs receive
-only `readSecret` (or disable remote access when omitted) and an isolated
-`untrusted` local cache directory, while protected-branch jobs use
-`writeEnvironment` / `writeQueue` to access `writeSecret`.
+Both `cuenv task` and `cuenv ci` use the project’s remote cache. An external
+dependency project uses the local cache. Cache credentials stay with the cuenv
+process. Action keys, task environments, CI hooks, runtime and tool setup, and
+bundled secret resolver commands omit these variables.
+
+Configure GitHub’s `writeEnvironment` with deployment restrictions for trusted
+refs and store the write secret in that environment. A job declaring a different
+environment retains its existing environment and uses the read-only cache policy.
+
+Buildkite requires agent 3.106 or newer for step-level secrets. Configure the
+write secret’s access policy for the trusted pipeline, refs, and `writeQueue`.
+Trusted webhook builds must match an explicitly named branch or tag. Use
+separate runners or isolate both processes and cache storage across trust
+levels. Pull requests and other untrusted
+triggers use `readSecret`, or disable the remote when the read secret is omitted.
 
 If the named variable is unset, cuenv warns and may continue with anonymous
 reads, but configured authentication never silently becomes an anonymous
@@ -155,10 +181,14 @@ cuenv cache gc --max-size 10G --dry-run # Preview LRU/age eviction (preserves ne
 cuenv cache prune                       # Sweep unreferenced CAS blobs and stale tmp/ dirs
 ```
 
+Garbage collection defaults to the selected project’s `cache.local.maxSize`.
+Pass `--package` to select the CUE package or `--max-size` to override its limit.
+
 All `cuenv cache` commands accept `--output json` for scripting. `gc` and
 `prune` traverse transitive `Tree` references for every surviving `ActionCache`
-entry and protect freshly written blobs within a 10-minute grace window so
-concurrent tasks are never disrupted.
+entry and protect recently written blobs with a 10-minute grace window.
+Destructive maintenance returns a busy error while a cache transaction is active.
+Retry once the active cache work finishes.
 
 ## What happens when the cache is unreachable
 

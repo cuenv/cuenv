@@ -22,9 +22,12 @@ pub enum TaskAttempt {
 pub struct ProcessOptions {
     pub(super) capture_output: OutputCapture,
     pub(super) timeout: Option<Duration>,
-    /// Bind stdin to `/dev/null` and close inherited non-stdio file descriptors
-    /// (`>= 3`) in `pre_exec`. Enabled for hermetic / confined runs.
+    /// Bind stdin to `/dev/null` and mark inherited non-stdio file descriptors
+    /// (`>= 3`) close-on-exec. Enabled for hermetic and confined runs.
     pub(super) isolate_stdio_and_fds: bool,
+    /// Control socket supplied as the Linux sandbox launcher’s standard input.
+    pub(super) launcher_stdin: Option<Stdio>,
+    pub(super) launcher_exchange: Option<super::sandbox::SandboxExchange>,
 }
 
 /// Run a host task process in captured or inherited-output mode.
@@ -34,38 +37,27 @@ pub async fn run_task_process(
     options: ProcessOptions,
 ) -> Result<TaskAttempt> {
     if options.capture_output.should_capture() {
-        run_captured_process(
-            name,
-            command,
-            options.timeout,
-            options.isolate_stdio_and_fds,
-        )
-        .await
+        run_captured_process(name, command, options).await
     } else {
-        run_inherited_process(
-            name,
-            command,
-            options.timeout,
-            options.isolate_stdio_and_fds,
-        )
-        .await
+        run_inherited_process(name, command, options).await
     }
 }
 
 async fn run_captured_process(
     name: &str,
     mut command: Command,
-    timeout: Option<Duration>,
-    isolate_stdio_and_fds: bool,
+    options: ProcessOptions,
 ) -> Result<TaskAttempt> {
     use tokio::io::{AsyncBufReadExt, BufReader};
 
     let start_time = std::time::Instant::now();
 
     #[cfg(unix)]
-    setup_process_group(&mut command, isolate_stdio_and_fds);
+    setup_process_group(&mut command, &options);
 
-    if isolate_stdio_and_fds {
+    if let Some(stdin) = options.launcher_stdin {
+        command.stdin(stdin);
+    } else if options.isolate_stdio_and_fds {
         command.stdin(Stdio::null());
     }
 
@@ -111,7 +103,16 @@ async fn run_captured_process(
         lines
     });
 
-    let status = match wait_or_terminate(name, &mut child, timeout).await? {
+    let status = match wait_or_terminate(
+        name,
+        &mut child,
+        WaitOptions {
+            timeout: options.timeout,
+            exchange: options.launcher_exchange,
+        },
+    )
+    .await?
+    {
         WaitOutcome::Exited(status) => {
             // Reap any lingering background descendants in the task's process
             // group before collecting outputs or publishing cache entries.
@@ -168,13 +169,14 @@ async fn run_captured_process(
 async fn run_inherited_process(
     name: &str,
     mut command: Command,
-    timeout: Option<Duration>,
-    isolate_stdio_and_fds: bool,
+    options: ProcessOptions,
 ) -> Result<TaskAttempt> {
     #[cfg(unix)]
-    setup_process_group(&mut command, isolate_stdio_and_fds);
+    setup_process_group(&mut command, &options);
 
-    let stdin = if isolate_stdio_and_fds {
+    let stdin = if let Some(stdin) = options.launcher_stdin {
+        stdin
+    } else if options.isolate_stdio_and_fds {
         Stdio::null()
     } else {
         Stdio::inherit()
@@ -195,7 +197,16 @@ async fn run_inherited_process(
     }
 
     let start_time = std::time::Instant::now();
-    let status = match wait_or_terminate(name, &mut child, timeout).await? {
+    let status = match wait_or_terminate(
+        name,
+        &mut child,
+        WaitOptions {
+            timeout: options.timeout,
+            exchange: options.launcher_exchange,
+        },
+    )
+    .await?
+    {
         WaitOutcome::Exited(status) => {
             reap_process_group(child_pid).await;
             status
@@ -242,23 +253,41 @@ enum WaitOutcome {
     TimedOut(Duration),
 }
 
+struct WaitOptions {
+    timeout: Option<Duration>,
+    exchange: Option<super::sandbox::SandboxExchange>,
+}
+
 /// Wait for `child` to exit, terminating its whole process group if `timeout`
 /// elapses first. This is the single place both capture modes share their
 /// timeout handling, so the SIGTERM/SIGKILL ladder lives in exactly one path.
 async fn wait_or_terminate(
     name: &str,
     child: &mut tokio::process::Child,
-    timeout: Option<Duration>,
+    options: WaitOptions,
 ) -> Result<WaitOutcome> {
-    let Some(timeout) = timeout else {
-        let status = child
-            .wait()
+    let wait = async {
+        if let Some(exchange) = options.exchange {
+            tokio::select! {
+                status = child.wait() => return status,
+                transferred = exchange => {
+                    if let Err(error) = transferred {
+                        tracing::debug!(task = %name, %error, "strict sandbox launch exchange ended");
+                    }
+                }
+            }
+        }
+        child.wait().await
+    };
+
+    let Some(timeout) = options.timeout else {
+        let status = wait
             .await
             .map_err(|e| Error::io(format!("wait for task {name}"), e))?;
         return Ok(WaitOutcome::Exited(status));
     };
 
-    if let Ok(status) = tokio::time::timeout(timeout, child.wait()).await {
+    if let Ok(status) = tokio::time::timeout(timeout, wait).await {
         let status = status.map_err(|e| Error::io(format!("wait for task {name}"), e))?;
         Ok(WaitOutcome::Exited(status))
     } else {
@@ -319,11 +348,11 @@ async fn reap_process_group(child_pid: Option<u32>) {
         if !process_group_alive(pgid) {
             return;
         }
-        // SAFETY: The child was placed in its own process group by `setup_process_group`.
         #[expect(
             unsafe_code,
             reason = "Required to terminate lingering task descendants"
         )]
+        // SAFETY: The child was placed in its own process group by `setup_process_group`.
         unsafe {
             libc::kill(-pgid, libc::SIGTERM);
         }
@@ -333,11 +362,11 @@ async fn reap_process_group(child_pid: Option<u32>) {
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        // SAFETY: Escalate to SIGKILL for stubborn descendants.
         #[expect(
             unsafe_code,
             reason = "Required to terminate lingering task descendants"
         )]
+        // SAFETY: Escalate to SIGKILL for stubborn descendants.
         unsafe {
             libc::kill(-pgid, libc::SIGKILL);
         }
@@ -403,21 +432,21 @@ async fn terminate_child(child: &mut tokio::process::Child, child_pid: Option<u3
 
 /// Set up process group on Unix so we can kill the entire process tree on Ctrl-C
 /// and reap lingering descendants on exit. When `close_extra_fds` is `true`,
-/// closes all inherited non-stdio file descriptors (`>= 3`) using strictly
-/// async-signal-safe syscalls.
+/// marks inherited non-stdio file descriptors (`>= 3`) close-on-exec.
 #[cfg(unix)]
-fn setup_process_group(cmd: &mut Command, close_extra_fds: bool) {
-    // SAFETY: the child-side pre-exec closure only calls async-signal-safe
-    // `setpgid` and `close`/`close_range`; it never allocates or acquires locks.
+fn setup_process_group(cmd: &mut Command, options: &ProcessOptions) {
+    let close_extra_fds = options.isolate_stdio_and_fds;
     #[expect(
         unsafe_code,
         reason = "Required for POSIX process group and FD hygiene"
     )]
+    // SAFETY: the child-side pre-exec closure only calls async-signal-safe
+    // `setpgid`, `close_range`, and `fcntl`.
     unsafe {
         cmd.pre_exec(move || {
             libc::setpgid(0, 0);
             if close_extra_fds {
-                close_non_stdio_fds();
+                mark_non_stdio_fds_close_on_exec()?;
             }
             Ok(())
         });
@@ -429,13 +458,16 @@ fn setup_process_group(cmd: &mut Command, close_extra_fds: bool) {
     unsafe_code,
     reason = "Required for async-signal-safe FD closing after fork"
 )]
-fn close_non_stdio_fds() {
+fn mark_non_stdio_fds_close_on_exec() -> std::io::Result<()> {
+    // SAFETY: Each call handles scalar descriptor numbers or initializes a live stack limit.
     unsafe {
         #[cfg(target_os = "linux")]
         {
-            // Try close_range(3, ~0U, 0) first (Linux >= 5.9).
-            if libc::syscall(libc::SYS_close_range, 3_u32, u32::MAX, 0_u32) == 0 {
-                return;
+            // Preserve the exec-status pipe so Rust can still report a failed
+            // exec to its parent. The pipe and inherited FDs close on exec.
+            const CLOSE_RANGE_CLOEXEC: u32 = 1 << 2;
+            if libc::syscall(libc::SYS_close_range, 3_u32, u32::MAX, CLOSE_RANGE_CLOEXEC) == 0 {
+                return Ok(());
             }
         }
         let mut limit = libc::rlimit {
@@ -448,7 +480,11 @@ fn close_non_stdio_fds() {
             1024
         };
         for fd in 3..max_fd {
-            let _ = libc::close(fd);
+            let flags = libc::fcntl(fd, libc::F_GETFD);
+            if flags != -1 && libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
         }
     }
+    Ok(())
 }

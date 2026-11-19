@@ -56,6 +56,7 @@ impl CommandExecutor {
             }
             Command::CacheGc {
                 path,
+                package,
                 max_size,
                 max_age,
                 dry_run,
@@ -63,6 +64,7 @@ impl CommandExecutor {
             } => {
                 super::cache::execute_gc(super::cache::CacheGcArgs {
                     path,
+                    package,
                     format,
                     max_size,
                     max_age,

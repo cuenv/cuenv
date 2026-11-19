@@ -18,7 +18,7 @@ package schema
 
 // Local on-disk cache settings.
 #LocalCache: {
-	// Target maximum size for `cuenv cache gc` (e.g., "20GiB", "5GB").
+	// Default maximum size for `cuenv cache gc` (e.g., "20GiB", "5GB").
 	maxSize?: string
 }
 
@@ -54,6 +54,7 @@ package schema
 	// REAPI instance name. Most single-tenant servers use the empty
 	// string; multi-tenant providers use it to select a cache.
 	//
+	// Overridden by $CUENV_REMOTE_CACHE_INSTANCE.
 	// For HTTP caches, when non-empty this is appended as a path prefix before
 	// `/cas` and `/ac`; note that `bazel-remote` ignores HTTP instance names
 	// for CAS and only namespaces ActionCache keys when configured, so a URL
@@ -64,8 +65,9 @@ package schema
 	//
 	// Defaults to false. When true, cuenv publishes Action, Command, logs,
 	// outputs, and ActionResult via a dedicated post-run publisher only after
-	// a task succeeds under validated Linux strict confinement with descendants
-	// reaped, outputs projected, and no project secrets in the environment.
+	// a task succeeds under Linux strict confinement with a verified read-only
+	// runtime image, networking disabled, descendants reaped, outputs projected,
+	// and no project secrets in the environment.
 	//
 	// Overridden by $CUENV_REMOTE_CACHE_UPLOAD.
 	upload?: bool | *false

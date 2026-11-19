@@ -5,13 +5,12 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use crate::cache::TaskCacheConfig;
 use cuenv_core::lockfile::{LOCKFILE_NAME, LockedRuntime, Lockfile};
 use cuenv_core::manifest::Runtime;
 use cuenv_core::tasks::TaskCacheMode;
-use cuenv_task_exec::cache::TaskCacheConfig;
 
 use super::remote_cache;
-use crate::commands;
 
 /// Resolve the on-disk root for the local CAS + action cache.
 ///
@@ -19,11 +18,13 @@ use crate::commands;
 /// 1. `$CUENV_CACHE_DIR` (explicit override)
 /// 2. `$XDG_CACHE_HOME/cuenv` or the platform default
 /// 3. `<project>/.cuenv-cache`
+#[must_use]
 pub fn resolve_cache_root(project_root: &Path) -> PathBuf {
     if let Some(env) = std::env::var_os("CUENV_CACHE_DIR")
         && !env.is_empty()
     {
-        return PathBuf::from(env);
+        let path = PathBuf::from(env);
+        return std::path::absolute(&path).unwrap_or(path);
     }
     if let Some(d) = dirs::cache_dir() {
         return d.join("cuenv");
@@ -32,13 +33,21 @@ pub fn resolve_cache_root(project_root: &Path) -> PathBuf {
 }
 
 /// Everything `build_task_cache` needs that is not the cache's own settings.
-pub(super) struct TaskCacheContext<'context> {
+pub struct TaskCacheContext<'context> {
     /// Root of the project whose task is running.
-    pub(super) project_root: &'context Path,
+    pub project_root: &'context Path,
     /// Root of the VCS workspace, which every input is hashed below.
-    pub(super) hasher_root: &'context Path,
+    pub hasher_root: &'context Path,
     /// Runtime identity folded into every action key.
-    pub(super) runtime_identity: RuntimeCacheIdentity,
+    pub runtime_identity: RuntimeCacheIdentity,
+}
+
+/// Remote cache authorization for a run's cache.
+pub enum CacheRemote<'config> {
+    /// Use project and process configuration.
+    Configured(Option<&'config cuenv_core::manifest::Cache>),
+    /// Use only the local store, ignoring process remote overrides.
+    LocalOnly,
 }
 
 /// Construct the [`TaskCacheConfig`] used by the executor.
@@ -46,9 +55,9 @@ pub(super) struct TaskCacheContext<'context> {
 /// Returns `None` if the local CAS or action cache cannot be opened (e.g.
 /// permissions). In that case the executor falls back to the no-cache code
 /// path so the user's command still works — degraded, not broken.
-pub(super) async fn build_task_cache(
+pub async fn build_task_cache(
     context: TaskCacheContext<'_>,
-    cache_config: Option<&cuenv_core::manifest::Cache>,
+    remote: CacheRemote<'_>,
 ) -> Option<TaskCacheConfig> {
     let TaskCacheContext {
         project_root,
@@ -81,14 +90,15 @@ pub(super) async fn build_task_cache(
     // Stack a remote cache behind the local one when configured. Every
     // failure in here degrades to local-only: a cache is an optimization, so
     // an unreachable server should make a build slower, not broken.
-    let layers = if cache_off {
-        remote_cache::CacheLayers {
+    let layers = match remote {
+        CacheRemote::Configured(config) if !cache_off => {
+            remote_cache::build(config, cas, action_cache).await
+        }
+        _ => remote_cache::CacheLayers {
             cas,
             action_cache,
             publisher: None,
-        }
-    } else {
-        remote_cache::build(cache_config, cas, action_cache).await
+        },
     };
 
     // Rooted at the VCS workspace, not the project: a task may declare an
@@ -133,7 +143,7 @@ pub(super) async fn build_task_cache(
 /// poor answer when a cache is misbehaving and you want to know whether the
 /// cache is the reason. moon has `MOON_CACHE` for the same purpose.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum CacheOverride {
+enum CacheOverride {
     /// Honour each task's declared policy.
     None,
     /// Ignore the cache entirely for this run.
@@ -150,7 +160,7 @@ pub(super) enum CacheOverride {
 /// Accepts `off`/`false`/`0`, `read`, `write`, and `read-write`/`on`/`true`.
 /// An unrecognised value warns and is ignored rather than failing the run: a
 /// typo in an environment variable should not stop a build.
-pub(super) fn cache_override() -> CacheOverride {
+fn cache_override() -> CacheOverride {
     let Ok(raw) = std::env::var("CUENV_CACHE") else {
         return CacheOverride::None;
     };
@@ -177,7 +187,7 @@ pub(super) fn cache_override() -> CacheOverride {
 /// Read from `CUENV_SECRET_SALT`, the same variable the CI secret pipeline
 /// already uses. An empty value counts as unset: an empty salt would make
 /// fingerprints trivially reversible by anyone who can read the store.
-pub(super) fn secret_cache_salt() -> Option<String> {
+fn secret_cache_salt() -> Option<String> {
     std::env::var("CUENV_SECRET_SALT")
         .ok()
         .filter(|salt| !salt.is_empty())
@@ -186,25 +196,45 @@ pub(super) fn secret_cache_salt() -> Option<String> {
 /// The cache of a run, keyed with the runtime identity of another of its
 /// projects: a task run as a dependency keys its results as its own project
 /// does.
-pub(super) fn with_runtime_identity(
+pub fn local_dependency_cache(
     cache: &TaskCacheConfig,
     identity: RuntimeCacheIdentity,
-) -> TaskCacheConfig {
+) -> Option<TaskCacheConfig> {
     let mut cache = cache.clone();
+    let local = (|| {
+        Ok::<_, cuenv_cas::Error>((
+            cuenv_cas::LocalCas::open(&cache.cache_root)?,
+            cuenv_cas::LocalActionCache::open(&cache.cache_root)?,
+        ))
+    })();
+    let (cas, action_cache) = match local {
+        Ok(stores) => stores,
+        Err(error) => {
+            tracing::warn!(%error, "cannot open local cache for dependency project");
+            return None;
+        }
+    };
+    cache.cas = Arc::new(cas);
+    cache.action_cache = Arc::new(action_cache);
+    cache.publisher = None;
     cache.runtime_identity_properties = identity.properties;
     if cache_override() != CacheOverride::Off {
         cache.cache_disabled_reason = identity.cache_disabled_reason;
     }
-    cache
+    Some(cache)
 }
 
+/// Runtime metadata that affects every action key.
 #[derive(Debug, Clone, Default)]
-pub(super) struct RuntimeCacheIdentity {
-    pub(super) properties: BTreeMap<String, String>,
-    pub(super) cache_disabled_reason: Option<String>,
+pub struct RuntimeCacheIdentity {
+    properties: BTreeMap<String, String>,
+    /// Why this runtime cannot be keyed reliably.
+    pub cache_disabled_reason: Option<String>,
 }
 
-pub(super) fn resolve_runtime_cache_identity(
+/// Resolve pinned runtime identity relative to its declaring module.
+#[must_use]
+pub fn resolve_runtime_cache_identity(
     module_root: &Path,
     project_root: &Path,
     runtime: Option<&Runtime>,
@@ -240,7 +270,11 @@ pub(super) fn resolve_runtime_cache_identity(
                 }
             };
 
-            let project_path = commands::relative_path_from_root(module_root, project_root);
+            let project_path = project_root
+                .strip_prefix(module_root)
+                .ok()
+                .filter(|path| !path.as_os_str().is_empty())
+                .unwrap_or(Path::new("."));
             let project_key = project_path.to_string_lossy().into_owned();
             let Some(locked_runtime) = lockfile.find_runtime(&project_key) else {
                 identity.cache_disabled_reason = Some(format!(

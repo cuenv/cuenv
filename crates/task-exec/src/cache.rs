@@ -9,12 +9,12 @@
 //! 3. Materializing cached outputs back into the workspace on a hit.
 //! 4. Persisting outputs and metadata after a successful execution on a miss.
 
-use super::TaskCommandExt;
+use super::command_ext::command_spec_in_sandbox;
 use super::sandbox::EffectiveSandbox;
 use crate::{Sandbox, Task, TaskCacheMode, TaskCachePolicy};
 use cuenv_cas::{
-    Action, ActionCache, ActionResult, CanonicalMessage, Cas, Command, Digest, Directory,
-    DirectoryNode, ExecutionMetadata, FileNode, OutputDirectory, OutputFile, Platform,
+    Action, ActionCache, ActionResult, CacheSource, CanonicalMessage, Cas, Command, Digest,
+    Directory, DirectoryNode, ExecutionMetadata, FileNode, OutputDirectory, OutputFile, Platform,
 };
 use cuenv_core::environment::{ActionEnvironment, Environment};
 use cuenv_core::tasks::{Input, MappedInput};
@@ -389,7 +389,7 @@ pub async fn build_action_with_sandbox(
     };
     let contains_secrets = !environment.secret_names().is_empty();
 
-    let command_spec = task.command_spec(|command| environment.resolve_command(command))?;
+    let command_spec = command_spec_in_sandbox(task, environment, effective_sandbox)?;
     let mut arguments = Vec::with_capacity(1 + command_spec.args.len());
     arguments.push(command_spec.program);
     arguments.extend(command_spec.args);
@@ -775,12 +775,26 @@ pub async fn lookup(
     action_digest: &Digest,
     task: &Task,
 ) -> Result<Option<ActionResult>> {
+    Ok(lookup_with_source(cache, action_digest, task)
+        .await?
+        .map(|(result, _)| result))
+}
+
+/// Look up a viable result and the cache tier that supplied it.
+///
+/// # Errors
+/// Returns an error if the cache policy cannot be evaluated.
+pub async fn lookup_with_source(
+    cache: &TaskCacheConfig,
+    action_digest: &Digest,
+    task: &Task,
+) -> Result<Option<(ActionResult, CacheSource)>> {
     let policy = effective_policy(cache, task);
     if !policy.mode.allows_read() {
         return Ok(None);
     }
 
-    let result = match cache.action_cache.lookup(action_digest).await {
+    let (result, source) = match cache.action_cache.lookup_with_source(action_digest).await {
         Ok(Some(result)) => result,
         Ok(None) => return Ok(None),
         Err(error) => {
@@ -832,7 +846,7 @@ pub async fn lookup(
         return Ok(None);
     }
 
-    Ok(Some(result))
+    Ok(Some((result, source)))
 }
 
 fn validate_cached_result(task: &Task, result: &ActionResult) -> Result<()> {

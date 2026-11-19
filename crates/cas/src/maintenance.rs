@@ -2,12 +2,11 @@
 //! CAS + ActionCache directory.
 //!
 //! Read-only diagnostics (`stats`, `verify`) never mutate on-disk state.
-//! Destructive operations (`gc`, `prune`, `verify_and_repair`) protect both
-//! transitive references (nested `Tree` leaf blobs) and freshly written blobs
-//! within a configurable grace window whose `ActionCache` entry may still be
-//! pending.
+//! Destructive operations (`gc`, `prune`, `verify_and_repair`) hold an
+//! exclusive cache lock throughout inspection and deletion. Tasks hold a
+//! shared lock across multi-step cache use. GC also retains transitive
+//! references (nested `Tree` leaves) and honors the configured grace window.
 
-use crate::action_cache::LocalActionCache;
 use crate::cas::LocalCas;
 use crate::digest::Digest;
 use crate::error::{Error, Result};
@@ -18,10 +17,100 @@ use prost::Message as _;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use std::collections::{HashMap, HashSet};
-use std::fs;
+use std::fs::{self, File, TryLockError};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
+
+const CACHE_LOCK_FILE: &str = ".maintenance.lock";
+
+/// A lock covering a local cache operation or transaction.
+///
+/// Callers that read an action and its blobs, or write blobs and then commit
+/// their action, must hold this guard for the whole transaction.
+#[derive(Debug)]
+#[must_use]
+pub struct CacheUseGuard {
+    file: File,
+}
+
+impl CacheUseGuard {
+    /// Take a shared cache lock without waiting for concurrent maintenance.
+    ///
+    /// # Errors
+    /// Returns an error if maintenance is active or the lock file cannot be
+    /// opened. The cache root must already exist.
+    pub fn acquire(root: &Path) -> Result<Self> {
+        if let Some(lock) = try_lock_shared_if_present(root)? {
+            return Ok(lock);
+        }
+        let path = root.join(CACHE_LOCK_FILE);
+        let file = open_lock_file(&path)?;
+        lock_result(file.try_lock_shared(), &path, "maintenance is running")?;
+        Ok(Self { file })
+    }
+}
+
+impl Drop for CacheUseGuard {
+    fn drop(&mut self) {
+        // A concurrent fork can inherit this open file description until exec.
+        // Unlock explicitly so the child's descriptor cannot prolong the lock.
+        if let Err(error) = self.file.unlock() {
+            tracing::warn!(%error, "failed to release cache lock");
+        }
+    }
+}
+
+fn open_lock_file(path: &Path) -> Result<File> {
+    // The same file must coordinate all users, even after the last lock ends.
+    File::options()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)
+        .map_err(|error| Error::io(error, path, "open cache lock"))
+}
+
+fn lock_result(
+    result: std::result::Result<(), TryLockError>,
+    path: &Path,
+    busy: &str,
+) -> Result<()> {
+    match result {
+        Ok(()) => Ok(()),
+        Err(TryLockError::WouldBlock) => Err(Error::configuration(format!(
+            "local cache is busy ({busy}). Retry after it finishes."
+        ))),
+        Err(TryLockError::Error(error)) => Err(Error::io(error, path, "lock cache")),
+    }
+}
+
+fn try_lock_cache_exclusively(root: &Path) -> Result<Option<CacheUseGuard>> {
+    match fs::metadata(root) {
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(Error::io(error, root, "stat cache root")),
+    }
+
+    let path = root.join(CACHE_LOCK_FILE);
+    let file = open_lock_file(&path)?;
+    // An exclusive request must not wait: a task may acquire another shared
+    // lock while holding a shared lock for its transaction.
+    lock_result(file.try_lock(), &path, "another process is using the cache")?;
+    Ok(Some(CacheUseGuard { file }))
+}
+
+fn try_lock_shared_if_present(root: &Path) -> Result<Option<CacheUseGuard>> {
+    let path = root.join(CACHE_LOCK_FILE);
+    let file = match File::open(&path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(Error::io(error, &path, "open cache lock")),
+    };
+    lock_result(file.try_lock_shared(), &path, "maintenance is running")?;
+    Ok(Some(CacheUseGuard { file }))
+}
 
 /// Summary statistics for a local cuenv cache root.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -141,6 +230,11 @@ pub fn stats(root: &Path) -> Result<CacheStats> {
 /// Returns an error if the local store directories cannot be opened or
 /// traversed.
 pub async fn verify(root: &Path) -> Result<VerifyReport> {
+    let _lock = try_lock_shared_if_present(root)?;
+    verify_unlocked(root).await
+}
+
+async fn verify_unlocked(root: &Path) -> Result<VerifyReport> {
     let mut report = VerifyReport {
         root: root.to_path_buf(),
         ..VerifyReport::default()
@@ -175,8 +269,7 @@ pub async fn verify(root: &Path) -> Result<VerifyReport> {
 
     let ac_root = root.join("ac").join("sha256");
     if ac_root.exists() {
-        let local_cas = LocalCas::open(root)?;
-        let _ = LocalActionCache::open(root)?;
+        let local_cas = LocalCas::for_inspection(root);
 
         for (action_hash, path) in collect_sharded_entries(&ac_root)? {
             report.action_entries_checked += 1;
@@ -244,8 +337,7 @@ pub async fn verify(root: &Path) -> Result<VerifyReport> {
     Ok(report)
 }
 
-/// Default grace window protecting in-flight tasks whose CAS blobs have been
-/// written before their `ActionCache` entry is published.
+/// Default age below which GC retains otherwise-evictable cache entries.
 pub const DEFAULT_GC_GRACE_WINDOW: Duration = Duration::from_mins(10);
 
 /// Options controlling [`gc`].
@@ -255,8 +347,8 @@ pub struct GcOptions {
     pub max_bytes: Option<u64>,
     /// Evict `ActionCache` entries older than this duration.
     pub max_age: Option<Duration>,
-    /// Protect blobs, action entries, and temp staging directories modified
-    /// more recently than this window so concurrent tasks are not disrupted.
+    /// Protect blobs, action entries, and staging directories modified more
+    /// recently than this window, even when the cache is idle.
     pub grace_window: Duration,
     /// Compute the exact eviction set without deleting any files.
     pub dry_run: bool,
@@ -354,8 +446,8 @@ struct IndexedEntry {
 ///
 /// # Errors
 ///
-/// Returns an error if the cache directories cannot be read or files cannot be
-/// removed.
+/// Returns an error if the cache is busy, its directories cannot be read, or
+/// files cannot be removed.
 pub async fn gc(root: &Path, options: GcOptions) -> Result<GcReport> {
     let now = SystemTime::now();
     let mut report = GcReport {
@@ -364,13 +456,17 @@ pub async fn gc(root: &Path, options: GcOptions) -> Result<GcReport> {
         ..GcReport::default()
     };
 
+    let _lock = if options.dry_run {
+        try_lock_shared_if_present(root)?
+    } else {
+        let Some(lock) = try_lock_cache_exclusively(root)? else {
+            return Ok(report);
+        };
+        Some(lock)
+    };
     let cas_root = root.join("cas").join("sha256");
     let ac_root = root.join("ac").join("sha256");
-    let local_cas = if cas_root.exists() {
-        Some(LocalCas::open(root)?)
-    } else {
-        None
-    };
+    let local_cas = LocalCas::for_inspection(root);
 
     // Index all CAS blobs with size and mtime.
     let mut cas_blobs: HashMap<String, IndexedEntry> = HashMap::new();
@@ -412,11 +508,10 @@ pub async fn gc(root: &Path, options: GcOptions) -> Result<GcReport> {
     let mut ac_refs: Vec<HashSet<String>> = Vec::with_capacity(ac_entries.len());
     for entry in &ac_entries {
         let mut refs = HashSet::new();
-        if let Some(cas) = &local_cas
-            && let Ok(bytes) = fs::read(&entry.path)
+        if let Ok(bytes) = fs::read(&entry.path)
             && let Ok(proto) = PbActionResult::decode(bytes.as_slice())
             && let Ok(result) = ActionResult::from_proto(&proto)
-            && let Ok(digests) = referenced_blobs(cas, &result).await
+            && let Ok(digests) = referenced_blobs(&local_cas, &result).await
         {
             for digest in digests {
                 refs.insert(digest.hash);
@@ -596,10 +691,20 @@ pub async fn prune(root: &Path, options: PruneOptions) -> Result<GcReport> {
 ///
 /// # Errors
 ///
-/// Returns an error if the store cannot be read or corrupt entries cannot be
-/// deleted.
+/// Returns an error if the cache is busy, it cannot be read, or corrupt
+/// entries cannot be deleted.
 pub async fn verify_and_repair(root: &Path) -> Result<RepairReport> {
-    let initial = verify(root).await?;
+    let Some(_lock) = try_lock_cache_exclusively(root)? else {
+        return Ok(RepairReport {
+            verify: VerifyReport {
+                root: root.to_path_buf(),
+                ..VerifyReport::default()
+            },
+            ..RepairReport::default()
+        });
+    };
+
+    let initial = verify_unlocked(root).await?;
     let mut blobs_removed = 0u64;
     let mut actions_removed = 0u64;
 
@@ -617,7 +722,7 @@ pub async fn verify_and_repair(root: &Path) -> Result<RepairReport> {
     // If any corrupt blobs were removed, re-verify so newly dangling AC entries
     // are also cleaned up.
     if blobs_removed > 0 {
-        let follow_up = verify(root).await?;
+        let follow_up = verify_unlocked(root).await?;
         for action in &follow_up.invalid_actions {
             if remove_file_if_exists(&action.path)? {
                 actions_removed += 1;
@@ -751,7 +856,7 @@ fn hash_file(path: &Path) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::action_cache::ActionCache;
+    use crate::action_cache::{ActionCache, LocalActionCache};
     use crate::cas::Cas;
     use crate::merkle::build_output_tree;
     use crate::message::{OutputDirectory, OutputFile};
@@ -832,6 +937,142 @@ mod tests {
         assert_eq!(s.cas_blobs, 0);
         assert_eq!(s.action_entries, 0);
         assert_eq!(s.total_bytes(), 0);
+    }
+
+    #[tokio::test]
+    async fn transaction_protects_reused_old_blob_from_concurrent_prune()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        const CHILD_CACHE_ROOT: &str = "CUENV_TEST_PRUNE_CONCURRENT_CACHE_ROOT";
+        let options = PruneOptions {
+            grace_window: Duration::ZERO,
+            dry_run: false,
+        };
+        if let Some(root) = std::env::var_os(CHILD_CACHE_ROOT) {
+            let error = prune(Path::new(&root), options).await.unwrap_err();
+            assert!(error.to_string().contains("local cache is busy"));
+            return Ok(());
+        }
+
+        let dir = tempfile::tempdir()?;
+        let root = dir.path();
+        let cas = LocalCas::open(root)?;
+        let ac = LocalActionCache::open(root)?;
+        let blob = cas.put_bytes(b"reused local output").await?;
+        let blob_path = cas.blob_path(&blob)?;
+        File::open(&blob_path)?.set_modified(SystemTime::UNIX_EPOCH)?;
+        let staged_path = root.join("tmp/in-flight");
+        fs::write(&staged_path, b"staging")?;
+
+        let transaction = CacheUseGuard::acquire(root)?;
+        assert_eq!(cas.put_bytes(b"reused local output").await?, blob);
+        assert_eq!(
+            fs::metadata(&blob_path)?.modified()?,
+            SystemTime::UNIX_EPOCH
+        );
+
+        let child = std::process::Command::new(std::env::current_exe()?)
+            .arg("--exact")
+            .arg("maintenance::tests::transaction_protects_reused_old_blob_from_concurrent_prune")
+            .env(CHILD_CACHE_ROOT, root)
+            .output()?;
+        assert!(
+            child.status.success(),
+            "concurrent prune check failed: {}",
+            String::from_utf8_lossy(&child.stdout)
+        );
+        assert!(String::from_utf8_lossy(&child.stdout).contains("1 passed"));
+        let error = verify_and_repair(root).await.unwrap_err();
+        assert!(error.to_string().contains("local cache is busy"));
+        assert!(staged_path.exists());
+
+        ac.update(
+            &Digest::of_bytes(b"action referencing the reused local output"),
+            &ActionResult {
+                output_files: vec![OutputFile {
+                    path: "output".to_owned(),
+                    digest: blob.clone(),
+                    is_executable: false,
+                }],
+                ..Default::default()
+            },
+        )
+        .await?;
+        drop(transaction);
+
+        let report = prune(root, options).await?;
+        assert_eq!(report.blobs_removed, 0);
+        assert_eq!(report.temp_entries_removed, 1);
+        assert_eq!(cas.get(&blob).await?, b"reused local output");
+        assert!(verify(root).await?.is_ok());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn exclusive_maintenance_blocks_cache_operations() -> Result<()> {
+        let dir = tempfile::tempdir().map_err(|e| Error::io_no_path(e, "tempdir"))?;
+        let root = dir.path();
+        let cas = LocalCas::open(root)?;
+        let ac = LocalActionCache::open(root)?;
+        let blob = cas.put_bytes(b"existing blob").await?;
+
+        let lock = try_lock_cache_exclusively(root)?;
+        let read = cas.get(&blob).await.unwrap_err();
+        let write = cas.put_bytes(b"new blob").await.unwrap_err();
+        let update = ac
+            .update(&blob, &ActionResult::default())
+            .await
+            .unwrap_err();
+        for error in [read, write, update] {
+            assert!(error.to_string().contains("local cache is busy"));
+        }
+        drop(lock);
+
+        assert!(cas.contains(&blob).await?);
+        assert!(ac.lookup(&blob).await?.is_none());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dropping_a_lock_releases_it_with_inherited_descriptors_open()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let root = dir.path();
+        let shared = CacheUseGuard::acquire(root)?;
+        // A child created by fork holds a duplicate of the parent's descriptor
+        // until exec closes it. Keep a duplicate open to model that interval.
+        let inherited_shared = shared.file.try_clone()?;
+        drop(shared);
+
+        let exclusive = try_lock_cache_exclusively(root)?
+            .ok_or_else(|| Error::configuration("temporary cache root disappeared"))?;
+        let inherited_exclusive = exclusive.file.try_clone()?;
+        drop(exclusive);
+
+        let shared = CacheUseGuard::acquire(root)?;
+        drop((shared, inherited_shared, inherited_exclusive));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn inspection_does_not_create_lock_or_missing_cache_directories() -> Result<()> {
+        let dir = tempfile::tempdir().map_err(|e| Error::io_no_path(e, "tempdir"))?;
+        let root = dir.path();
+        LocalActionCache::open(root)?;
+        assert!(verify(root).await?.is_ok());
+        let report = gc(
+            root,
+            GcOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        )
+        .await?;
+
+        assert!(report.dry_run);
+        assert!(!root.join(CACHE_LOCK_FILE).exists());
+        assert!(!root.join("cas").exists());
+        Ok(())
     }
 
     #[tokio::test]

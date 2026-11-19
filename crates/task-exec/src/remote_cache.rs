@@ -21,6 +21,7 @@ const ENDPOINT_ENV: &str = "CUENV_REMOTE_CACHE";
 const PROTOCOL_ENV: &str = "CUENV_REMOTE_CACHE_PROTOCOL";
 /// Environment variable overriding whether this machine uploads.
 const UPLOAD_ENV: &str = "CUENV_REMOTE_CACHE_UPLOAD";
+const INSTANCE_ENV: &str = "CUENV_REMOTE_CACHE_INSTANCE";
 
 /// The local stores, wrapped with a remote layer when one is configured.
 pub struct CacheLayers {
@@ -58,6 +59,19 @@ pub struct RemoteCacheStatus {
     pub detail: Option<String>,
 }
 
+/// Process environment variables used to authenticate to the configured cache.
+pub fn credential_variables(cache: Option<&Cache>) -> impl Iterator<Item = &str> {
+    let auth = cache
+        .and_then(|cache| cache.remote.as_ref())
+        .and_then(|remote| remote.auth.as_ref());
+    auth.into_iter().flat_map(|auth| {
+        auth.bearer_token_env
+            .as_deref()
+            .into_iter()
+            .chain(auth.header.as_ref().map(|header| header.value_env.as_str()))
+    })
+}
+
 /// Resolve the effective remote configuration.
 ///
 /// `CUENV_REMOTE_CACHE` supplies or replaces the endpoint, so a CI job can
@@ -88,6 +102,9 @@ pub fn resolve(configured: Option<&RemoteCache>) -> Option<RemoteCache> {
         (None, None) => return None,
     };
 
+    if let Ok(instance) = std::env::var(INSTANCE_ENV) {
+        remote.instance = instance;
+    }
     if let Some(protocol) = protocol_override() {
         remote.protocol = protocol;
     }
@@ -212,15 +229,6 @@ fn emit_degraded(endpoint: &str, reason: impl Into<String>) {
     let _ = cuenv_events::emit(EventCategory::Cache(CacheEvent::RemoteDegraded {
         endpoint: endpoint.to_string(),
         reason: reason.into(),
-    }));
-}
-
-fn emit_connected(remote: &RemoteCache, upload_enabled: bool) {
-    let _ = cuenv_events::emit(EventCategory::Cache(CacheEvent::RemoteConnected {
-        endpoint: remote.endpoint.clone(),
-        protocol: protocol_label(remote.protocol).to_string(),
-        instance: remote.instance.clone(),
-        upload_enabled,
     }));
 }
 
@@ -459,7 +467,12 @@ pub async fn build(
         upload = publisher.is_some(),
         "remote cache connected"
     );
-    emit_connected(&remote, publisher.is_some());
+    let _ = cuenv_events::emit(EventCategory::Cache(CacheEvent::RemoteConnected {
+        endpoint: remote.endpoint.clone(),
+        protocol: protocol_label(remote.protocol).to_string(),
+        instance: remote.instance.clone(),
+        upload_enabled: publisher.is_some(),
+    }));
 
     let cas = LayeredCas::new(local.cas, remote_cas.clone());
     let action_cache =

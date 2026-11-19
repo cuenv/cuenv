@@ -19,7 +19,7 @@ async-trait = { workspace = true }
 bazel-remote-apis = { workspace = true }
 tonic = { workspace = true }
 prost = { workspace = true }
-reqwest = { workspace = true }
+reqwest = { workspace = true, features = ["stream"] }
 rustls = { workspace = true }
 tokio = { workspace = true, features = ["rt", "sync", "fs"] }
 tokio-stream = { workspace = true }

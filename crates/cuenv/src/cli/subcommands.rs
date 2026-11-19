@@ -1185,6 +1185,9 @@ pub enum CacheCommands {
             default_value = "."
         )]
         path: String,
+        /// CUE package containing the cache configuration.
+        #[arg(long, default_value = "cuenv")]
+        package: String,
         /// Target upper bound on local cache size (e.g. 500M, 2G, 10GiB).
         #[arg(
             long,

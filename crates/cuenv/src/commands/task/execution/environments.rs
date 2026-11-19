@@ -6,7 +6,7 @@
 //! its own project's, and never the variables or secrets of the project the
 //! run was asked for.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -32,6 +32,8 @@ pub(super) struct ProjectEnvironmentSpec<'spec> {
     /// The selected environment (`-e`). It applies to every project of a
     /// run; a project that does not define it uses its base variables.
     pub(super) environment: Option<&'spec str>,
+    /// Remote cache credentials withheld from project-controlled subprocesses.
+    pub(super) withheld_env: &'spec BTreeSet<String>,
 }
 
 /// Builds the environments of one project's tasks from the project variables
@@ -58,6 +60,7 @@ impl ProjectTaskEnvironments {
             manifest,
             project_root,
             environment,
+            withheld_env,
         } = spec;
         // The contexts are validated here, once, and not again for each task.
         let selection = manifest
@@ -73,8 +76,9 @@ impl ProjectTaskEnvironments {
             })
             .transpose()?;
         Ok(Self {
-            runtime_env: runtime_environment(manifest, project_root).await?,
-            activation_steps: lockfile_activation_steps(manifest, project_root).await?,
+            runtime_env: runtime_environment(manifest, project_root, withheld_env).await?,
+            activation_steps: lockfile_activation_steps(manifest, project_root, withheld_env)
+                .await?,
             selection,
             resolved: Mutex::default(),
         })
@@ -113,7 +117,8 @@ impl ProjectTaskEnvironments {
         let mut environment = self.runtime_env.clone();
 
         let env_vars = task_env.map_or_default(TaskEnv::variables);
-        let (resolved, secrets) = Environment::resolve_all_with_secrets(&env_vars).await?;
+        let (resolved, secrets) =
+            Environment::resolve_all_withheld(&env_vars, self.runtime_env.withheld_names()).await?;
 
         cuenv_events::register_secrets(secrets);
 
@@ -134,9 +139,14 @@ impl ProjectTaskEnvironments {
             if let Some(new_value) =
                 cuenv_tool_runtime::apply_resolved_tool_activation(current, step)
             {
-                environment.set(step.var.clone(), new_value);
+                if environment.is_secret_var(&step.var) {
+                    environment.set_secret(step.var.clone(), new_value);
+                } else {
+                    environment.set(step.var.clone(), new_value);
+                }
             }
         }
+        environment.withhold(self.runtime_env.withheld_names().iter().cloned());
         Ok(environment)
     }
 }
@@ -230,6 +240,7 @@ impl RunTaskEnvironments {
                     manifest: &project.project.manifest,
                     project_root: &project.project.root,
                     environment: project.environment.as_deref(),
+                    withheld_env: self.own.runtime_env.withheld_names(),
                 })
             })
             .await?;
@@ -255,11 +266,19 @@ impl TaskEnvironments for RunTaskEnvironments {
     }
 }
 
-async fn runtime_environment(manifest: &Project, project_root: &Path) -> Result<Environment> {
+async fn runtime_environment(
+    manifest: &Project,
+    project_root: &Path,
+    withheld_env: &BTreeSet<String>,
+) -> Result<Environment> {
     let mut runtime_env = Environment::new();
-    let runtime_env_vars =
-        cuenv_core::runtime::resolve_runtime_environment(project_root, manifest.runtime.as_ref())
-            .await?;
+    runtime_env.withhold(withheld_env.iter().cloned());
+    let runtime_env_vars = cuenv_core::runtime::resolve_runtime_environment_withheld(
+        project_root,
+        manifest.runtime.as_ref(),
+        withheld_env,
+    )
+    .await?;
     for (key, value) in runtime_env_vars {
         runtime_env.set(key, value);
     }
@@ -271,11 +290,12 @@ async fn runtime_environment(manifest: &Project, project_root: &Path) -> Result<
 async fn lockfile_activation_steps(
     manifest: &Project,
     project_root: &Path,
+    withheld_env: &BTreeSet<String>,
 ) -> Result<Vec<ResolvedToolActivationStep>> {
     if !matches!(manifest.runtime, Some(Runtime::Tools(_))) {
         return Ok(Vec::new());
     }
-    crate::commands::tools::ensure_tools_downloaded(Some(project_root))
+    crate::commands::tools::ensure_tools_downloaded_withheld(Some(project_root), withheld_env)
         .await
         .map_err(|e| cuenv_core::Error::configuration(format!("Failed to download tools: {e}")))?;
     let activation_steps =

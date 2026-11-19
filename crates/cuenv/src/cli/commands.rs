@@ -559,10 +559,11 @@ impl Commands {
             | Self::Restart { package, .. } => package,
 
             Self::Cache { subcommand } => match subcommand {
-                CacheCommands::Status { package, .. } => package,
+                CacheCommands::Status { package, .. } | CacheCommands::Gc { package, .. } => {
+                    package
+                }
                 CacheCommands::Stats { .. }
                 | CacheCommands::Verify { .. }
-                | CacheCommands::Gc { .. }
                 | CacheCommands::Prune { .. } => "cuenv",
             },
 

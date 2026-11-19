@@ -83,7 +83,10 @@ async fn start_recording_http_cache(
                 }
                 body.truncate(content_length);
 
-                let (status, resp_body) = handle_request(&state, method, path, body);
+                let (status, resp_body) = state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .handle_request(method, path, body);
                 let response = format!(
                     "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                     resp_body.len()
@@ -99,56 +102,55 @@ async fn start_recording_http_cache(
     Ok((format!("http://{addr}"), state))
 }
 
-fn handle_request(
-    state: &Arc<Mutex<ServerState>>,
-    method: &str,
-    path: &str,
-    body: Vec<u8>,
-) -> (&'static str, Vec<u8>) {
-    let mut guard = state
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some(hash) = path.strip_prefix("/cas/") {
-        return match method {
-            "HEAD" => {
-                if guard.cas.contains_key(hash) {
+impl ServerState {
+    fn handle_request(
+        &mut self,
+        method: &str,
+        path: &str,
+        body: Vec<u8>,
+    ) -> (&'static str, Vec<u8>) {
+        if let Some(hash) = path.strip_prefix("/cas/") {
+            return match method {
+                "HEAD" => {
+                    if self.cas.contains_key(hash) {
+                        ("200 OK", Vec::new())
+                    } else {
+                        ("404 Not Found", Vec::new())
+                    }
+                }
+                "GET" => match self.cas.get(hash) {
+                    Some(bytes) => ("200 OK", bytes.clone()),
+                    None => ("404 Not Found", Vec::new()),
+                },
+                "PUT" => {
+                    if self.fail_cas_hash.as_deref() == Some(hash) {
+                        return ("500 Internal Server Error", b"injected failure".to_vec());
+                    }
+                    self.write_log.push(format!("PUT /cas/{hash}"));
+                    self.cas.insert(hash.to_string(), body);
                     ("200 OK", Vec::new())
-                } else {
-                    ("404 Not Found", Vec::new())
                 }
-            }
-            "GET" => match guard.cas.get(hash) {
-                Some(bytes) => ("200 OK", bytes.clone()),
-                None => ("404 Not Found", Vec::new()),
-            },
-            "PUT" => {
-                if guard.fail_cas_hash.as_deref() == Some(hash) {
-                    return ("500 Internal Server Error", b"injected failure".to_vec());
+                _ => ("405 Method Not Allowed", Vec::new()),
+            };
+        }
+
+        if let Some(hash) = path.strip_prefix("/ac/") {
+            return match method {
+                "GET" => match self.ac.get(hash) {
+                    Some(bytes) => ("200 OK", bytes.clone()),
+                    None => ("404 Not Found", Vec::new()),
+                },
+                "PUT" => {
+                    self.write_log.push(format!("PUT /ac/{hash}"));
+                    self.ac.insert(hash.to_string(), body);
+                    ("200 OK", Vec::new())
                 }
-                guard.write_log.push(format!("PUT /cas/{hash}"));
-                guard.cas.insert(hash.to_string(), body);
-                ("200 OK", Vec::new())
-            }
-            _ => ("405 Method Not Allowed", Vec::new()),
-        };
-    }
+                _ => ("405 Method Not Allowed", Vec::new()),
+            };
+        }
 
-    if let Some(hash) = path.strip_prefix("/ac/") {
-        return match method {
-            "GET" => match guard.ac.get(hash) {
-                Some(bytes) => ("200 OK", bytes.clone()),
-                None => ("404 Not Found", Vec::new()),
-            },
-            "PUT" => {
-                guard.write_log.push(format!("PUT /ac/{hash}"));
-                guard.ac.insert(hash.to_string(), body);
-                ("200 OK", Vec::new())
-            }
-            _ => ("405 Method Not Allowed", Vec::new()),
-        };
+        ("404 Not Found", Vec::new())
     }
-
-    ("404 Not Found", Vec::new())
 }
 
 #[tokio::test]

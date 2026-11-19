@@ -5,11 +5,11 @@
 //! the network. [`Sandbox::Strict`] and [`Sandbox::Auto`] add OS-level
 //! confinement:
 //!
-//! - **Linux:** unprivileged user, mount, IPC, UTS, and (when `network: false`)
-//!   network namespaces configured in an async-signal-safe `pre_exec` hook
-//!   using pre-fork allocated C strings. Only explicit read-only runtime roots,
-//!   minimal `/dev` nodes, the per-action exec root, and private `/tmp`/`HOME`
-//!   directories are mounted.
+//! - **Linux:** unprivileged user, PID, mount, IPC, UTS, and optional network
+//!   namespaces. The launcher waits for PID namespace teardown and exposes
+//!   only explicit read-only runtime roots, minimal `/dev` nodes, the per-action
+//!   exec root, and private `/tmp` and `HOME`. Shared publication requires a
+//!   validated immutable runtime image.
 //! - **macOS:** `/usr/bin/sandbox-exec` prototype using a deny-by-default
 //!   Seatbelt profile. Because `sandbox-exec` is deprecated and not yet
 //!   natively validated as a shared-cache security boundary, macOS runs set
@@ -24,6 +24,7 @@ use cuenv_core::{Error, Result};
 use cuenv_manifest::tasks::Sandbox;
 use sha2::{Digest as _, Sha256};
 use std::path::Path;
+use std::process::Stdio;
 use tokio::process::Command;
 
 /// Proof that a task was (or will be) confined by an OS-level sandbox.
@@ -40,8 +41,8 @@ pub struct StrictSandboxProof {
     /// Whether this sandbox proof is strong enough to authorize publishing
     /// results to a shared remote cache.
     ///
-    /// Currently `true` only on validated Linux namespace confinement with
-    /// network isolation enforced.
+    /// Currently `true` on Linux with network isolation and a verified
+    /// read-only runtime image.
     pub publish_eligible: bool,
 }
 
@@ -92,6 +93,25 @@ pub struct SandboxResolution {
     pub fallback_reason: Option<String>,
 }
 
+/// Network access requested for a task sandbox.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NetworkPolicy {
+    /// Keep the host network.
+    Allowed,
+    /// Run with network access disabled.
+    Disabled,
+}
+
+impl NetworkPolicy {
+    pub(crate) fn for_task(task: &crate::Task) -> Self {
+        if task.network_allowed() {
+            Self::Allowed
+        } else {
+            Self::Disabled
+        }
+    }
+}
+
 /// Probe the host and resolve a task's requested [`Sandbox`] tier.
 ///
 /// - [`Sandbox::None`] and [`Sandbox::Dir`] always resolve directly.
@@ -104,7 +124,7 @@ pub struct SandboxResolution {
 ///
 /// Returns an error only when `requested == Sandbox::Strict` and the host
 /// cannot provide strict confinement.
-pub fn resolve_sandbox(requested: Sandbox, network_allowed: bool) -> Result<SandboxResolution> {
+pub fn resolve_sandbox(requested: Sandbox, network: NetworkPolicy) -> Result<SandboxResolution> {
     match requested {
         Sandbox::None => Ok(SandboxResolution {
             effective: EffectiveSandbox::None,
@@ -114,7 +134,7 @@ pub fn resolve_sandbox(requested: Sandbox, network_allowed: bool) -> Result<Sand
             effective: EffectiveSandbox::Dir,
             fallback_reason: None,
         }),
-        Sandbox::Strict => match probe_strict(network_allowed) {
+        Sandbox::Strict => match probe_strict(network) {
             Ok(proof) => Ok(SandboxResolution {
                 effective: EffectiveSandbox::Strict(proof),
                 fallback_reason: None,
@@ -124,7 +144,7 @@ pub fn resolve_sandbox(requested: Sandbox, network_allowed: bool) -> Result<Sand
                  unavailable on this host: {reason}"
             ))),
         },
-        Sandbox::Auto => match probe_strict(network_allowed) {
+        Sandbox::Auto => match probe_strict(network) {
             Ok(proof) => Ok(SandboxResolution {
                 effective: EffectiveSandbox::Strict(proof),
                 fallback_reason: None,
@@ -136,6 +156,24 @@ pub fn resolve_sandbox(requested: Sandbox, network_allowed: bool) -> Result<Sand
         },
     }
 }
+
+/// Paths and policy for a strict sandbox.
+#[derive(Clone, Copy)]
+pub struct StrictSandboxOptions<'paths> {
+    /// Execution root containing staged inputs.
+    pub exec_root: &'paths Path,
+    /// Start directory inside the execution root.
+    pub workdir: &'paths Path,
+    /// Staged scratch space.
+    pub task_tmp: &'paths Path,
+    /// Staged task home.
+    pub task_home: &'paths Path,
+    /// Network access.
+    pub network: NetworkPolicy,
+}
+
+pub(crate) type SandboxExchange =
+    std::pin::Pin<Box<dyn Future<Output = std::io::Result<()>> + Send>>;
 
 /// Pre-fork prepared strict sandbox plan ready to attach to a child [`Command`].
 pub struct StrictSandboxPlan {
@@ -154,44 +192,42 @@ impl StrictSandboxPlan {
     ///
     /// Returns an error if the platform does not support strict confinement or
     /// if the sandbox root staging directories cannot be created.
-    pub fn prepare(
-        exec_root: &Path,
-        workdir: &Path,
-        task_tmp: &Path,
-        task_home: &Path,
-        network_allowed: bool,
-    ) -> Result<Self> {
+    pub fn prepare(options: StrictSandboxOptions<'_>) -> Result<Self> {
         #[cfg(target_os = "linux")]
         {
-            let (inner, proof) = linux::LinuxSandboxPlan::prepare(
-                exec_root,
-                workdir,
-                task_tmp,
-                task_home,
-                network_allowed,
-            )?;
+            let (inner, proof) = linux::LinuxSandboxPlan::prepare(options)?;
             Ok(Self { proof, inner })
         }
 
         #[cfg(target_os = "macos")]
         {
-            let (inner, proof) = macos::MacosSandboxPlan::prepare(
-                exec_root,
-                workdir,
-                task_tmp,
-                task_home,
-                network_allowed,
-            )?;
+            let (inner, proof) = macos::MacosSandboxPlan::prepare(options)?;
             Ok(Self { proof, inner })
         }
 
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         {
-            let _ = (exec_root, workdir, task_tmp, task_home, network_allowed);
+            let _ = options;
             Err(Error::configuration(format!(
                 "strict OS sandboxing is not supported on {}",
                 std::env::consts::OS
             )))
+        }
+    }
+
+    /// Transfer the finished command to the CLI launcher without exposing
+    /// task-controlled data to the dynamic loader or parent environment.
+    pub(crate) fn finish_command(
+        &self,
+        command: Command,
+    ) -> Result<(Command, Option<Stdio>, Option<SandboxExchange>)> {
+        #[cfg(target_os = "linux")]
+        {
+            linux::launcher::finish(&self.inner, command)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            Ok((command, None, None))
         }
     }
 
@@ -218,7 +254,9 @@ impl StrictSandboxPlan {
 
         #[cfg(target_os = "macos")]
         {
-            self.inner.build_command(program, args)
+            let mut command = self.inner.build_command(program, args)?;
+            command.kill_on_drop(true);
+            Ok(command)
         }
 
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
@@ -232,20 +270,33 @@ impl StrictSandboxPlan {
     }
 }
 
-fn probe_strict(network_allowed: bool) -> std::result::Result<StrictSandboxProof, String> {
+/// Dispatch an internal sandbox invocation before reading the task environment
+/// or applying CLI process hardening. Returns only for a regular invocation.
+#[cfg(target_os = "linux")]
+pub fn dispatch_linux_launcher() {
+    linux::launcher::dispatch();
+}
+
+/// Register the trusted cuenv executable for subsequent sandbox launches.
+#[cfg(target_os = "linux")]
+pub fn register_linux_launcher() {
+    linux::launcher::register();
+}
+
+fn probe_strict(network: NetworkPolicy) -> std::result::Result<StrictSandboxProof, String> {
     #[cfg(target_os = "linux")]
     {
-        linux::probe(network_allowed)
+        linux::probe(network)
     }
 
     #[cfg(target_os = "macos")]
     {
-        macos::probe(network_allowed)
+        macos::probe(network)
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
-        let _ = network_allowed;
+        let _ = network;
         Err(format!(
             "strict OS sandboxing is not implemented on {}",
             std::env::consts::OS
@@ -272,11 +323,11 @@ mod tests {
 
     #[test]
     fn dir_and_none_resolve_without_probing_strict() {
-        let dir = resolve_sandbox(Sandbox::Dir, false).unwrap();
+        let dir = resolve_sandbox(Sandbox::Dir, NetworkPolicy::Disabled).unwrap();
         assert_eq!(dir.effective, EffectiveSandbox::Dir);
         assert!(dir.fallback_reason.is_none());
 
-        let none = resolve_sandbox(Sandbox::None, false).unwrap();
+        let none = resolve_sandbox(Sandbox::None, NetworkPolicy::Disabled).unwrap();
         assert_eq!(none.effective, EffectiveSandbox::None);
         assert!(none.fallback_reason.is_none());
     }

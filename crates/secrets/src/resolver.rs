@@ -3,7 +3,7 @@
 use super::SecureSecret;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use thiserror::Error;
 
 /// Error types for secret resolution
@@ -96,6 +96,42 @@ impl SecretSpec {
     }
 }
 
+/// Inputs for a single resolution and any child process it launches.
+#[derive(Clone, Copy)]
+pub struct ResolveSecret<'secret> {
+    /// Logical name of the secret.
+    pub name: &'secret str,
+    /// Provider-specific secret reference.
+    pub spec: &'secret SecretSpec,
+    /// Host variable names reserved by the caller.
+    pub withheld_env: &'secret BTreeSet<String>,
+}
+
+impl ResolveSecret<'_> {
+    /// Remove reserved names from a resolver subprocess after configuring its
+    /// environment.
+    pub fn withhold_from(self, command: &mut tokio::process::Command) {
+        for name in self.withheld_env {
+            command.env_remove(name);
+        }
+    }
+}
+
+/// Check whether a host variable name is reserved by the caller.
+#[must_use]
+pub fn is_withheld_env(withheld_env: &BTreeSet<String>, name: &str) -> bool {
+    #[cfg(windows)]
+    {
+        withheld_env
+            .iter()
+            .any(|key| key.eq_ignore_ascii_case(name))
+    }
+    #[cfg(not(windows))]
+    {
+        withheld_env.contains(name)
+    }
+}
+
 /// Trait for resolving secrets from various providers.
 ///
 /// Implementors must provide:
@@ -110,6 +146,20 @@ pub trait SecretResolver: Send + Sync {
     ///
     /// This is the primary method that must be implemented by all resolvers.
     async fn resolve(&self, name: &str, spec: &SecretSpec) -> Result<String, SecretError>;
+
+    /// Resolve a secret with a caller-provided environment policy.
+    ///
+    /// Implementations that spawn a process or read a caller-selected host
+    /// environment variable must honor the withheld names.
+    ///
+    /// # Errors
+    /// Returns the provider's resolution error.
+    async fn resolve_with_options(
+        &self,
+        request: ResolveSecret<'_>,
+    ) -> Result<String, SecretError> {
+        self.resolve(request.name, request.spec).await
+    }
 
     /// Get the provider name for this resolver.
     ///

@@ -45,6 +45,12 @@ enum PublisherBackend {
     },
 }
 
+struct ActionPublication<'request> {
+    request: PublishActionRequest<'request>,
+    inline_blobs: HashMap<Digest, Vec<u8>>,
+    all_digests: Vec<Digest>,
+}
+
 impl RemotePublisher {
     /// Create a publisher targeting a REAPI v2 gRPC cache.
     #[must_use]
@@ -65,10 +71,13 @@ impl RemotePublisher {
     async fn publish_grpc(
         cas: &RemoteCas,
         action_cache: &RemoteActionCache,
-        request: &PublishActionRequest<'_>,
-        inline_blobs: &HashMap<Digest, Vec<u8>>,
-        all_digests: &[Digest],
+        publication: &ActionPublication<'_>,
     ) -> cuenv_cas::Result<()> {
+        let ActionPublication {
+            request,
+            inline_blobs,
+            all_digests,
+        } = publication;
         let missing = cas.find_missing(all_digests).await?;
         debug!(
             action = %request.action_digest,
@@ -78,31 +87,32 @@ impl RemotePublisher {
         );
 
         let mut small_batch: Vec<(Digest, Vec<u8>)> = Vec::new();
-        let mut large_digests: Vec<Digest> = Vec::new();
+        let mut batch_bytes = 0_u64;
 
         for digest in missing {
             if cas.fits_in_a_batch(digest.size_bytes) {
+                let item_bytes = digest.size_bytes + crate::cas::BATCH_ITEM_OVERHEAD;
+                if batch_bytes.saturating_add(item_bytes) > cas.max_batch_size().cast_unsigned() {
+                    cas.batch_update_blobs(&small_batch).await?;
+                    small_batch.clear();
+                    batch_bytes = 0;
+                }
                 let bytes = if let Some(inline) = inline_blobs.get(&digest) {
                     inline.clone()
                 } else {
                     request.local_cas.get(&digest).await?
                 };
                 small_batch.push((digest, bytes));
+                batch_bytes += item_bytes;
+            } else if let Some(inline) = inline_blobs.get(&digest) {
+                cas.put_bytes(inline).await?;
             } else {
-                large_digests.push(digest);
+                upload_large_blob_via_file(request.local_cas, cas, &digest).await?;
             }
         }
 
         if !small_batch.is_empty() {
             cas.batch_update_blobs(&small_batch).await?;
-        }
-
-        for digest in large_digests {
-            if let Some(inline) = inline_blobs.get(&digest) {
-                cas.put_bytes(inline).await?;
-            } else {
-                upload_large_blob_via_file(request.local_cas, cas, &digest).await?;
-            }
         }
 
         // Publish the ActionResult LAST, only after Action, Command, logs,
@@ -116,10 +126,13 @@ impl RemotePublisher {
     async fn publish_http(
         cas: &HttpCas,
         action_cache: &HttpActionCache,
-        request: &PublishActionRequest<'_>,
-        inline_blobs: &HashMap<Digest, Vec<u8>>,
-        all_digests: &[Digest],
+        publication: &ActionPublication<'_>,
     ) -> cuenv_cas::Result<()> {
+        let ActionPublication {
+            request,
+            inline_blobs,
+            all_digests,
+        } = publication;
         for digest in all_digests {
             if cas.contains(digest).await? {
                 continue;
@@ -187,12 +200,17 @@ impl ActionPublisher for RemotePublisher {
             }
         }
 
+        let publication = ActionPublication {
+            request,
+            inline_blobs,
+            all_digests,
+        };
         match &self.backend {
             PublisherBackend::Grpc { cas, action_cache } => {
-                Self::publish_grpc(cas, action_cache, &request, &inline_blobs, &all_digests).await
+                Self::publish_grpc(cas, action_cache, &publication).await
             }
             PublisherBackend::Http { cas, action_cache } => {
-                Self::publish_http(cas, action_cache, &request, &inline_blobs, &all_digests).await
+                Self::publish_http(cas, action_cache, &publication).await
             }
         }
     }

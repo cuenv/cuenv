@@ -345,6 +345,24 @@ fn test_remote_cache_separates_ro_pr_and_protected_rw_credentials() {
     assert!(protected_yaml.contains("CUENV_REMOTE_CACHE_UPLOAD: 'true'"));
     assert!(protected_yaml.contains("cuenv-cache/trusted"));
 
+    protected_ir.pipeline.environment = Some("deploy".to_string());
+    let conflict_yaml = emitter.emit_thin(&protected_ir).unwrap();
+    assert!(conflict_yaml.contains("environment: deploy"));
+    assert!(!conflict_yaml.contains("secrets.CACHE_RW_TOKEN"));
+    assert!(conflict_yaml.contains("secrets.CACHE_RO_TOKEN"));
+    assert!(conflict_yaml.contains("CUENV_REMOTE_CACHE_UPLOAD: 'false'"));
+
+    protected_ir.pipeline.environment = None;
+    if let Some(trigger) = &mut protected_ir.pipeline.trigger {
+        trigger.manual = Some(cuenv_ci::ir::ManualTriggerConfig {
+            enabled: true,
+            ..Default::default()
+        });
+    }
+    let manual_yaml = emitter.emit_thin(&protected_ir).unwrap();
+    assert!(!manual_yaml.contains("secrets.CACHE_RW_TOKEN"));
+    assert!(manual_yaml.contains("secrets.CACHE_RO_TOKEN"));
+
     // 2. Pull-request workflow gets only RO secret, no write environment, and untrusted cache dir.
     let mut pr_ir = super::make_ir(vec![super::make_task("build", &["cargo", "build"])]);
     pr_ir.pipeline.trigger = Some(cuenv_ci::ir::TriggerCondition {

@@ -6,6 +6,8 @@
 mod commands;
 mod list;
 
+pub(crate) use commands::ensure_tools_downloaded_withheld;
+
 pub use commands::{
     ensure_tools_downloaded, execute_tools_activate, execute_tools_download, execute_tools_list,
     resolve_tool_activation_steps,

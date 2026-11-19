@@ -4,15 +4,21 @@ use super::client::{HttpRemoteClient, format_reqwest_error};
 use crate::error::{Error, Result};
 use async_trait::async_trait;
 use cuenv_cas::{Cas, Digest};
-use reqwest::{Method, StatusCode};
+use futures::stream;
+use reqwest::{Body, Method, RequestBuilder, Response, StatusCode};
 use sha2::{Digest as _, Sha256};
+use std::io;
 use std::path::Path;
-use tokio::io::AsyncWriteExt;
+use std::time::Instant;
+use tokio::fs::File;
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+use tokio::sync::oneshot;
 use tracing::trace;
 
 /// Upper bound for in-memory [`Cas::get`] responses, matching `RemoteCas`.
 const MAX_IN_MEMORY_BLOB_SIZE: u64 = 512 * 1024 * 1024;
 const MAX_INITIAL_ALLOCATION: usize = 8 * 1024 * 1024;
+const UPLOAD_CHUNK_SIZE: usize = 64 * 1024;
 
 /// A content-addressed store backed by a Bazel HTTP/REST cache server.
 #[derive(Debug, Clone)]
@@ -218,35 +224,139 @@ impl HttpCas {
     async fn write_bytes(&self, bytes: &[u8]) -> Result<Digest> {
         self.client.ensure_writable("upload a CAS blob")?;
         let digest = Digest::of_bytes(bytes);
-        let url = self.client.cas_url(&digest)?;
-        let response = self
+        let request = self
             .client
-            .request(Method::PUT, url)
-            .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
-            .body(bytes.to_vec())
-            .send()
-            .await
-            .map_err(|e| Error::Rpc {
-                operation: "HTTP.PUT.cas",
-                message: e.to_string(),
-            })?;
-
-        if !response.status().is_success() {
-            return Err(Error::Rpc {
-                operation: "HTTP.PUT.cas",
-                message: format!("HTTP status {}", response.status()),
-            });
-        }
+            .request(Method::PUT, self.client.cas_url(&digest)?);
+        let response = send_upload(request, &digest, Body::from(bytes.to_vec())).await?;
+        check_put_status(response.status())?;
         Ok(digest)
     }
 
     async fn write_file(&self, source: &Path) -> Result<Digest> {
         self.client.ensure_writable("upload a CAS file")?;
-        let bytes = tokio::fs::read(source)
+        let mut file = File::open(source)
             .await
-            .map_err(|e| Error::Cas(cuenv_cas::Error::io(e, source, "read")))?;
-        self.write_bytes(&bytes).await
+            .map_err(|error| cuenv_cas::Error::io(error, source, "open"))?;
+        let digest = crate::cas::digest_file(&mut file, source).await?;
+        file.rewind()
+            .await
+            .map_err(|error| cuenv_cas::Error::io(error, source, "rewind"))?;
+
+        let mut url = self.client.cas_url(&digest)?;
+        let mut requests_sent = 0;
+        let started = Instant::now();
+        loop {
+            let remaining = self
+                .client
+                .config()
+                .timeout
+                .saturating_sub(started.elapsed());
+            let request = self.client.streaming_put(url)?.timeout(remaining);
+            let (body, mut verified) = verified_file_body(file, digest.clone());
+            let response = send_upload(request, &digest, body).await?;
+            requests_sent += 1;
+            if let Some(redirect) = self.client.put_redirect_target(&response, requests_sent)? {
+                url = redirect;
+                // An early redirect can arrive while the first body is still
+                // being polled. Each attempt owns its own file offset.
+                file = File::open(source)
+                    .await
+                    .map_err(|error| cuenv_cas::Error::io(error, source, "reopen"))?;
+                continue;
+            }
+            check_put_status(response.status())?;
+            if verified.try_recv().is_err() {
+                return Err(Error::protocol(
+                    "HTTP.PUT.cas",
+                    "server acknowledged the upload before the file body was verified",
+                ));
+            }
+            return Ok(digest);
+        }
     }
+}
+
+async fn send_upload(request: RequestBuilder, digest: &Digest, body: Body) -> Result<Response> {
+    request
+        .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
+        .header(reqwest::header::CONTENT_LENGTH, digest.size_bytes)
+        .body(body)
+        .send()
+        .await
+        .map_err(|error| Error::Rpc {
+            operation: "HTTP.PUT.cas",
+            message: format_reqwest_error(&error),
+        })
+}
+
+fn check_put_status(status: StatusCode) -> Result<()> {
+    if status.is_success() {
+        Ok(())
+    } else {
+        Err(Error::Rpc {
+            operation: "HTTP.PUT.cas",
+            message: format!("HTTP status {status}"),
+        })
+    }
+}
+
+struct FileUpload {
+    file: File,
+    digest: Digest,
+    remaining: u64,
+    hasher: Sha256,
+    verified: oneshot::Sender<()>,
+}
+
+impl FileUpload {
+    async fn next_chunk(mut self) -> io::Result<(Vec<u8>, Option<Self>)> {
+        let count = usize::try_from(self.remaining)
+            .unwrap_or(usize::MAX)
+            .min(UPLOAD_CHUNK_SIZE);
+        let mut chunk = vec![0; count];
+        self.file.read_exact(&mut chunk).await?;
+        self.hasher.update(&chunk);
+        self.remaining -= count as u64;
+        if self.remaining != 0 {
+            return Ok((chunk, Some(self)));
+        }
+
+        // Withhold the last bytes until the request body has been verified.
+        // An incomplete Content-Length body cannot be committed by the server.
+        if self.file.read(&mut [0_u8; 1]).await? != 0
+            || hex::encode(self.hasher.finalize()) != self.digest.hash
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "CAS upload digest mismatch: source changed during streaming",
+            ));
+        }
+        let _ = self.verified.send(());
+        Ok((chunk, None))
+    }
+}
+
+fn verified_file_body(file: File, digest: Digest) -> (Body, oneshot::Receiver<()>) {
+    let (verified, confirmation) = oneshot::channel();
+    if digest.size_bytes == 0 {
+        // A zero-length body already matches its digest and may never be polled.
+        let _ = verified.send(());
+        return (Body::default(), confirmation);
+    }
+    let upload = FileUpload {
+        remaining: digest.size_bytes,
+        file,
+        digest,
+        hasher: Sha256::new(),
+        verified,
+    };
+    let chunks = stream::try_unfold(Some(upload), |state| async {
+        match state {
+            Some(upload) => upload.next_chunk().await.map(Some),
+            None => Ok(None),
+        }
+    });
+    (Body::wrap_stream(chunks), confirmation)
 }
 
 #[async_trait]

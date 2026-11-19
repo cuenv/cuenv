@@ -161,6 +161,8 @@ pub enum VerifyMode {
 pub struct CacheGcArgs {
     /// Path to the CUE module or project directory.
     pub path: String,
+    /// CUE package containing the cache configuration.
+    pub package: String,
     /// Output format (`text` or `json`).
     pub format: String,
     /// Optional target maximum cache size string (e.g. `2G`, `500M`).
@@ -272,7 +274,12 @@ pub async fn execute_verify(path: &str, format: &str, mode: VerifyMode) -> Resul
 pub async fn execute_gc(args: CacheGcArgs) -> Result<()> {
     let project_dir = resolve_project_dir(&args.path)?;
     let local_root = task_cache::resolve_cache_root(&project_dir);
-    let max_bytes = args.max_size.as_deref().map(parse_byte_size).transpose()?;
+    let max_size = args.max_size.or_else(|| {
+        load_project_cache_config(&project_dir, &args.package)?
+            .local?
+            .max_size
+    });
+    let max_bytes = max_size.as_deref().map(parse_byte_size).transpose()?;
     let max_age = args.max_age.as_deref().map(parse_duration).transpose()?;
 
     let report = cuenv_cas::maintenance::gc(

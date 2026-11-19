@@ -280,6 +280,17 @@ impl PipelineContext {
         }
     }
 
+    /// Build the emitter used for each of the pipeline's workflow modes.
+    pub(super) fn github_emitter(&self) -> cuenv_github::workflow::GitHubActionsEmitter {
+        let emitter =
+            cuenv_github::workflow::GitHubActionsEmitter::from_config(&self.github_config)
+                .with_nix();
+        match &self.remote_cache {
+            Some(remote) => emitter.with_remote_cache(remote.clone()),
+            None => emitter,
+        }
+    }
+
     /// Get regular (non-phase) tasks from this context.
     pub(super) fn regular_tasks(&self) -> Vec<&cuenv_ci::ir::Task> {
         self.tasks.iter().filter(|t| t.phase.is_none()).collect()
@@ -474,12 +485,10 @@ fn emit_release_workflow(
     pipeline_name: &str,
     ctx: &PipelineContext,
 ) -> Result<Vec<(String, String)>> {
-    use cuenv_github::workflow::{GitHubActionsEmitter, ReleaseWorkflowBuilder};
+    use cuenv_github::workflow::ReleaseWorkflowBuilder;
 
     let ir = ctx.to_ir(pipeline_name);
-
-    let emitter = GitHubActionsEmitter::from_config(&ctx.github_config).with_nix();
-    let workflow = ReleaseWorkflowBuilder::new(emitter).build(&ir);
+    let workflow = ReleaseWorkflowBuilder::new(ctx.github_emitter()).build(&ir);
 
     let workflow_name = match &ir.pipeline.project_name {
         Some(project) => format!("{project}-{}", ir.pipeline.name),
@@ -496,15 +505,8 @@ fn emit_release_workflow(
 
 /// Emit a thin mode workflow by delegating to the GitHub Actions emitter.
 fn emit_thin_workflow(pipeline_name: &str, ctx: &PipelineContext) -> Result<Vec<(String, String)>> {
-    use cuenv_github::workflow::GitHubActionsEmitter;
-
     let ir = ctx.to_ir(pipeline_name);
-    let mut emitter = GitHubActionsEmitter::from_config(&ctx.github_config).with_nix();
-    if let Some(remote_cache) = ctx.remote_cache.clone() {
-        emitter = emitter.with_remote_cache(remote_cache);
-    }
-
-    let (filename, yaml) = emitter.emit_thin_workflow(&ir).map_err(|e| {
+    let (filename, yaml) = ctx.github_emitter().emit_thin_workflow(&ir).map_err(|e| {
         cuenv_core::Error::configuration(format!("Failed to emit thin workflow: {e}"))
     })?;
 
@@ -692,7 +694,6 @@ fn emit_standard_workflow(
     pipeline_name: &str,
     ctx: &PipelineContext,
 ) -> Result<Vec<(String, String)>> {
-    use cuenv_github::workflow::GitHubActionsEmitter;
     use cuenv_github::workflow::schema::{Concurrency, Workflow};
     use indexmap::IndexMap;
 
@@ -702,7 +703,7 @@ fn emit_standard_workflow(
     };
 
     let ir = ctx.to_ir(pipeline_name);
-    let emitter = GitHubActionsEmitter::from_config(&ctx.github_config).with_nix();
+    let emitter = ctx.github_emitter();
     let cuenv_setup = pipeline_cuenv_setup(ctx, &emitter, &ir);
 
     // Build jobs using build_simple_job (which supports project_path for working-directory)
@@ -1010,6 +1011,160 @@ mod tests {
             )],
             remote_cache: None,
         }
+    }
+
+    fn cache_pipeline_context(tasks: Vec<Task>) -> PipelineContext {
+        use cuenv_core::manifest::{CacheAuth, CacheProtocol, RemoteCache, RemoteCacheCi};
+
+        let mut ctx = make_pipeline_context(cuenv_manifest::config::CuenvSource::Nix, tasks);
+        ctx.trigger.branches = vec!["main".into()];
+        ctx.remote_cache = Some(RemoteCache {
+            endpoint: "https://cache.example.com".into(),
+            protocol: CacheProtocol::Http,
+            instance: "ci".into(),
+            upload: true,
+            auth: Some(CacheAuth {
+                bearer_token_env: Some("CACHE_TOKEN".into()),
+                header: None,
+            }),
+            ci: Some(RemoteCacheCi {
+                read_secret: Some("CACHE_READ".into()),
+                write_secret: Some("CACHE_WRITE".into()),
+                write_environment: Some("cache-write".into()),
+                ..Default::default()
+            }),
+        });
+        ctx
+    }
+
+    fn workflow_step<'workflow>(
+        job: &'workflow serde_yaml::Value,
+        command: &str,
+    ) -> Option<&'workflow serde_yaml::Value> {
+        job["steps"]
+            .as_sequence()?
+            .iter()
+            .find(|step| step["run"].as_str() == Some(command))
+    }
+
+    #[test]
+    fn expanded_workflow_only_gives_task_steps_cache_credentials()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let mut tasks = make_bootstrap_ir().tasks;
+        tasks.push(make_regular_task("build"));
+        let mut direct = make_regular_task("native");
+        direct.command = vec!["nix".into(), "build".into(), ".#package".into()];
+        tasks.push(direct);
+        let ctx = cache_pipeline_context(tasks);
+
+        let workflows = emit_standard_workflow("default", &ctx)?;
+        let yaml: serde_yaml::Value = serde_yaml::from_str(&workflows[0].1)?;
+        let jobs = &yaml["jobs"];
+        let build = &jobs["build"];
+        assert_eq!(build["environment"].as_str(), Some("cache-write"));
+        let step = workflow_step(build, "cuenv task build --skip-dependencies")
+            .ok_or("missing orchestrated step")?;
+        assert_eq!(
+            step["env"]["CACHE_TOKEN"].as_str(),
+            Some("${{ secrets.CACHE_WRITE }}")
+        );
+        assert_eq!(
+            step["env"]["CUENV_REMOTE_CACHE_UPLOAD"].as_str(),
+            Some("true")
+        );
+        assert!(jobs["native"]["environment"].is_null());
+        assert!(workflow_step(&jobs["native"], "nix build .#package").is_some());
+        for job in [build, &jobs["native"], &jobs["build-cuenv"]] {
+            assert!(job["env"]["CACHE_TOKEN"].is_null());
+            for other in job["steps"].as_sequence().ok_or("missing job steps")? {
+                if other != step {
+                    assert!(other["env"]["CACHE_TOKEN"].is_null());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn matrix_workflow_preserves_approval_when_cache_write_environment_conflicts()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        use cuenv_core::ci::{MatrixTask, PipelineTask, TaskRef};
+
+        let mut aggregate = make_regular_task("aggregate");
+        aggregate.manual_approval = true;
+        let mut ctx = cache_pipeline_context(vec![make_regular_task("build"), aggregate]);
+        ctx.pipeline_tasks = vec![
+            PipelineTask::Matrix(MatrixTask {
+                task_type: None,
+                task: TaskRef::from_name("build"),
+                matrix: BTreeMap::from([("arch".into(), vec!["linux-x64".into()])]),
+                artifacts: None,
+                params: None,
+            }),
+            PipelineTask::Matrix(MatrixTask {
+                task_type: None,
+                task: TaskRef::from_name("aggregate"),
+                matrix: BTreeMap::new(),
+                artifacts: None,
+                params: None,
+            }),
+        ];
+
+        let workflows = matrix::emit_matrix_workflow("default", &ctx)?;
+        let yaml: serde_yaml::Value = serde_yaml::from_str(&workflows[0].1)?;
+        let build = &yaml["jobs"]["build-linux-x64"];
+        let aggregate = &yaml["jobs"]["aggregate"];
+        assert_eq!(build["environment"].as_str(), Some("cache-write"));
+        assert_eq!(aggregate["environment"].as_str(), Some("production"));
+        let build_step = workflow_step(build, "cuenv task build --skip-dependencies")
+            .ok_or("missing matrix task step")?;
+        let aggregate_step = workflow_step(aggregate, "cuenv task aggregate --skip-dependencies")
+            .ok_or("missing aggregation task step")?;
+        assert_eq!(
+            build_step["env"]["CACHE_TOKEN"].as_str(),
+            Some("${{ secrets.CACHE_WRITE }}")
+        );
+        assert_eq!(
+            aggregate_step["env"]["CACHE_TOKEN"].as_str(),
+            Some("${{ secrets.CACHE_READ }}")
+        );
+        assert_eq!(
+            aggregate_step["env"]["CUENV_REMOTE_CACHE_UPLOAD"].as_str(),
+            Some("false")
+        );
+
+        ctx.trigger.pull_request = Some(true);
+        let workflows = matrix::emit_matrix_workflow("default", &ctx)?;
+        assert!(!workflows[0].1.contains("secrets.CACHE_WRITE"));
+        assert!(workflows[0].1.contains("secrets.CACHE_READ"));
+        Ok(())
+    }
+
+    #[test]
+    fn dedicated_binary_release_workflow_disables_remote_cache()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let mut ctx = cache_pipeline_context(make_bootstrap_ir().tasks);
+        ctx.is_release = true;
+        let workflows = emit_release_workflow("release", &ctx)?;
+        let yaml: serde_yaml::Value = serde_yaml::from_str(&workflows[0].1)?;
+        assert!(!workflows[0].1.contains("CACHE_TOKEN"));
+        assert!(!workflows[0].1.contains("cache-write"));
+        let jobs = &yaml["jobs"];
+        for (job, command) in [
+            (
+                "build",
+                "cuenv release binaries --build-only --target ${{ matrix.target }}",
+            ),
+            ("publish", "cuenv release binaries --publish-only"),
+        ] {
+            let step = workflow_step(&jobs[job], command).ok_or("missing binary release step")?;
+            assert_eq!(step["env"]["CUENV_REMOTE_CACHE"].as_str(), Some(""));
+            assert_eq!(
+                step["env"]["CUENV_REMOTE_CACHE_UPLOAD"].as_str(),
+                Some("false")
+            );
+        }
+        Ok(())
     }
 
     #[test]

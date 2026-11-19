@@ -31,6 +31,8 @@ const DEFAULT_MAX_BATCH_SIZE: i64 = 4 * 1024 * 1024 - 64 * 1024;
 const MAX_FIND_MISSING_ENCODED_BYTES: usize = 2 * 1024 * 1024;
 /// Upper bound on digest count in a single `FindMissingBlobsRequest`.
 const MAX_FIND_MISSING_DIGESTS: usize = 4096;
+/// Budget for the digest, compressor, and framing of one batch item.
+pub(crate) const BATCH_ITEM_OVERHEAD: u64 = 128;
 /// Minimum blob size before applying Zstandard compression.
 const MIN_COMPRESS_SIZE: u64 = 4 * 1024;
 /// The in-memory [`Cas`] API cannot safely represent unbounded hostile
@@ -122,7 +124,7 @@ impl RemoteCas {
     /// Whether a blob of `size_bytes` fits inside a single batch RPC.
     #[must_use]
     pub fn fits_in_a_batch(&self, size_bytes: u64) -> bool {
-        i64::try_from(size_bytes).is_ok_and(|size| size <= self.max_batch_size)
+        size_bytes.saturating_add(BATCH_ITEM_OVERHEAD) <= self.max_batch_size.cast_unsigned()
     }
 
     /// `{instance}/blobs/{hash}/{size}` — the REAPI read resource name.
@@ -244,11 +246,11 @@ impl RemoteCas {
             return Ok(());
         }
 
-        let max_bytes = usize::try_from(self.max_batch_size).unwrap_or(0);
+        let max_bytes = self.max_batch_size.cast_unsigned();
         let use_zstd = self.capabilities.supports_batch_update_zstd();
         let mut current_requests = Vec::new();
         let mut current_expected = HashSet::new();
-        let mut current_bytes = 0_usize;
+        let mut current_bytes = 0_u64;
 
         for (digest, raw) in blobs {
             digest.validate()?;
@@ -263,8 +265,8 @@ impl RemoteCas {
                 (pb::compressor::Value::Identity as i32, raw.clone())
             };
 
-            let item_bytes = payload.len().saturating_add(128);
-            if item_bytes > max_bytes && max_bytes > 0 {
+            let item_bytes = (payload.len() as u64).saturating_add(BATCH_ITEM_OVERHEAD);
+            if item_bytes > max_bytes {
                 return Err(Error::protocol(
                     "BatchUpdateBlobs",
                     format!(
@@ -457,8 +459,10 @@ impl RemoteCas {
             }
             let data = decode_compressed_blob(
                 "BatchReadBlobs",
-                entry.compressor,
-                &entry.data,
+                EncodedBlob {
+                    compressor: entry.compressor,
+                    data: &entry.data,
+                },
                 digest.size_bytes,
             )?;
             let actual = Digest::of_bytes(&data);
@@ -677,27 +681,6 @@ impl RemoteCas {
             ));
         }
         Ok(())
-    }
-
-    async fn digest_file(source: &Path) -> cuenv_cas::Result<Digest> {
-        let mut file = tokio::fs::File::open(source)
-            .await
-            .map_err(|error| cuenv_cas::Error::io(error, source, "open"))?;
-        let mut hasher = Sha256::new();
-        let mut size = 0_u64;
-        let mut buffer = vec![0_u8; 1024 * 1024];
-        loop {
-            let count = file
-                .read(&mut buffer)
-                .await
-                .map_err(|error| cuenv_cas::Error::io(error, source, "read"))?;
-            if count == 0 {
-                break;
-            }
-            hasher.update(&buffer[..count]);
-            size += count as u64;
-        }
-        Digest::try_new(hex::encode(hasher.finalize()), size)
     }
 
     async fn write_file_streamed(&self, digest: &Digest, source: &Path) -> cuenv_cas::Result<()> {
@@ -927,17 +910,44 @@ impl RemoteCas {
     }
 }
 
+pub(crate) async fn digest_file(
+    file: &mut tokio::fs::File,
+    source: &Path,
+) -> cuenv_cas::Result<Digest> {
+    let mut hasher = Sha256::new();
+    let mut size = 0_u64;
+    let mut buffer = vec![0_u8; 1024 * 1024];
+    loop {
+        let count = file
+            .read(&mut buffer)
+            .await
+            .map_err(|error| cuenv_cas::Error::io(error, source, "read"))?;
+        if count == 0 {
+            break;
+        }
+        hasher.update(&buffer[..count]);
+        size += count as u64;
+    }
+    Digest::try_new(hex::encode(hasher.finalize()), size)
+}
+
 fn compress_zstd(bytes: &[u8]) -> Result<Vec<u8>> {
     zstd::bulk::compress(bytes, 3)
         .map_err(|e| Error::protocol("zstd.compress", format!("zstd compression failed: {e}")))
 }
 
+#[derive(Clone, Copy)]
+struct EncodedBlob<'blob> {
+    compressor: i32,
+    data: &'blob [u8],
+}
+
 fn decode_compressed_blob(
     operation: &'static str,
-    compressor: i32,
-    data: &[u8],
+    blob: EncodedBlob<'_>,
     expected_uncompressed_size: u64,
 ) -> Result<Vec<u8>> {
+    let EncodedBlob { compressor, data } = blob;
     if compressor == pb::compressor::Value::Identity as i32 || compressor == 0 {
         return Ok(data.to_vec());
     }
@@ -1103,7 +1113,11 @@ impl Cas for RemoteCas {
         self.client
             .ensure_writable("upload a file")
             .map_err(cuenv_cas::Error::from)?;
-        let digest = Self::digest_file(source).await?;
+        let mut file = tokio::fs::File::open(source)
+            .await
+            .map_err(|error| cuenv_cas::Error::io(error, source, "open"))?;
+        let digest = digest_file(&mut file, source).await?;
+        drop(file);
         if self
             .find_missing(std::slice::from_ref(&digest))
             .await
@@ -1197,7 +1211,9 @@ mod tests {
     async fn batch_threshold_follows_the_advertised_limit() {
         let store = cas("");
         assert!(store.fits_in_a_batch(1024));
-        assert!(!store.fits_in_a_batch(u64::try_from(DEFAULT_MAX_BATCH_SIZE).unwrap() + 1));
+        let max_payload = store.max_batch_size().cast_unsigned() - BATCH_ITEM_OVERHEAD;
+        assert!(store.fits_in_a_batch(max_payload));
+        assert!(!store.fits_in_a_batch(max_payload + 1));
     }
 
     #[test]
@@ -1205,19 +1221,16 @@ mod tests {
         let payload = b"cuenv remote cache payload ".repeat(512);
         let compressed = compress_zstd(&payload).unwrap();
         assert!(compressed.len() < payload.len());
-        let decoded = decode_compressed_blob(
-            "test",
-            pb::compressor::Value::Zstd as i32,
-            &compressed,
-            payload.len() as u64,
-        )
-        .unwrap();
+        let blob = EncodedBlob {
+            compressor: pb::compressor::Value::Zstd as i32,
+            data: &compressed,
+        };
+        let decoded = decode_compressed_blob("test", blob, payload.len() as u64).unwrap();
         assert_eq!(decoded, payload);
 
         // Declaring a smaller expected size must reject the oversized stream.
-        let err =
-            decode_compressed_blob("test", pb::compressor::Value::Zstd as i32, &compressed, 16)
-                .expect_err("oversized decompressed payload must be rejected");
+        let err = decode_compressed_blob("test", blob, 16)
+            .expect_err("oversized decompressed payload must be rejected");
         assert!(err.to_string().contains("exceeds declared"));
     }
 }

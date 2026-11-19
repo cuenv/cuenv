@@ -23,7 +23,7 @@ use cuenv_core::manifest::Project;
 use cuenv_core::tasks::file_references::ReferenceChecks;
 use cuenv_core::{DryRun, Result};
 use cuenv_task_exec::TaskIndex;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -766,16 +766,6 @@ async fn execute_project_pipeline(
     // These are typically passed via GitHub Actions secrets or similar.
     super::reporting::register_ci_secrets();
 
-    // Merge static + hook-generated environment once per project, then reuse for all tasks.
-    let hook_env = request
-        .all_projects
-        .hook_environment(HookProject {
-            root: project_path,
-            config,
-            ancestor_configs: project_configs,
-        })
-        .await?;
-
     // Build task index for resolving nested task names (e.g., "deploy.preview")
     let task_index = TaskIndex::build(&config.tasks)?;
 
@@ -788,6 +778,35 @@ async fn execute_project_pipeline(
         task_names: tasks_to_run,
         projects: request.all_projects,
     }));
+    let withheld_env: BTreeSet<String> = std::iter::once(config)
+        .chain(project_configs.values())
+        .chain(
+            scope
+                .external_projects()
+                .map(|(_, project)| project.manifest.as_ref()),
+        )
+        .flat_map(|project| {
+            cuenv_task_exec::remote_cache::credential_variables(project.cache.as_ref())
+        })
+        .map(str::to_owned)
+        .collect();
+    cuenv_events::register_secrets(
+        withheld_env
+            .iter()
+            .filter_map(|name| std::env::var(name).ok()),
+    );
+
+    // Merge static + hook-generated environment once per project, then reuse for all tasks.
+    let hook_env = request
+        .all_projects
+        .hook_environment(HookProject {
+            root: project_path,
+            config,
+            ancestor_configs: project_configs,
+            withheld_env: &withheld_env,
+        })
+        .await?;
+
     let project_configs = Arc::new(project_configs.clone());
 
     let PipelineTaskResults {
@@ -805,6 +824,7 @@ async fn execute_project_pipeline(
         task_index: &task_index,
         cache_policy_override,
         hook_env: &hook_env,
+        withheld_env: &withheld_env,
         continue_on_error: pipeline_continue_on_error(config, pipeline_name),
         max_parallel,
         scope: &scope,

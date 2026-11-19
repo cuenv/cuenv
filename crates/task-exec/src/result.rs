@@ -1,13 +1,6 @@
 use super::graph_walk::WalkOutcome;
 
-/// Origin of a cached task result.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CacheSource {
-    /// Restored from the local CAS / ActionCache.
-    Local,
-    /// Restored from a remote cache and verified locally.
-    Remote,
-}
+pub use cuenv_cas::CacheSource;
 
 /// Task execution result
 #[derive(Debug, Clone)]

@@ -29,7 +29,7 @@ pub mod message;
 pub mod publisher;
 pub mod reapi;
 
-pub use action_cache::{ActionCache, LocalActionCache};
+pub use action_cache::{ActionCache, CacheSource, LocalActionCache};
 pub use cas::{Cas, LocalCas};
 pub use digest::{Digest, canonical_bytes, digest_of};
 pub use error::{Error, Result};
