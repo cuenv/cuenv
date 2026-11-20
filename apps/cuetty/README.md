@@ -37,7 +37,7 @@ explicit qualification gaps.
 
 ## Run
 
-On macOS with Rust and Apple's Metal Toolchain installed:
+On macOS with Rust and the Xcode Command Line Tools installed:
 
 ```sh
 cargo run --release --locked
@@ -457,9 +457,8 @@ it takes the sidebar's height. A directory without a project, tasks, or a notice
 pill, leaving the wordmark, and a pinned sidebar says there is no project there.
 Changing directory clears it.
 
-On macOS, `xcodebuild -downloadComponent MetalToolchain` installs the Metal
-compiler that GPUI needs. Runtime is only verified when
-`cargo run --release --locked` successfully opens Cuetty.
+On macOS, GPUI compiles the Metal shaders when Cuetty opens its first window.
+To verify runtime rendering, open Cuetty with `cargo run --release --locked`.
 
 The terminal content panel establishes its own full-size flex layout so the
 dark terminal surface is present on the first window frame; launch must not
