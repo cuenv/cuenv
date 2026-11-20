@@ -7,7 +7,7 @@ package rules
 	// Patterns use EditorConfig glob syntax (e.g., "*", "*.md", "Makefile")
 	// Pattern rules mirror `validate_section_pattern` in
 	// crates/editorconfig/src/builder.rs; keep both in sync.
-	[pattern=string & =~"^[^\\[\\]\\r\\n]+$"]: #EditorConfigSection
+	[string & =~"^[^\\[\\]\\r\\n]+$"]: #EditorConfigSection
 }
 
 #EditorConfigSection: {

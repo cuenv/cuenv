@@ -35,7 +35,9 @@ cuenv task -e staging test
 
 ## Configuration
 
-cuenv uses CUE for type-safe configuration. Create an `env.cue` file:
+Use CUE v0.18 or later and set `language.version` to `v0.18.0` or later in
+`cue.mod/module.cue`. Embed `schema.#Project` in projects and
+`schema.#Base...` in shared bases. Create an `env.cue` file:
 
 ```cue
 package cuenv
@@ -47,7 +49,7 @@ schema.#Project & {
 }
 
 env: {
-    NODE_ENV: "development" | "staging" | "production"
+    NODE_ENV: "development"
     API_KEY:  schema.#OnePasswordRef & { ref: "op://vault/api/key" }
     INFISICAL_API_KEY: schema.#InfisicalSecret & {
         projectId:   "00000000-0000-0000-0000-000000000000"

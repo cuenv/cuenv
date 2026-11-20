@@ -1,5 +1,5 @@
 // Fields that take free-form values must keep accepting them when the
-// project embeds schema.#Project at file level (CUE v0.17 closes `_` there).
+// project embeds schema.#Project at file level.
 package compat
 
 import (
