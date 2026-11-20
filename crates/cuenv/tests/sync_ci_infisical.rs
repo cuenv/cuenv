@@ -50,7 +50,7 @@ fn sync_example(
     fs::create_dir_all(root.join("cue.mod"))?;
     fs::write(
         root.join("cue.mod/module.cue"),
-        "module: \"github.com/cuenv/cuenv\"\nlanguage: {\n\tversion: \"v0.14.1\"\n}\n",
+        "module: \"github.com/cuenv/cuenv\"\nlanguage: {\n\tversion: \"v0.18.0\"\n}\n",
     )?;
     copy_cue_files(&repo.join("schema"), &root.join("schema"))?;
     copy_cue_files(

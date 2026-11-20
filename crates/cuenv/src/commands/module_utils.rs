@@ -61,7 +61,7 @@ const GROUP_AS_INPUT_HINT: &str = "hint: groups cannot be inputs yet; list the `
 /// - a path of a file reference fails at `…inputs.<n>.paths.<m>: invalid
 ///   value`, and the raw text of that check is a regular expression;
 /// - a task or group used as an input fails at `…inputs.<n>: conflicting
-///   values {…}` with the task's or group's value;
+///   values …` with the task's or group's value as one operand;
 /// - a string input that leaves the project fails at
 ///   `…._cuenvInputCheck."<input>": …`, after which its path from the module
 ///   root is given, where the error says which file the project is in.
@@ -91,12 +91,15 @@ enum InputNode {
 }
 
 /// The kind of node used as an input, when a line of the error is the
-/// schema rejecting one: `<…>.inputs.<n>: conflicting values {<value>} and
-/// …`, where the value is a task (it has a `command` or `script`) or a group
+/// schema rejecting one: `<…>.inputs.<n>: conflicting values …`, where one
+/// operand is a task (it has a `command` or `script`) or a group
 /// (`type: "group"`).
 fn input_node_kind(message: &str) -> Option<InputNode> {
     message.lines().find_map(|line| {
-        let (field, value) = line.split_once(": conflicting values {")?;
+        let (field, operands) = line.split_once(": conflicting values ")?;
+        let value = operands
+            .strip_prefix('{')
+            .or_else(|| operands.strip_prefix("string and {"))?;
         let field = field.split_whitespace().last()?;
         let segments: Vec<&str> = field.split('.').collect();
         let [.., "inputs", index] = segments.as_slice() else {
@@ -343,6 +346,8 @@ mod tests {
 
         assert!(with_input_hints(task.to_string()).ends_with(TASK_AS_INPUT_HINT));
         assert!(with_input_hints(group.to_string()).ends_with(GROUP_AS_INPUT_HINT));
+        let reversed = r#"tasks.build.inputs.1: conflicting values string and {command:"sh"}"#;
+        assert!(with_input_hints(reversed.to_string()).ends_with(TASK_AS_INPUT_HINT));
         // A struct that is no task is left alone.
         let other = "tasks.build.inputs.1: conflicting values {paths:[\"a\"]} and string";
         assert_eq!(with_input_hints(other.to_string()), other);

@@ -22,7 +22,7 @@ type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
 /// The module is the schema's own, so the fixture imports the real schema
 /// copied into it. The bridge loads this language version.
-const MODULE: &str = "module: \"github.com/cuenv/cuenv\"\nlanguage: version: \"v0.14.1\"\n";
+const MODULE: &str = "module: \"github.com/cuenv/cuenv\"\nlanguage: version: \"v0.18.0\"\n";
 
 /// `content`: a task that builds a file, a group, a sequence, and a task
 /// that declares no outputs.

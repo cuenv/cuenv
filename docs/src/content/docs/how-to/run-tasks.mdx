@@ -325,7 +325,7 @@ and materialized results.
 A path in `inputs` starts from one of three places, and the input says which:
 
 ```cue
-// app/env.cue — any language version
+// app/env.cue
 package cuenv
 
 import (
@@ -445,10 +445,8 @@ Re-labelling another project's task (`tasks: articles: content.tasks.articles`)
 conflicts on the stamp; put reusable task bodies in a definition of a package
 that is not a project.
 
-At language version `v0.18.0` a base is written `schema.#Base...`: embedding
-`schema.#Base` there closes the package and rejects every child's `name`. Below
-`v0.18.0` that spelling does not parse and plain `schema.#Base` works as
-before; a base that embeds no schema works at every version.
+Write a shared base as `schema.#Base...` so child projects can declare their
+own fields, including `name`.
 
 ### Tasks of another project
 
