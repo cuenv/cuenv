@@ -593,9 +593,11 @@ Rio integration or macOS acceptance has passed. Rust 1.100.0 is the latest stabl
 release as of 12 November 2026, per the
 [official release announcement](https://blog.rust-lang.org/2026/11/12/Rust-1.100.0/).
 
-`build_and_run.sh --verify` uses the installed macOS Metal toolchain to build,
-sign, and validate the application bundle. The exact commands and resulting
-platform boundary should be reported with every Cuetty implementation change.
+On macOS, the Xcode Command Line Tools provide the Apple tools needed for the
+build. GPUI compiles Metal shaders when Cuetty opens its first window.
+`build_and_run.sh --verify` builds, signs, and validates the application bundle.
+The exact commands and resulting platform boundary should be reported with
+every Cuetty implementation change.
 
 On Linux, the root flake's Cuetty executable includes the search paths GPUI
 needs for dynamically loaded libraries, including the Wayland client. These
