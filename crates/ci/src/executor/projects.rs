@@ -11,7 +11,7 @@
 use cuenv_core::Result;
 use cuenv_core::manifest::Project;
 use cuenv_task_exec::{ProjectSource, SourcedProject};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tokio::sync::OnceCell;
@@ -105,13 +105,9 @@ impl CiProjects {
         };
         let environment = cell
             .get_or_try_init(|| async {
-                super::hook_env::build_hook_environment(
-                    project.root,
-                    project.config,
-                    project.ancestor_configs,
-                )
-                .await
-                .map(Arc::new)
+                super::hook_env::build_hook_environment(project)
+                    .await
+                    .map(Arc::new)
             })
             .await?;
         Ok(Arc::clone(environment))
@@ -127,6 +123,7 @@ pub(super) struct HookProject<'project> {
     /// The projects in scope by directory, whose hooks a project below them
     /// may inherit.
     pub(super) ancestor_configs: &'project HashMap<PathBuf, Project>,
+    pub(super) withheld_env: &'project BTreeSet<String>,
 }
 
 impl cuenv_core::PlaceAnchor for CiProjects {

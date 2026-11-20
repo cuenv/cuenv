@@ -1,22 +1,28 @@
 //! Hook-backed environment assembly for CI task execution.
 
+use super::projects::HookProject;
 use cuenv_core::Result;
 use cuenv_core::cue::discovery;
 use cuenv_core::manifest::Project;
 use cuenv_hooks::{
-    ExecutionStatus, HookExecutionConfig, HookExecutionIdentity, HookExecutionState, HookRunState,
-    HookRunUpdate, StateManager,
+    ExecutionStatus, HookExecutionConfig, HookExecutionIdentity, HookExecutionState,
+    HookRunOptions, HookRunState, HookRunUpdate, StateManager,
 };
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 /// Build the project environment by merging static env with hook-generated values.
 pub(super) async fn build_hook_environment(
-    project_root: &Path,
-    config: &Project,
-    project_configs: &HashMap<PathBuf, Project>,
+    project: HookProject<'_>,
 ) -> Result<BTreeMap<String, String>> {
-    let static_env = extract_static_env_vars(config);
+    let HookProject {
+        root: project_root,
+        config,
+        ancestor_configs: project_configs,
+        withheld_env,
+    } = project;
+    let mut static_env = extract_static_env_vars(config);
+    static_env.retain(|name, _| !withheld_env.contains(name));
     let hooks = collect_hooks_from_ancestors(project_root, config, project_configs)?;
 
     if hooks.is_empty() {
@@ -65,13 +71,16 @@ pub(super) async fn build_hook_environment(
         }
     }
 
-    let execution = cuenv_hooks::execute_hooks(
+    let execution = cuenv_hooks::execute_hooks_with_options(
         hooks,
         &hook_config,
-        HookRunState {
-            manager: &state_manager,
-            state: &mut state,
-            identity: &identity,
+        HookRunOptions {
+            run: HookRunState {
+                manager: &state_manager,
+                state: &mut state,
+                identity: &identity,
+            },
+            withheld_env,
         },
     )
     .await;
@@ -219,9 +228,14 @@ mod tests {
         .unwrap();
 
         temp_env::async_with_vars([("CUENV_STATE_DIR", Some(state_dir.as_os_str()))], async {
-            let error = super::build_hook_environment(directory.path(), &config, &HashMap::new())
-                .await
-                .expect_err("a failed source hook must fail CI environment assembly");
+            let error = super::build_hook_environment(super::HookProject {
+                root: directory.path(),
+                config: &config,
+                ancestor_configs: &HashMap::new(),
+                withheld_env: &std::collections::BTreeSet::new(),
+            })
+            .await
+            .expect_err("a failed source hook must fail CI environment assembly");
             assert!(error.to_string().contains("hook execution failed"));
         })
         .await;

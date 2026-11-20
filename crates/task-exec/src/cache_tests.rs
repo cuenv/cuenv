@@ -23,6 +23,7 @@ fn make_cache(root: &Path) -> TaskCacheConfig {
         secret_salt: Some("test-salt".to_string()),
         mode_override: None,
         cache_root: root.to_path_buf(),
+        publisher: None,
     }
 }
 
@@ -525,6 +526,7 @@ async fn sandbox_tier_changes_action_digest() {
     unisolated.hermetic = crate::Hermetic::Options(crate::HermeticOptions {
         passthrough: Vec::new(),
         sandbox: Some(Sandbox::None),
+        network: false,
     });
 
     let (_, isolated_digest) = build_action_for_test(BuildActionInput {

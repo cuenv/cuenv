@@ -203,7 +203,8 @@ const fn requires_async_runtime(cli: &cli::Cli) -> bool {
             | cli::Commands::Logs { .. }
             | cli::Commands::Ps { .. }
             | cli::Commands::Restart { .. }
-            | cli::Commands::Infrastructure { .. } => true,
+            | cli::Commands::Infrastructure { .. }
+            | cli::Commands::Cache { .. } => true,
             // Tools commands - download/activate need async, list is sync
             cli::Commands::Tools { subcommand } => match subcommand {
                 cli::ToolsCommands::Download | cli::ToolsCommands::Activate => true,
@@ -356,7 +357,12 @@ fn cue_module_command_path(command: &Command) -> Option<&str> {
         | Command::RuntimeOciActivate
         | Command::ToolsDownload
         | Command::ToolsActivate
-        | Command::ToolsList => None,
+        | Command::ToolsList
+        | Command::CacheStatus { .. }
+        | Command::CacheStats { .. }
+        | Command::CacheVerify { .. }
+        | Command::CacheGc { .. }
+        | Command::CachePrune { .. } => None,
     }
 }
 

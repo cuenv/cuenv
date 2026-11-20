@@ -16,7 +16,9 @@ mod services;
 mod vcs;
 
 pub use base::Base;
-pub use cache::{Cache, CacheAuth, CacheAuthHeader, RemoteCache};
+pub use cache::{
+    Cache, CacheAuth, CacheAuthHeader, CacheProtocol, LocalCache, RemoteCache, RemoteCacheCi,
+};
 pub use codegen::*;
 pub use diagnostics::NodeDiagnostics;
 pub use formatters::*;

@@ -12,17 +12,18 @@ use std::fmt::Display;
 use std::path::{Path, PathBuf};
 
 /// Create a tool registry with available providers.
-fn create_registry() -> ToolRegistry {
+fn create_registry(withheld_env: &BTreeSet<String>) -> ToolRegistry {
     let mut registry = ToolRegistry::new();
 
     // Register Nix provider
-    registry.register(cuenv_tools_nix::NixToolProvider::new());
+    registry.register(cuenv_tools_nix::NixToolProvider::new().with_withheld_env(withheld_env));
 
     // Register GitHub provider
     registry.register(cuenv_tools_github::GitHubToolProvider::new());
 
     // Register Rustup provider
-    registry.register(cuenv_tools_rustup::RustupToolProvider::new());
+    registry
+        .register(cuenv_tools_rustup::RustupToolProvider::new().with_withheld_env(withheld_env));
 
     // Register URL provider
     registry.register(cuenv_tools_url::UrlToolProvider::new());
@@ -57,7 +58,7 @@ pub async fn execute_tools_download() -> Result<(), CliError> {
             )
         })?;
 
-    let session = ToolDownloadSession::new(&lockfile);
+    let session = ToolDownloadSession::new(&lockfile, &BTreeSet::new());
     session
         .check_prerequisites(PrerequisitePolicy::StrictCli)
         .await?;
@@ -80,6 +81,16 @@ pub async fn execute_tools_download() -> Result<(), CliError> {
 ///
 /// Returns an error if tools cannot be downloaded due to provider issues.
 pub async fn ensure_tools_downloaded(project_path: Option<&Path>) -> Result<(), CliError> {
+    ensure_tools_downloaded_withheld(project_path, &BTreeSet::new()).await
+}
+
+/// Download tools for activation without passing withheld credentials to tool processes.
+/// # Errors
+/// Returns an error if the lockfile, tool configuration, or provider fails.
+pub async fn ensure_tools_downloaded_withheld(
+    project_path: Option<&Path>,
+    withheld_env: &BTreeSet<String>,
+) -> Result<(), CliError> {
     let Some(lockfile_path) = find_runtime_lockfile(project_path) else {
         tracing::debug!("No lockfile found - skipping tool download");
         return Ok(());
@@ -105,7 +116,7 @@ pub async fn ensure_tools_downloaded(project_path: Option<&Path>) -> Result<(), 
         )
     })?;
 
-    let session = ToolDownloadSession::new(&lockfile);
+    let session = ToolDownloadSession::new(&lockfile, withheld_env);
     session
         .check_prerequisites(PrerequisitePolicy::BestEffortRuntime)
         .await?;
@@ -130,7 +141,7 @@ struct ToolDownloadSession<'tool_download_session> {
 }
 
 impl<'tool_download_session> ToolDownloadSession<'tool_download_session> {
-    fn new(lockfile: &'tool_download_session Lockfile) -> Self {
+    fn new(lockfile: &'tool_download_session Lockfile, withheld_env: &BTreeSet<String>) -> Self {
         let platform = Platform::current();
         let platform_key = platform.to_string();
 
@@ -139,7 +150,7 @@ impl<'tool_download_session> ToolDownloadSession<'tool_download_session> {
             platform,
             platform_key,
             options: ToolOptions::default(),
-            registry: create_registry(),
+            registry: create_registry(withheld_env),
         }
     }
 

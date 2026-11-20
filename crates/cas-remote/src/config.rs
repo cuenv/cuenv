@@ -38,13 +38,27 @@ impl std::fmt::Debug for Credentials {
     }
 }
 
-/// Connection settings for a REAPI cache.
+/// Transport protocol spoken by a remote cache server.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum RemoteProtocol {
+    /// Bazel Remote Execution API v2 over gRPC (default, including for
+    /// `http://` and `https://` endpoints for backwards compatibility).
+    #[default]
+    Grpc,
+    /// Bazel HTTP/REST remote cache layout (`/cas/<sha256>`, `/ac/<sha256>`).
+    Http,
+}
+
+/// Connection settings for a remote cache.
 #[derive(Debug, Clone)]
 pub struct RemoteConfig {
     /// Endpoint URL. `grpc://` is plaintext, `grpcs://` is TLS; `http://`
-    /// and `https://` are accepted as synonyms because that is what most
-    /// providers print in their setup output.
+    /// and `https://` are accepted as gRPC synonyms when `protocol` is
+    /// [`RemoteProtocol::Grpc`], or as HTTP/REST endpoints when `protocol` is
+    /// [`RemoteProtocol::Http`].
     pub endpoint: String,
+    /// Transport protocol. Defaults to [`RemoteProtocol::Grpc`].
+    pub protocol: RemoteProtocol,
     /// REAPI instance name. Most single-tenant servers use the empty string;
     /// multi-tenant providers use it to select a cache.
     pub instance_name: String,
@@ -62,6 +76,7 @@ impl Default for RemoteConfig {
     fn default() -> Self {
         Self {
             endpoint: String::new(),
+            protocol: RemoteProtocol::Grpc,
             instance_name: String::new(),
             credentials: Credentials::None,
             timeout: Duration::from_secs(60),
@@ -78,6 +93,13 @@ impl RemoteConfig {
             endpoint: endpoint.into(),
             ..Self::default()
         }
+    }
+
+    /// Set the transport protocol.
+    #[must_use]
+    pub fn with_protocol(mut self, protocol: RemoteProtocol) -> Self {
+        self.protocol = protocol;
+        self
     }
 
     /// Set the REAPI instance name.
@@ -147,6 +169,60 @@ impl RemoteConfig {
         rewritten
             .parse()
             .map_err(|e| Error::config(format!("invalid remote cache endpoint '{endpoint}': {e}")))
+    }
+
+    /// The endpoint as a validated HTTP/HTTPS base URL for Bazel HTTP remote
+    /// caching (`/cas/<sha256>`, `/ac/<sha256>`).
+    ///
+    /// Preserves any configured path prefix and rejects `grpc://` / `grpcs://`
+    /// schemes, embedded credentials, query strings, and fragments.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the endpoint is empty, does not use `http://` or
+    /// `https://`, or is not a valid URL.
+    pub fn http_base_url(&self) -> Result<reqwest::Url> {
+        let endpoint = self.endpoint.trim();
+        if endpoint.is_empty() {
+            return Err(Error::config("remote cache endpoint is empty"));
+        }
+
+        match endpoint.split_once("://") {
+            Some(("http" | "https", _)) => {}
+            Some((scheme, _)) => {
+                return Err(Error::config(format!(
+                    "unsupported HTTP remote cache scheme '{scheme}': use http:// or https://"
+                )));
+            }
+            None => {
+                return Err(Error::config(format!(
+                    "remote cache endpoint '{endpoint}' has no scheme: \
+                     prefix it with https:// (TLS) or http:// (plaintext)"
+                )));
+            }
+        }
+
+        let url = reqwest::Url::parse(endpoint).map_err(|e| {
+            Error::config(format!(
+                "invalid HTTP remote cache endpoint '{endpoint}': {e}"
+            ))
+        })?;
+        if !url.username().is_empty() || url.password().is_some() {
+            return Err(Error::config(
+                "HTTP remote cache endpoint must not embed credentials in the URL; use auth config",
+            ));
+        }
+        if url.query().is_some() || url.fragment().is_some() {
+            return Err(Error::config(
+                "HTTP remote cache endpoint must not contain a query string or fragment",
+            ));
+        }
+        if url.host_str().is_none() {
+            return Err(Error::config(format!(
+                "HTTP remote cache endpoint '{endpoint}' has no host"
+            )));
+        }
+        Ok(url)
     }
 
     /// Whether the endpoint will be dialled over TLS.

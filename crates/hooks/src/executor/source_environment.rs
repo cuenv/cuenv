@@ -2,13 +2,24 @@
 
 use crate::types::Hook;
 use crate::{Error, Result};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::process::Stdio;
 use tokio::process::Command;
 use tracing::debug;
 
 type EnvironmentDelta = (HashMap<String, String>, Vec<String>);
+
+/// Inputs for capturing the environment produced by a source hook.
+#[derive(Clone, Copy)]
+pub struct SourceEnvironmentOptions<'source> {
+    /// Prior variables carried into source evaluation.
+    pub prior_env: &'source HashMap<String, String>,
+    /// Time limit for each subprocess.
+    pub timeout_seconds: u64,
+    /// Variables withheld from the hook command and evaluation shells.
+    pub withheld_env: &'source BTreeSet<String>,
+}
 
 /// Execute a single source hook and return the resulting environment.
 ///
@@ -25,14 +36,38 @@ pub async fn capture_source_environment(
     prior_env: &HashMap<String, String>,
     timeout_seconds: u64,
 ) -> Result<HashMap<String, String>> {
+    capture_source_environment_with_options(
+        hook,
+        SourceEnvironmentOptions {
+            prior_env,
+            timeout_seconds,
+            withheld_env: &BTreeSet::new(),
+        },
+    )
+    .await
+}
+
+/// Capture a source hook environment with explicit child environment exclusions.
+///
+/// # Errors
+/// Returns an error if the hook or source evaluation fails, or if the captured
+/// environment contains invalid entries.
+pub async fn capture_source_environment_with_options(
+    hook: Hook,
+    options: SourceEnvironmentOptions<'_>,
+) -> Result<HashMap<String, String>> {
     if !hook.source.unwrap_or(false) {
         return Err(Error::configuration(
             "capture_source_environment requires a source hook",
         ));
     }
 
-    let hook_result =
-        super::hook_executor::execute_hook_with_timeout(hook, &timeout_seconds).await?;
+    let hook_result = super::hook_executor::execute_hook_with_timeout(
+        hook,
+        options.timeout_seconds,
+        options.withheld_env,
+    )
+    .await?;
     if !hook_result.success {
         return Err(Error::process(
             hook_result
@@ -41,39 +76,38 @@ pub async fn capture_source_environment(
         ));
     }
     let (env_delta, removed_keys) =
-        evaluate_shell_environment(&hook_result.stdout, prior_env, timeout_seconds).await?;
+        evaluate_shell_environment_with_options(&hook_result.stdout, options).await?;
 
-    let mut environment = prior_env.clone();
+    let mut environment = options.prior_env.clone();
     for (key, value) in env_delta {
         environment.insert(key, value);
     }
     for key in removed_keys {
         environment.remove(&key);
     }
+    environment.retain(|name, _| !is_withheld_environment_name(name, options.withheld_env));
 
     Ok(environment)
 }
 
 /// Detect which shell to use for environment evaluation.
-pub async fn detect_shell() -> String {
-    if is_shell_capable("bash").await {
+pub(super) async fn detect_shell(withheld_env: &BTreeSet<String>) -> String {
+    if is_shell_capable("bash", withheld_env).await {
         return "bash".to_string();
     }
 
-    if is_shell_capable("zsh").await {
+    if is_shell_capable("zsh", withheld_env).await {
         return "zsh".to_string();
     }
 
     "sh".to_string()
 }
 
-async fn is_shell_capable(shell: &str) -> bool {
+async fn is_shell_capable(shell: &str, withheld_env: &BTreeSet<String>) -> bool {
     let check_script = "case x in x) true ;& y) true ;; esac";
     let mut command = Command::new(shell);
-    command
-        .arg("-c")
-        .arg(check_script)
-        .env_remove("CUENV_HOOK_SESSION");
+    command.arg("-c").arg(check_script);
+    remove_withheld_environment(&mut command, withheld_env);
     matches!(
         super::output::run_command(command, None, std::time::Duration::from_secs(3)).await,
         Ok(Some(output)) if output.status.success()
@@ -81,11 +115,32 @@ async fn is_shell_capable(shell: &str) -> bool {
 }
 
 /// Evaluate shell script and extract resulting environment variables.
+#[cfg(test)]
 pub async fn evaluate_shell_environment(
     shell_script: &str,
     prior_env: &HashMap<String, String>,
     timeout_seconds: u64,
 ) -> Result<EnvironmentDelta> {
+    evaluate_shell_environment_with_options(
+        shell_script,
+        SourceEnvironmentOptions {
+            prior_env,
+            timeout_seconds,
+            withheld_env: &BTreeSet::new(),
+        },
+    )
+    .await
+}
+
+async fn evaluate_shell_environment_with_options(
+    shell_script: &str,
+    options: SourceEnvironmentOptions<'_>,
+) -> Result<EnvironmentDelta> {
+    let SourceEnvironmentOptions {
+        prior_env,
+        timeout_seconds,
+        withheld_env,
+    } = options;
     if prior_env.keys().any(|key| !is_valid_environment_name(key)) {
         return Err(Error::configuration(
             "Prior environment contains an invalid variable name",
@@ -102,7 +157,7 @@ pub async fn evaluate_shell_environment(
         debug!("Detected Nix bash in source script");
         bash_path.to_string_lossy().into_owned()
     } else {
-        detect_shell().await
+        detect_shell(withheld_env).await
     };
 
     debug!("Selected a shell for source evaluation");
@@ -112,6 +167,7 @@ pub async fn evaluate_shell_environment(
         shell: &shell,
         env_cmd: &env_cmd,
         prior_env,
+        withheld_env,
         timeout: std::time::Duration::from_secs(timeout_seconds),
     };
     let env_before = capture_baseline_environment(&shell_context).await?;
@@ -165,6 +221,7 @@ struct ShellContext<'shell> {
     shell: &'shell str,
     env_cmd: &'shell str,
     prior_env: &'shell HashMap<String, String>,
+    withheld_env: &'shell BTreeSet<String>,
     timeout: std::time::Duration,
 }
 
@@ -176,7 +233,8 @@ async fn capture_baseline_environment(
     cmd_before.arg(format!("{} -0", shell_quote(context.env_cmd)));
     cmd_before.stdout(Stdio::piped());
     cmd_before.stderr(Stdio::piped());
-    apply_prior_env(&mut cmd_before, context.prior_env);
+    cmd_before.envs(context.prior_env);
+    remove_withheld_environment(&mut cmd_before, context.withheld_env);
 
     let output_before = super::output::run_command(cmd_before, None, context.timeout)
         .await?
@@ -216,7 +274,8 @@ async fn evaluate_filtered_script(
     let mut cmd = Command::new(context.shell);
     cmd.arg("-c");
     cmd.arg(source_evaluation_command(delimiter, context.env_cmd));
-    apply_prior_env(&mut cmd, context.prior_env);
+    cmd.envs(context.prior_env);
+    remove_withheld_environment(&mut cmd, context.withheld_env);
     super::output::run_command(cmd, Some(filtered_script.as_bytes()), context.timeout)
         .await?
         .ok_or_else(|| Error::configuration("Source shell evaluation timed out"))
@@ -236,11 +295,24 @@ pub(super) fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
-fn apply_prior_env(cmd: &mut Command, prior_env: &HashMap<String, String>) {
-    for (key, value) in prior_env {
-        cmd.env(key, value);
+pub(super) fn remove_withheld_environment(cmd: &mut Command, withheld_env: &BTreeSet<String>) {
+    for key in withheld_env {
+        cmd.env_remove(key);
     }
     cmd.env_remove("CUENV_HOOK_SESSION");
+}
+
+pub(super) fn is_withheld_environment_name(name: &str, withheld_env: &BTreeSet<String>) -> bool {
+    #[cfg(windows)]
+    {
+        withheld_env
+            .iter()
+            .any(|key| key.eq_ignore_ascii_case(name))
+    }
+    #[cfg(not(windows))]
+    {
+        withheld_env.contains(name)
+    }
 }
 
 pub(super) fn environment_output_bytes<'a>(stdout: &'a [u8], delimiter: &str) -> Option<&'a [u8]> {

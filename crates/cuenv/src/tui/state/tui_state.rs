@@ -299,6 +299,7 @@ impl TuiState {
             | EventCategory::Command(_)
             | EventCategory::Interactive(_)
             | EventCategory::System(_)
+            | EventCategory::Cache(_)
             | EventCategory::Output(_) => {}
         }
     }

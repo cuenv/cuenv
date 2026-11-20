@@ -4,9 +4,10 @@ use async_trait::async_trait;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 
-use cuenv_secrets::{SecretError, SecretResolver, SecretSpec};
+use cuenv_secrets::{ResolveSecret, SecretError, SecretResolver, SecretSpec, is_withheld_env};
 use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use tokio::process::Command;
 
 const DEFAULT_SECRET_MANAGER_URL: &str = "https://secretmanager.googleapis.com";
@@ -114,19 +115,26 @@ impl GcpSecretManagerResolver {
         Ok(config)
     }
 
-    async fn access_token(name: &str) -> Result<String, SecretError> {
-        if let Some(token) = cuenv_secrets::http::env_var("GOOGLE_OAUTH_ACCESS_TOKEN") {
+    async fn access_token(request: ResolveSecret<'_>) -> Result<String, SecretError> {
+        let name = request.name;
+        if !is_withheld_env(request.withheld_env, "GOOGLE_OAUTH_ACCESS_TOKEN")
+            && let Some(token) = cuenv_secrets::http::env_var("GOOGLE_OAUTH_ACCESS_TOKEN")
+        {
             return Ok(token);
         }
 
         let mut command = Command::new("gcloud");
         command.args(["auth", "application-default", "print-access-token"]);
 
-        if let Some(credentials) = cuenv_secrets::http::env_var("GOOGLE_APPLICATION_CREDENTIALS") {
+        if !is_withheld_env(request.withheld_env, "GOOGLE_APPLICATION_CREDENTIALS")
+            && let Some(credentials) =
+                cuenv_secrets::http::env_var("GOOGLE_APPLICATION_CREDENTIALS")
+        {
             command.env("GOOGLE_APPLICATION_CREDENTIALS", &credentials);
             command.env("CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE", credentials);
         }
 
+        request.withhold_from(&mut command);
         let output = command.output().await.map_err(|e| {
             SecretError::resolution_failed(
                 name,
@@ -226,10 +234,24 @@ impl GcpSecretManagerResolver {
 #[async_trait]
 impl SecretResolver for GcpSecretManagerResolver {
     async fn resolve(&self, name: &str, spec: &SecretSpec) -> Result<String, SecretError> {
-        let config = Self::parse_config(name, spec)?;
-        let token = Self::access_token(name).await?;
-        let response = self.send_secret_request(name, &config, &token).await?;
-        Self::parse_secret_response(name, response).await
+        self.resolve_with_options(ResolveSecret {
+            name,
+            spec,
+            withheld_env: &BTreeSet::new(),
+        })
+        .await
+    }
+
+    async fn resolve_with_options(
+        &self,
+        request: ResolveSecret<'_>,
+    ) -> Result<String, SecretError> {
+        let config = Self::parse_config(request.name, request.spec)?;
+        let token = Self::access_token(request).await?;
+        let response = self
+            .send_secret_request(request.name, &config, &token)
+            .await?;
+        Self::parse_secret_response(request.name, response).await
     }
 
     fn provider_name(&self) -> &'static str {
@@ -374,6 +396,59 @@ mod tests {
         assert!(message.contains("exited with status 4"), "{message}");
         assert!(!message.contains("LEAKED-STDERR-VALUE"), "{message}");
         assert!(!message.contains("refresh_token"), "{message}");
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn gcloud_excludes_reserved_adc_overrides() -> Result<(), Box<dyn Error>> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _guard = TEST_ENV_LOCK.lock().await;
+        let directory =
+            std::env::temp_dir().join(format!("cuenv-gcp-withheld-test-{}", std::process::id()));
+        std::fs::create_dir_all(&directory)?;
+        let script = directory.join("gcloud");
+        std::fs::write(
+            &script,
+            r#"#!/bin/sh
+test -z "${GOOGLE_OAUTH_ACCESS_TOKEN+x}" || exit 11
+test -z "${GOOGLE_APPLICATION_CREDENTIALS+x}" || exit 12
+test -z "${CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE+x}" || exit 13
+printf '%s\n' gcloud-token
+"#,
+        )?;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))?;
+        let inherited_path = std::env::var_os("PATH").unwrap_or_default();
+        let path = std::env::join_paths(
+            std::iter::once(directory.clone()).chain(std::env::split_paths(&inherited_path)),
+        )?;
+        let withheld_env = BTreeSet::from([
+            "GOOGLE_OAUTH_ACCESS_TOKEN".to_owned(),
+            "GOOGLE_APPLICATION_CREDENTIALS".to_owned(),
+        ]);
+        let token = temp_env::async_with_vars(
+            [
+                ("PATH", Some(path.as_os_str())),
+                (
+                    "GOOGLE_OAUTH_ACCESS_TOKEN",
+                    Some(std::ffi::OsStr::new("cache-token")),
+                ),
+                (
+                    "GOOGLE_APPLICATION_CREDENTIALS",
+                    Some(std::ffi::OsStr::new("reserved-path")),
+                ),
+                ("CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE", None),
+            ],
+            GcpSecretManagerResolver::access_token(ResolveSecret {
+                name: "API_KEY",
+                spec: &SecretSpec::new("gcloud"),
+                withheld_env: &withheld_env,
+            }),
+        )
+        .await;
+        std::fs::remove_dir_all(&directory)?;
+        assert_eq!(token?, "gcloud-token");
         Ok(())
     }
 

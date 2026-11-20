@@ -303,3 +303,77 @@ fn permissions_are_scoped_to_jobs_in_both_modes() {
         }
     }
 }
+
+#[test]
+fn test_remote_cache_separates_ro_pr_and_protected_rw_credentials() {
+    use cuenv_core::manifest::{CacheAuth, CacheProtocol, RemoteCache, RemoteCacheCi};
+
+    let remote_cache = RemoteCache {
+        endpoint: "https://cache.example.com".to_string(),
+        protocol: CacheProtocol::Http,
+        instance: "ci".to_string(),
+        upload: true,
+        auth: Some(CacheAuth {
+            bearer_token_env: Some("CUENV_CACHE_TOKEN".to_string()),
+            header: None,
+        }),
+        ci: Some(RemoteCacheCi {
+            read_secret: Some("CACHE_RO_TOKEN".to_string()),
+            write_secret: Some("CACHE_RW_TOKEN".to_string()),
+            write_environment: Some("cache-write".to_string()),
+            write_queue: None,
+            isolated_cache_dir: true,
+        }),
+    };
+
+    let emitter = GitHubActionsEmitter::new()
+        .without_nix()
+        .without_cuenv_build()
+        .with_remote_cache(remote_cache);
+
+    // 1. Protected push-only workflow gets write environment + RW secret + trusted cache dir.
+    let mut protected_ir = super::make_ir(vec![super::make_task("build", &["cargo", "build"])]);
+    protected_ir.pipeline.trigger = Some(cuenv_ci::ir::TriggerCondition {
+        branches: vec!["main".to_string()],
+        pull_request: Some(false),
+        ..Default::default()
+    });
+    let protected_yaml = emitter.emit_thin(&protected_ir).unwrap();
+    assert!(protected_yaml.contains("environment: cache-write"));
+    assert!(protected_yaml.contains("secrets.CACHE_RW_TOKEN"));
+    assert!(!protected_yaml.contains("secrets.CACHE_RO_TOKEN"));
+    assert!(protected_yaml.contains("CUENV_REMOTE_CACHE_UPLOAD: 'true'"));
+    assert!(protected_yaml.contains("cuenv-cache/trusted"));
+
+    protected_ir.pipeline.environment = Some("deploy".to_string());
+    let conflict_yaml = emitter.emit_thin(&protected_ir).unwrap();
+    assert!(conflict_yaml.contains("environment: deploy"));
+    assert!(!conflict_yaml.contains("secrets.CACHE_RW_TOKEN"));
+    assert!(conflict_yaml.contains("secrets.CACHE_RO_TOKEN"));
+    assert!(conflict_yaml.contains("CUENV_REMOTE_CACHE_UPLOAD: 'false'"));
+
+    protected_ir.pipeline.environment = None;
+    if let Some(trigger) = &mut protected_ir.pipeline.trigger {
+        trigger.manual = Some(cuenv_ci::ir::ManualTriggerConfig {
+            enabled: true,
+            ..Default::default()
+        });
+    }
+    let manual_yaml = emitter.emit_thin(&protected_ir).unwrap();
+    assert!(!manual_yaml.contains("secrets.CACHE_RW_TOKEN"));
+    assert!(manual_yaml.contains("secrets.CACHE_RO_TOKEN"));
+
+    // 2. Pull-request workflow gets only RO secret, no write environment, and untrusted cache dir.
+    let mut pr_ir = super::make_ir(vec![super::make_task("build", &["cargo", "build"])]);
+    pr_ir.pipeline.trigger = Some(cuenv_ci::ir::TriggerCondition {
+        branches: vec!["main".to_string()],
+        pull_request: Some(true),
+        ..Default::default()
+    });
+    let pr_yaml = emitter.emit_thin(&pr_ir).unwrap();
+    assert!(!pr_yaml.contains("environment: cache-write"));
+    assert!(!pr_yaml.contains("secrets.CACHE_RW_TOKEN"));
+    assert!(pr_yaml.contains("secrets.CACHE_RO_TOKEN"));
+    assert!(pr_yaml.contains("CUENV_REMOTE_CACHE_UPLOAD: 'false'"));
+    assert!(pr_yaml.contains("cuenv-cache/untrusted"));
+}

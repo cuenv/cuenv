@@ -118,7 +118,64 @@ impl RemoteClient {
         request.metadata_mut().insert(key, value);
         Ok(request)
     }
+}
 
+/// Compression algorithms supported by cuenv's REAPI v2.1 client.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Compressor {
+    /// Uncompressed payloads (`IDENTITY`).
+    Identity,
+    /// Zstandard compression (`ZSTD`).
+    Zstd,
+}
+
+/// Capabilities negotiated from the REAPI server's `GetCapabilities` response.
+///
+/// ByteStream, `BatchUpdateBlobs`, and `BatchReadBlobs` compression support are
+/// tracked separately because REAPI v2.1 servers frequently advertise different
+/// subsets for streaming vs batched RPCs.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ServerCapabilities {
+    /// Maximum total bytes in a single `BatchUpdateBlobs`/`BatchReadBlobs` RPC.
+    pub max_batch_total_size_bytes: Option<i64>,
+    /// Compressors accepted by `ByteStream.Read` and `ByteStream.Write`.
+    pub bytestream_compressors: Vec<Compressor>,
+    /// Compressors accepted by `ContentAddressableStorage.BatchUpdateBlobs`.
+    pub batch_update_compressors: Vec<Compressor>,
+    /// Compressors accepted by `ContentAddressableStorage.BatchReadBlobs`.
+    pub batch_read_compressors: Vec<Compressor>,
+}
+
+impl ServerCapabilities {
+    /// Whether the server advertises Zstandard for `ByteStream` transfers.
+    #[must_use]
+    pub fn supports_bytestream_zstd(&self) -> bool {
+        self.bytestream_compressors.contains(&Compressor::Zstd)
+    }
+
+    /// Whether the server advertises Zstandard for `BatchUpdateBlobs`.
+    #[must_use]
+    pub fn supports_batch_update_zstd(&self) -> bool {
+        self.batch_update_compressors.contains(&Compressor::Zstd)
+    }
+
+    /// Whether the server advertises Zstandard for `BatchReadBlobs`.
+    #[must_use]
+    pub fn supports_batch_read_zstd(&self) -> bool {
+        self.batch_read_compressors.contains(&Compressor::Zstd)
+    }
+}
+
+fn parse_compressors(raw: &[i32]) -> Vec<Compressor> {
+    let zstd = i32::from(pb::compressor::Value::Zstd);
+    let mut result = vec![Compressor::Identity];
+    if raw.contains(&zstd) {
+        result.push(Compressor::Zstd);
+    }
+    result
+}
+
+impl RemoteClient {
     /// Ask the server what it supports, and refuse it if cuenv cannot use it.
     ///
     /// cuenv digests with SHA-256 and nothing else, so a server that does not
@@ -126,13 +183,10 @@ impl RemoteClient {
     /// handshake makes that a configuration error instead of a permanent
     /// mystery miss.
     ///
-    /// Returns the server's maximum batch payload size, or `None` when it
-    /// does not advertise one.
-    ///
     /// # Errors
     ///
     /// Returns an error if the RPC fails or the server is incompatible.
-    pub async fn check_capabilities(&self) -> Result<Option<i64>> {
+    pub async fn capabilities(&self) -> Result<ServerCapabilities> {
         let mut client = CapabilitiesClient::new(self.channel());
         let request = self.request(pb::GetCapabilitiesRequest {
             instance_name: self.instance_name(),
@@ -158,7 +212,29 @@ impl RemoteClient {
             )));
         }
 
-        Ok(Some(cache.max_batch_total_size_bytes).filter(|size| *size > 0))
+        let bytestream_compressors = parse_compressors(&cache.supported_compressors);
+        let batch_update_compressors = parse_compressors(&cache.supported_batch_update_compressors);
+        // REAPI v2.1 uses `supported_compressors` for both ByteStream and
+        // `BatchReadBlobs.acceptable_compressors`.
+        let batch_read_compressors = parse_compressors(&cache.supported_compressors);
+
+        Ok(ServerCapabilities {
+            max_batch_total_size_bytes: Some(cache.max_batch_total_size_bytes)
+                .filter(|size| *size > 0),
+            bytestream_compressors,
+            batch_update_compressors,
+            batch_read_compressors,
+        })
+    }
+
+    /// Ask the server what it supports, returning its maximum batch payload
+    /// size, or `None` when it does not advertise one.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the RPC fails or the server is incompatible.
+    pub async fn check_capabilities(&self) -> Result<Option<i64>> {
+        Ok(self.capabilities().await?.max_batch_total_size_bytes)
     }
 }
 
@@ -166,7 +242,7 @@ impl RemoteClient {
 ///
 /// Horizontal tab is permitted by the HTTP grammar but has no business in a
 /// credential, so it is excluded too.
-fn is_valid_header_value(value: &str) -> bool {
+pub(crate) fn is_valid_header_value(value: &str) -> bool {
     !value.is_empty() && value.bytes().all(|byte| (0x20..=0x7e).contains(&byte))
 }
 

@@ -4,9 +4,9 @@ use super::cli::CliResolver;
 use super::core::{InvokeRequest, SharedCore};
 use super::wasm;
 use async_trait::async_trait;
-use cuenv_secrets::{SecretError, SecretResolver, SecretSpec, SecureSecret};
+use cuenv_secrets::{ResolveSecret, SecretError, SecretResolver, SecretSpec, SecureSecret};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 /// Configuration for 1Password secret resolution
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -185,23 +185,23 @@ impl OnePasswordResolver {
     /// Resolve a secret - tries HTTP first if available, falls back to CLI
     async fn resolve_with_config(
         &self,
-        name: &str,
+        request: ResolveSecret<'_>,
         config: &OnePasswordConfig,
     ) -> Result<String, SecretError> {
         // Try HTTP mode if available
         if self.client_id.is_some() {
-            return self.resolve_http(name, config);
+            return self.resolve_http(request.name, config);
         }
 
         // Fallback to CLI
         if let Some(secret) = self
             .cli
-            .ensure_authenticated(name, &config.reference)
+            .ensure_authenticated(request, &config.reference)
             .await?
         {
             return Ok(secret);
         }
-        self.cli.resolve(name, &config.reference).await
+        self.cli.resolve(request, &config.reference).await
     }
 
     /// Resolve multiple secrets using Secrets.ResolveAll (HTTP mode)
@@ -375,14 +375,21 @@ impl SecretResolver for OnePasswordResolver {
     }
 
     async fn resolve(&self, name: &str, spec: &SecretSpec) -> Result<String, SecretError> {
-        // Try to parse source as JSON OnePasswordConfig
-        if let Ok(config) = serde_json::from_str::<OnePasswordConfig>(&spec.source) {
-            return self.resolve_with_config(name, &config).await;
-        }
+        self.resolve_with_options(ResolveSecret {
+            name,
+            spec,
+            withheld_env: &BTreeSet::new(),
+        })
+        .await
+    }
 
-        // Fallback: treat source as a simple reference string
-        let config = OnePasswordConfig::new(spec.source.clone());
-        self.resolve_with_config(name, &config).await
+    async fn resolve_with_options(
+        &self,
+        request: ResolveSecret<'_>,
+    ) -> Result<String, SecretError> {
+        let config = serde_json::from_str(&request.spec.source)
+            .unwrap_or_else(|_| OnePasswordConfig::new(request.spec.source.clone()));
+        self.resolve_with_config(request, &config).await
     }
 
     async fn resolve_batch(
@@ -416,6 +423,7 @@ mod tests {
     fn write_fake_op_shim(dir: &Path) -> std::path::PathBuf {
         let op_path = dir.join("op");
         let script = r#"#!/bin/sh
+test -z "${CUENV_OP_TEST_CACHE_CREDENTIAL+x}" || exit 11
 cmd="$1"
 shift
 
@@ -706,6 +714,46 @@ esac
             3,
             "expected one read per secret, got log lines: {lines:?}"
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cli_authentication_and_read_use_the_current_credential_scope()
+    -> Result<(), Box<dyn std::error::Error>> {
+        const CREDENTIAL: &str = "CUENV_OP_TEST_CACHE_CREDENTIAL";
+        let temp = tempfile::tempdir()?;
+        write_fake_op_shim(temp.path());
+        let log = temp.path().join("op.log");
+        let path = prepend_path(temp.path());
+        let log_path = log.to_string_lossy();
+        temp_env::async_with_vars(
+            [
+                ("PATH", Some(path.as_str())),
+                ("OP_TEST_LOG", Some(log_path.as_ref())),
+                ("OP_SERVICE_ACCOUNT_TOKEN", None),
+                (CREDENTIAL, Some("private-cache-sentinel")),
+            ],
+            async {
+                let resolver = OnePasswordResolver::try_new()?;
+                let spec = SecretSpec::new("op://vault/service/api_key");
+                assert!(resolver.resolve("API_KEY", &spec).await.is_err());
+                let secret = resolver
+                    .resolve_with_options(ResolveSecret {
+                        name: "API_KEY",
+                        spec: &spec,
+                        withheld_env: &BTreeSet::from([CREDENTIAL.to_owned()]),
+                    })
+                    .await?;
+                assert_eq!(secret, "secret-for-op://vault/service/api_key");
+                Ok::<_, SecretError>(())
+            },
+        )
+        .await?;
+        assert_eq!(
+            read_log_lines(&log),
+            ["whoami", "read:op://vault/service/api_key"]
+        );
+        Ok(())
     }
 
     #[cfg(unix)]

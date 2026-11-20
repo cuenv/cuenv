@@ -5,6 +5,7 @@
 
 use crate::digest::Digest;
 use crate::error::{Error, Result};
+use crate::maintenance::CacheUseGuard;
 use crate::message::ActionResult;
 use crate::reapi::CanonicalMessage;
 use async_trait::async_trait;
@@ -13,6 +14,15 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use tracing::trace;
+
+/// Cache tier that supplied an action result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CacheSource {
+    /// Local action cache.
+    Local,
+    /// Remote action cache.
+    Remote,
+}
 
 /// A key/value store mapping action digests to [`ActionResult`] records.
 #[async_trait]
@@ -24,6 +34,20 @@ pub trait ActionCache: Send + Sync {
     /// Returns an error if the underlying storage fails or the stored
     /// [`ActionResult`] cannot be decoded.
     async fn lookup(&self, action_digest: &Digest) -> Result<Option<ActionResult>>;
+
+    /// Look up a result and identify its source.
+    ///
+    /// # Errors
+    /// Returns an error if the lookup fails.
+    async fn lookup_with_source(
+        &self,
+        action_digest: &Digest,
+    ) -> Result<Option<(ActionResult, CacheSource)>> {
+        Ok(self
+            .lookup(action_digest)
+            .await?
+            .map(|result| (result, CacheSource::Local)))
+    }
 
     /// Record `result` as the outcome of `action_digest`. Overwrites any
     /// existing entry (last writer wins).
@@ -98,6 +122,7 @@ impl LocalActionCache {
 #[async_trait]
 impl ActionCache for LocalActionCache {
     async fn lookup(&self, action_digest: &Digest) -> Result<Option<ActionResult>> {
+        let _lock = CacheUseGuard::acquire(&self.root)?;
         let path = self.entry_path(action_digest)?;
         match fs::read(&path) {
             Ok(bytes) => {
@@ -120,6 +145,7 @@ impl ActionCache for LocalActionCache {
     }
 
     async fn update(&self, action_digest: &Digest, result: &ActionResult) -> Result<()> {
+        let _lock = CacheUseGuard::acquire(&self.root)?;
         let path = self.entry_path(action_digest)?;
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|e| Error::io(e, parent, "create_dir_all"))?;

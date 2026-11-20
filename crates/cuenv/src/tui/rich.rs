@@ -342,6 +342,7 @@ impl RichTui {
             | EventCategory::Ci(_)
             | EventCategory::Interactive(_)
             | EventCategory::System(_)
+            | EventCategory::Cache(_)
             | EventCategory::Output(_) => {}
         }
     }

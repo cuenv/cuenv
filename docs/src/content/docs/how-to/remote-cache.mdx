@@ -32,20 +32,64 @@ digest-verified, and kept locally, so the second read of a blob is local. A
 remote action result is promoted into the local action cache only after all of
 its streams and outputs have been verified and committed successfully.
 
-## Uploads are currently disabled
+## Uploads and strict confinement
 
-`upload` defaults to `false`. The field and
-`CUENV_REMOTE_CACHE_UPLOAD` override are reserved for the eventual trusted
-builder flow, but cuenv currently forces the CLI connection to read-only even
-when either setting requests uploads.
+`upload` defaults to `false`. When `upload: true` (or
+`CUENV_REMOTE_CACHE_UPLOAD=true`) is set, cuenv keeps all ordinary CAS writes
+strictly local and publishes to the remote cache only through a dedicated
+post-run publisher after **all** of the following hold:
 
-:::caution[Why uploads remain disabled]
-The default `"dir"` sandbox isolates relative workspace access, but it is not
-an OS security boundary: a command can still read absolute host paths or use
-the network. Publishing such a result could turn one machine's undeclared
-dependency into a shared wrong answer. Remote uploads will be enabled only
-after a strict platform sandbox confines those accesses.
-:::
+1. The task ran under validated Linux strict OS confinement (`sandbox: "strict"`
+   or `sandbox: "auto"` without fallback), with network isolation enabled and
+   a verified read-only runtime image.
+2. The task exited with status `0` and all descendants were reaped.
+3. Output projection into the workspace succeeded.
+4. The task environment contains no project secrets.
+5. The invoking project is authorized for remote publication.
+
+The publisher uploads the `Command`, `Action`, stdout/stderr logs, output files,
+and nested `Tree` leaf blobs before updating `ActionResult` last. Cache hits,
+failed launches, network-enabled tasks, non-strict runs, and macOS prototype
+runs never write to the remote cache.
+
+### Provision a Linux runtime image
+
+On each publishing runner, mount an operator-managed SquashFS or EROFS image and
+set `CUENV_SANDBOX_RUNTIME_ROOT` to its absolute mount directory. Build the image
+with the tools, interpreters, and shared libraries used by the task at their
+sandbox paths. cuenv mounts the supported runtime paths from this image,
+including `/usr`, `/bin`, `/lib`, `/lib64`, and `/nix/store`, and includes their
+content digest in each action key. Use the same immutable image across runners
+that share results. Commands resolve using the task’s path inside the image.
+Linux strict runs backed by the host runtime use invocation-scoped cache keys.
+Linux runners must permit unprivileged namespaces and mounting the runtime in the sandbox.
+If the capability check fails, `sandbox: "strict"` rejects the task and
+`sandbox: "auto"` falls back to a directory sandbox.
+
+## HTTP/REST protocol
+
+In addition to gRPC (`protocol: "grpc"`, the default — including for existing
+`http://` and `https://` endpoints), cuenv supports the Bazel HTTP/REST remote
+cache protocol (`/cas/<sha256>` and `/ac/<sha256>`) when `protocol: "http"` is
+set:
+
+```cue
+cache: remote: {
+    endpoint: "https://cache.example.com/bazel"
+    protocol: "http"
+    auth: bearerTokenEnv: "CUENV_CACHE_TOKEN"
+}
+```
+
+Any path prefix on `endpoint` and any `instance` are preserved ahead of `/cas/`
+and `/ac/`. Note that `bazel-remote` ignores the HTTP instance for CAS blobs
+and only namespaces ActionCache keys when configured to do so; do not rely on a
+URL prefix alone for tenant isolation. Object stores (S3, GCS, R2) are
+supported behind a proxy that implements the Bazel HTTP/REST cache contract.
+Credentialed redirects are restricted to the configured origin.
+
+HTTP file uploads stream from disk. gRPC uses ByteStream for blobs that
+would exceed the negotiated batch size after accounting for request overhead.
 
 ## Environment overrides
 
@@ -54,12 +98,17 @@ CI usually should not hard-code an endpoint in CUE:
 | Variable | Effect |
 | --- | --- |
 | `CUENV_REMOTE_CACHE` | Sets or replaces the endpoint. Empty **disables** the remote. |
-| `CUENV_REMOTE_CACHE_UPLOAD` | Reserved `true`/`false` override. `true` currently warns and remains read-only. |
+| `CUENV_REMOTE_CACHE_PROTOCOL` | Sets or replaces the transport protocol (`grpc` or `http`). |
+| `CUENV_REMOTE_CACHE_INSTANCE` | Sets the remote instance. An empty value clears it. |
+| `CUENV_REMOTE_CACHE_UPLOAD` | `true`/`false` override for post-run publication (still gated on strict confinement). |
 | `CUENV_CACHE` | `off`, `read`, `write`, or `read-write` — narrows every task's cache mode for one run. A permission applies only when the task's own mode also grants it. |
 
 ```bash
 # Point at a cache the repository does not know about
 CUENV_REMOTE_CACHE=grpcs://ci-cache.internal:443 cuenv task build
+
+# Point at an HTTP/REST Bazel remote cache
+CUENV_REMOTE_CACHE=https://cache.example.com CUENV_REMOTE_CACHE_PROTOCOL=http cuenv task build
 
 # Turn the remote off without editing CUE
 CUENV_REMOTE_CACHE= cuenv task build
@@ -68,35 +117,78 @@ CUENV_REMOTE_CACHE= cuenv task build
 An unreadable `CUENV_REMOTE_CACHE_UPLOAD` is ignored rather than treated as
 true — a typo must not start publishing entries to a shared cache.
 
-## Credentials
+## Credentials and CI trust boundaries
 
 Only the *name* of an environment variable is written in CUE, never a token:
 
 ```cue
 cache: remote: {
     endpoint: "grpcs://cache.example.com:443"
+    upload:   true
 
     // authorization: Bearer $CUENV_CACHE_TOKEN
     auth: bearerTokenEnv: "CUENV_CACHE_TOKEN"
 
-    // …or a provider that names its own header
-    // auth: header: {name: "x-api-key", valueEnv: "CUENV_CACHE_KEY"}
+    // CI trust-boundary separation for `cuenv sync ci`
+    ci: {
+        readSecret:       "CACHE_RO_TOKEN"
+        writeSecret:      "CACHE_RW_TOKEN"
+        writeEnvironment: "cache-write"  // GitHub Actions Environment
+        writeQueue:       "cache-write"  // Buildkite secret-policy queue
+        isolatedCacheDir: true
+    }
 }
 ```
 
-Set exactly one of `bearerTokenEnv` and `header`; setting both is a CUE
-evaluation error. Before 0.56.8, a project that embedded `schema.#Project`
-(a bare `schema.#Project` line rather than `schema.#Project & {…}`) lost its
-`auth` value during evaluation, so the remote cache ran without credentials;
-upgrade if your remote cache rejected authenticated reads.
+Set exactly one of `bearerTokenEnv` and `header`. Use a dedicated environment
+variable for the cache credential.
+
+Both `cuenv task` and `cuenv ci` use the project’s remote cache. An external
+dependency project uses the local cache. Cache credentials stay with the cuenv
+process. Action keys, task environments, CI hooks, runtime and tool setup, and
+bundled secret resolver commands omit these variables.
+
+Configure GitHub’s `writeEnvironment` with deployment restrictions for trusted
+refs and store the write secret in that environment. A job declaring a different
+environment retains its existing environment and uses the read-only cache policy.
+
+Buildkite requires agent 3.106 or newer for step-level secrets. Configure the
+write secret’s access policy for the trusted pipeline, refs, and `writeQueue`.
+Trusted webhook builds must match an explicitly named branch or tag. Use
+separate runners or isolate both processes and cache storage across trust
+levels. Pull requests and other untrusted
+triggers use `readSecret`, or disable the remote when the read secret is omitted.
 
 If the named variable is unset, cuenv warns and may continue with anonymous
 reads, but configured authentication never silently becomes an anonymous
 writer. A missing token degrades the cache; it does not fail the build.
 
-Bazel's credential-helper protocol is not supported yet. Providers that issue
-short-lived credentials through a helper — including Namespace — need the
-token materialised into an environment variable first.
+Bazel's credential-helper protocol and mTLS client certificates are not
+supported yet. Providers that issue short-lived credentials through a helper —
+including Namespace — need the token materialised into an environment variable
+first.
+
+## Diagnostics and maintenance
+
+Use `cuenv cache` to inspect, verify, and clean local and remote cache state:
+
+```bash
+cuenv cache status                      # Show local root + probe remote reachability
+cuenv cache stats                       # Show local CAS/AC entry counts and disk usage
+cuenv cache verify                      # Read-only digest and referential integrity check
+cuenv cache verify --repair             # Remove corrupt blobs and dangling action entries
+cuenv cache gc --max-size 10G --dry-run # Preview LRU/age eviction (preserves nested trees & grace window)
+cuenv cache prune                       # Sweep unreferenced CAS blobs and stale tmp/ dirs
+```
+
+Garbage collection defaults to the selected project’s `cache.local.maxSize`.
+Pass `--package` to select the CUE package or `--max-size` to override its limit.
+
+All `cuenv cache` commands accept `--output json` for scripting. `gc` and
+`prune` traverse transitive `Tree` references for every surviving `ActionCache`
+entry and protect recently written blobs with a 10-minute grace window.
+Destructive maintenance returns a busy error while a cache transaction is active.
+Retry once the active cache work finishes.
 
 ## What happens when the cache is unreachable
 
@@ -108,10 +200,3 @@ broken.
 The one exception is integrity: every blob fetched from a remote is
 digest-checked before its bytes reach your workspace. A server that returns
 the wrong content for a digest is rejected outright rather than trusted.
-
-## What is not wired yet
-
-- `cuenv sync ci` does not emit remote-cache configuration into generated
-  workflows. Set the environment variables in your CI job yourself.
-- There is no `cuenv cache` command, so there is no built-in way to inspect
-  or prune either cache.
