@@ -276,10 +276,20 @@ Retry once the active cache work finishes.
 
 ## What happens when the cache is unreachable
 
-Nothing fails. An unreachable endpoint, a rejected handshake, or a server that
-does not offer SHA-256 digests all log a warning and fall back to the local
-cache. A cache is an optimization, so a dead network makes a build slower, not
-broken.
+Nothing fails. Transient RPC errors (gRPC `UNAVAILABLE`, `DEADLINE_EXCEEDED`,
+`RESOURCE_EXHAUSTED`, `ABORTED`; HTTP `429`, `502`, `503`, `504`) are retried
+briefly with exponential backoff, and repeated consecutive failures trip a
+client circuit breaker so the rest of the build degrades immediately to the
+local cache instead of stalling on every action. An unreachable endpoint, a
+rejected handshake, or a server that does not offer SHA-256 digests all log a
+warning and fall back to the local cache. A cache is an optimization, so a dead
+network makes a build slower, not broken.
+
+During task-graph execution (`cuenv task`), eligible remote cache uploads run
+asynchronously in the background so dependent tasks start immediately once
+local outputs are recorded. `cuenv` waits for in-flight uploads to finish
+(up to a bounded flush timeout) before exiting, including when a later task in
+the graph fails.
 
 The one exception is integrity: every blob fetched from a remote is
 digest-checked before its bytes reach your workspace. A server that returns
