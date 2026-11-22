@@ -1,5 +1,5 @@
 // Setting both bearerTokenEnv and credentialHelper must be rejected by #CacheAuth.
-// want: conflicting values
+// want: empty disjunction
 package compat
 
 import "github.com/cuenv/cuenv/schema"

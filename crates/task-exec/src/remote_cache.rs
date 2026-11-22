@@ -59,7 +59,7 @@ pub struct RemoteCacheStatus {
     pub instance: Option<String>,
     /// Whether upload was requested by config/env.
     pub upload_requested: bool,
-    /// Whether upload is effectively enabled (currently false until strict Linux confinement lands).
+    /// Whether upload is effectively enabled (requested, credentials resolved, and connected).
     pub upload_enabled: bool,
     /// Connectivity check outcome (`"connected"`, `"unreachable"`, `"disabled"`, etc.).
     pub state: String,
@@ -398,9 +398,9 @@ pub async fn probe_status(cache: Option<&Cache>) -> RemoteCacheStatus {
     };
 
     let proto_label = protocol_label(remote.protocol).to_string();
-    let credentials = match credentials(&remote) {
-        CredentialResolution::Ready(creds) => creds,
-        CredentialResolution::MissingConfigured => Credentials::None,
+    let (credentials, credential_allows_upload) = match credentials(&remote) {
+        CredentialResolution::Ready(creds) => (creds, true),
+        CredentialResolution::MissingConfigured => (Credentials::None, false),
         CredentialResolution::Ambiguous => {
             return RemoteCacheStatus {
                 configured: true,
@@ -435,6 +435,7 @@ pub async fn probe_status(cache: Option<&Cache>) -> RemoteCacheStatus {
         Ok(()) => ("connected".to_string(), None),
         Err(e) => ("unreachable".to_string(), Some(e.to_string())),
     };
+    let upload_enabled = remote.upload && credential_allows_upload && state == "connected";
 
     RemoteCacheStatus {
         configured: true,
@@ -442,7 +443,7 @@ pub async fn probe_status(cache: Option<&Cache>) -> RemoteCacheStatus {
         protocol: Some(proto_label),
         instance: Some(remote.instance),
         upload_requested: remote.upload,
-        upload_enabled: false,
+        upload_enabled,
         state,
         detail,
     }
