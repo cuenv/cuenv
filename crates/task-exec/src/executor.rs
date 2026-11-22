@@ -294,12 +294,27 @@ impl TaskExecutor {
         reject_unbound_file_references(name, task)?;
         reject_unmaterialized_mapping(name, task)?;
 
+        // Load the base task environment before probing strict sandboxing so a
+        // locked Nix runtime can derive its verified `/nix/store` closure.
+        let base_environment = self.base_task_environment(name, task).await?;
+        let nix_context = frame.cache.and_then(|cache| {
+            if cache.cache_disabled_reason.is_some() {
+                return None;
+            }
+            let exec_env = base_environment.execution_environment(task.env_passthrough());
+            super::sandbox::extract_nix_sandbox_context(
+                &cache.runtime_identity_properties,
+                exec_env.iter().map(|(k, v)| (k.as_str(), v.as_str())),
+            )
+        });
+
         // Resolve the effective sandbox tier up front so explicit `strict`
         // fails closed even when caching is disabled, and `auto` keys the
         // action under the tier that will actually be enforced.
-        let sandbox_resolution = super::sandbox::resolve_sandbox(
+        let sandbox_resolution = super::sandbox::resolve_sandbox_with_nix(
             task.sandbox(),
             super::sandbox::NetworkPolicy::for_task(task),
+            nix_context.as_ref(),
         )?;
         if let Some(reason) = &sandbox_resolution.fallback_reason {
             tracing::warn!(
@@ -309,9 +324,8 @@ impl TaskExecutor {
             );
         }
         let effective_sandbox = sandbox_resolution.effective;
-        let task_environment = self
-            .task_environment(name, task, &effective_sandbox)
-            .await?;
+        let task_environment =
+            Self::finalize_task_environment(base_environment, task, &effective_sandbox)?;
 
         // Input resolution and directory isolation remain available when
         // result caching is disabled. A sandbox-only config supplies the
@@ -410,6 +424,7 @@ impl TaskExecutor {
                             inputs,
                             working_directory,
                             effective_sandbox,
+                            nix_context,
                         })
                     } else {
                         cuenv_events::emit_task_cache_skipped!(
@@ -448,6 +463,7 @@ impl TaskExecutor {
                             inputs,
                             working_directory,
                             effective_sandbox,
+                            nix_context,
                         })
                     }
                 }
@@ -496,6 +512,7 @@ impl TaskExecutor {
                             inputs: execution.inputs,
                             working_directory: execution.working_directory,
                             effective_sandbox,
+                            nix_context,
                         })
                     } else {
                         None
@@ -584,18 +601,21 @@ impl TaskExecutor {
         Ok(result)
     }
 
-    async fn task_environment(
-        &self,
-        name: &str,
-        task: &Task,
-        sandbox: &super::sandbox::EffectiveSandbox,
-    ) -> Result<Environment> {
+    async fn base_task_environment(&self, name: &str, task: &Task) -> Result<Environment> {
         let selected = match &self.config.task_environments {
             Some(environments) => environments.environment_for(name, task).await?,
             None => None,
         };
         let mut environment = selected.unwrap_or_else(|| self.config.environment.clone());
         environment.withhold(self.config.environment.withheld_names().iter().cloned());
+        Ok(environment)
+    }
+
+    fn finalize_task_environment(
+        mut environment: Environment,
+        task: &Task,
+        sandbox: &super::sandbox::EffectiveSandbox,
+    ) -> Result<Environment> {
         if cfg!(target_os = "linux") && sandbox.strict_proof().is_some() {
             environment.set("HOME".to_string(), "/cuenv-home".to_string());
             environment.set("TMPDIR".to_string(), "/tmp".to_string());
@@ -925,6 +945,7 @@ impl TaskExecutor {
                     task_tmp: &tmp_dir,
                     task_home: &home_dir,
                     network: super::sandbox::NetworkPolicy::for_task(task),
+                    nix_context: handle.nix_context.as_ref(),
                 })?;
             let cmd = plan.build_command(&command_spec.program, &command_spec.args)?;
             Some((cmd, tmp_dir, home_dir, plan))
@@ -1579,6 +1600,8 @@ struct CacheHandle {
     working_directory: PathBuf,
     /// The OS/directory sandbox tier actually enforced for this run.
     effective_sandbox: super::sandbox::EffectiveSandbox,
+    /// Optional pinned Nix runtime context for Linux strict sandboxing.
+    nix_context: Option<super::sandbox::NixSandboxContext>,
 }
 
 #[derive(Clone, Copy)]

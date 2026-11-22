@@ -89,35 +89,50 @@ impl RemoteClient {
     /// ASCII, which gRPC metadata requires.
     pub fn request<T>(&self, message: T) -> Result<tonic::Request<T>> {
         let mut request = tonic::Request::new(message);
-        let (name, value) = match &self.config.credentials {
+        match &self.config.credentials {
             Credentials::None => return Ok(request),
-            Credentials::Bearer(token) => ("authorization", format!("Bearer {token}")),
-            Credentials::Header { name, value } => (name.as_str(), value.clone()),
-        };
-
-        let key: MetadataKey<tonic::metadata::Ascii> = name
-            .parse()
-            .map_err(|_| Error::config(format!("invalid credential header name '{name}'")))?;
-
-        // tonic will happily put non-ASCII bytes on the wire — HTTP/2 permits
-        // them — and the server then rejects the request with an opaque
-        // authentication failure. Catching it here names the real problem.
-        // The value is a secret, so no error message quotes it.
-        if !is_valid_header_value(&value) {
-            return Err(Error::config(format!(
-                "credential value for header '{name}' contains characters that are not \
-                 printable ASCII; check for a stray newline or a smart quote in the token"
-            )));
+            Credentials::Bearer(token) => {
+                insert_grpc_header(&mut request, "authorization", &format!("Bearer {token}"))?;
+            }
+            Credentials::Header { name, value } => {
+                insert_grpc_header(&mut request, name, value)?;
+            }
+            Credentials::Headers(headers) => {
+                for (name, value) in headers {
+                    insert_grpc_header(&mut request, name, value)?;
+                }
+            }
         }
-
-        let value: MetadataValue<tonic::metadata::Ascii> = value.parse().map_err(|_| {
-            Error::config(format!(
-                "credential value for header '{name}' is not a valid header value"
-            ))
-        })?;
-        request.metadata_mut().insert(key, value);
         Ok(request)
     }
+}
+
+fn insert_grpc_header<T>(request: &mut tonic::Request<T>, name: &str, value: &str) -> Result<()> {
+    // HTTP/2 and gRPC metadata keys must be lowercase ASCII; credential
+    // helpers frequently return capitalized names like `Authorization`.
+    let normalized = name.to_ascii_lowercase();
+    let key: MetadataKey<tonic::metadata::Ascii> = normalized
+        .parse()
+        .map_err(|_| Error::config(format!("invalid credential header name '{name}'")))?;
+
+    // tonic will happily put non-ASCII bytes on the wire — HTTP/2 permits
+    // them — and the server then rejects the request with an opaque
+    // authentication failure. Catching it here names the real problem.
+    // The value is a secret, so no error message quotes it.
+    if !is_valid_header_value(value) {
+        return Err(Error::config(format!(
+            "credential value for header '{name}' contains characters that are not \
+             printable ASCII; check for a stray newline or a smart quote in the token"
+        )));
+    }
+
+    let value: MetadataValue<tonic::metadata::Ascii> = value.parse().map_err(|_| {
+        Error::config(format!(
+            "credential value for header '{name}' is not a valid header value"
+        ))
+    })?;
+    request.metadata_mut().append(key, value);
+    Ok(())
 }
 
 /// Compression algorithms supported by cuenv's REAPI v2.1 client.
@@ -279,6 +294,25 @@ mod tests {
         ));
         let request = client.request(()).unwrap();
         assert_eq!(request.metadata().get("x-api-key").unwrap(), "tok");
+    }
+
+    #[tokio::test]
+    async fn multi_header_credentials_normalize_names_and_send_all_headers() {
+        let client = client(RemoteConfig::new("grpc://x:1").with_credentials(
+            Credentials::Headers(vec![
+                ("Authorization".into(), "Bearer nsc-tok".into()),
+                ("x-nsc-ingress-auth".into(), "Bearer nsc-tok".into()),
+            ]),
+        ));
+        let request = client.request(()).unwrap();
+        assert_eq!(
+            request.metadata().get("authorization").unwrap(),
+            "Bearer nsc-tok"
+        );
+        assert_eq!(
+            request.metadata().get("x-nsc-ingress-auth").unwrap(),
+            "Bearer nsc-tok"
+        );
     }
 
     #[tokio::test]

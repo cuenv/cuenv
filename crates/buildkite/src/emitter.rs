@@ -113,6 +113,19 @@ impl BuildkiteEmitter {
         } else {
             CacheDirectory::Shared
         };
+        if ci.is_some_and(|ci| ci.auth_mode == cuenv_core::manifest::RemoteCacheCiAuthMode::Ambient)
+        {
+            let can_upload = trust == BuildkiteCacheTrust::Protected && remote.upload;
+            step.env
+                .insert("CUENV_REMOTE_CACHE_UPLOAD".into(), can_upload.to_string());
+            let directory_trust = if can_upload {
+                BuildkiteCacheTrust::Protected
+            } else {
+                BuildkiteCacheTrust::Untrusted
+            };
+            set_cache_directory(step, directory, directory_trust);
+            return;
+        }
         let auth_env = remote.auth.as_ref().and_then(|auth| {
             auth.bearer_token_env
                 .as_deref()
@@ -932,6 +945,7 @@ mod tests {
             auth: Some(CacheAuth {
                 bearer_token_env: Some("CUENV_CACHE_TOKEN".into()),
                 header: None,
+                credential_helper: None,
             }),
             ci: Some(RemoteCacheCi {
                 read_secret: Some("CACHE_RO_TOKEN".into()),
@@ -939,6 +953,7 @@ mod tests {
                 write_environment: None,
                 write_queue: Some("cache-write".into()),
                 isolated_cache_dir: true,
+                ..Default::default()
             }),
         };
 
@@ -985,6 +1000,45 @@ mod tests {
         assert!(thin_yaml.contains("cuenv ci --pipeline test-pipeline"));
         assert!(thin_yaml.contains("CUENV_CACHE_TOKEN: CACHE_RW_TOKEN"));
         assert!(thin_yaml.contains("queue: cache-write"));
+        Ok(())
+    }
+
+    #[test]
+    fn remote_cache_ambient_mode_preserves_isolation_and_gates_uploads() -> EmitterResult<()> {
+        use cuenv_core::manifest::{CacheAuth, RemoteCacheCi, RemoteCacheCiAuthMode};
+
+        let remote = RemoteCache {
+            endpoint: "grpcs://cache.namespace.so:443".into(),
+            protocol: CacheProtocol::Grpc,
+            instance: String::new(),
+            upload: true,
+            auth: Some(CacheAuth {
+                bearer_token_env: None,
+                header: None,
+                credential_helper: Some("bazel-credential-nsc".into()),
+            }),
+            ci: Some(RemoteCacheCi {
+                auth_mode: RemoteCacheCiAuthMode::Ambient,
+                isolated_cache_dir: true,
+                ..Default::default()
+            }),
+        };
+
+        let ir = make_ir(vec![make_task("build", &["cargo", "build"])]);
+        let trusted = BuildkiteEmitter::new()
+            .with_remote_cache(remote.clone(), BuildkiteCacheTrust::Protected);
+        let untrusted =
+            BuildkiteEmitter::new().with_remote_cache(remote, BuildkiteCacheTrust::Untrusted);
+
+        let protected_yaml = trusted.emit_thin(&ir)?;
+        assert!(!protected_yaml.contains("CUENV_REMOTE_CACHE:"));
+        assert!(protected_yaml.contains("CUENV_REMOTE_CACHE_UPLOAD: 'true'"));
+        assert!(protected_yaml.contains("/tmp/cuenv-cache/trusted"));
+
+        let untrusted_yaml = untrusted.emit_thin(&ir)?;
+        assert!(!untrusted_yaml.contains("CUENV_REMOTE_CACHE:"));
+        assert!(untrusted_yaml.contains("CUENV_REMOTE_CACHE_UPLOAD: 'false'"));
+        assert!(untrusted_yaml.contains("/tmp/cuenv-cache/untrusted"));
         Ok(())
     }
 }

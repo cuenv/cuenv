@@ -18,7 +18,7 @@ pub struct HttpRemoteClient {
     streaming_uploads: Option<Client>,
     base_url: Url,
     config: RemoteConfig,
-    auth_header: Option<(HeaderName, HeaderValue)>,
+    auth_headers: Vec<(HeaderName, HeaderValue)>,
 }
 
 impl HttpRemoteClient {
@@ -43,7 +43,7 @@ impl HttpRemoteClient {
         let _ = rustls::crypto::ring::default_provider().install_default();
 
         let base_url = build_base_url(&config)?;
-        let auth_header = build_auth_header(&config.credentials)?;
+        let auth_headers = build_auth_headers(&config.credentials)?;
 
         let allowed_origin = Origin::from_url(&base_url);
         let redirect_policy = redirect::Policy::custom(move |attempt| {
@@ -66,7 +66,7 @@ impl HttpRemoteClient {
             streaming_uploads,
             base_url,
             config,
-            auth_header,
+            auth_headers,
         })
     }
 
@@ -171,9 +171,11 @@ impl HttpRemoteClient {
 
     fn authenticated_request(&self, http: &Client, method: Method, url: Url) -> RequestBuilder {
         let mut builder = http.request(method, url);
-        if let Some((name, value)) = &self.auth_header {
-            let mut headers = HeaderMap::with_capacity(1);
-            headers.insert(name.clone(), value.clone());
+        if !self.auth_headers.is_empty() {
+            let mut headers = HeaderMap::with_capacity(self.auth_headers.len());
+            for (name, value) in &self.auth_headers {
+                headers.append(name.clone(), value.clone());
+            }
             builder = builder.headers(headers);
         }
         builder
@@ -289,30 +291,39 @@ fn build_base_url(config: &RemoteConfig) -> Result<Url> {
     Ok(url)
 }
 
-fn build_auth_header(credentials: &Credentials) -> Result<Option<(HeaderName, HeaderValue)>> {
-    let (name, value) = match credentials {
-        Credentials::None => return Ok(None),
-        Credentials::Bearer(token) => ("authorization", format!("Bearer {token}")),
-        Credentials::Header { name, value } => (name.as_str(), value.clone()),
-    };
+fn build_auth_headers(credentials: &Credentials) -> Result<Vec<(HeaderName, HeaderValue)>> {
+    match credentials {
+        Credentials::None => Ok(Vec::new()),
+        Credentials::Bearer(token) => Ok(vec![parse_http_header(
+            "authorization",
+            &format!("Bearer {token}"),
+        )?]),
+        Credentials::Header { name, value } => Ok(vec![parse_http_header(name, value)?]),
+        Credentials::Headers(headers) => headers
+            .iter()
+            .map(|(name, value)| parse_http_header(name, value))
+            .collect(),
+    }
+}
 
-    let header_name = HeaderName::from_bytes(name.as_bytes())
+fn parse_http_header(name: &str, value: &str) -> Result<(HeaderName, HeaderValue)> {
+    let header_name = HeaderName::from_bytes(name.to_ascii_lowercase().as_bytes())
         .map_err(|_| Error::config(format!("invalid credential header name '{name}'")))?;
 
-    if !is_valid_header_value(&value) {
+    if !is_valid_header_value(value) {
         return Err(Error::config(format!(
             "credential value for header '{name}' contains characters that are not \
              printable ASCII; check for a stray newline or a smart quote in the token"
         )));
     }
 
-    let mut header_value = HeaderValue::from_str(&value).map_err(|_| {
+    let mut header_value = HeaderValue::from_str(value).map_err(|_| {
         Error::config(format!(
             "credential value for header '{name}' is not a valid header value"
         ))
     })?;
     header_value.set_sensitive(true);
-    Ok(Some((header_name, header_value)))
+    Ok((header_name, header_value))
 }
 
 #[cfg(test)]

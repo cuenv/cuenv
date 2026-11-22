@@ -41,7 +41,8 @@ post-run publisher after **all** of the following hold:
 
 1. The task ran under validated Linux strict OS confinement (`sandbox: "strict"`
    or `sandbox: "auto"` without fallback), with network isolation enabled and
-   a verified read-only runtime image.
+   either a verified read-only runtime image or a verified pinned Nix store
+   closure.
 2. The task exited with status `0` and all descendants were reaped.
 3. Output projection into the workspace succeeded.
 4. The task environment contains no project secrets.
@@ -52,19 +53,36 @@ and nested `Tree` leaf blobs before updating `ActionResult` last. Cache hits,
 failed launches, network-enabled tasks, non-strict runs, and macOS prototype
 runs never write to the remote cache.
 
-### Provision a Linux runtime image
+### Provision a Linux runtime image or locked Nix runtime
 
-On each publishing runner, mount an operator-managed SquashFS or EROFS image and
-set `CUENV_SANDBOX_RUNTIME_ROOT` to its absolute mount directory. Build the image
-with the tools, interpreters, and shared libraries used by the task at their
-sandbox paths. cuenv mounts the supported runtime paths from this image,
-including `/usr`, `/bin`, `/lib`, `/lib64`, and `/nix/store`, and includes their
-content digest in each action key. Use the same immutable image across runners
-that share results. Commands resolve using the task’s path inside the image.
-Linux strict runs backed by the host runtime use invocation-scoped cache keys.
-Linux runners must permit unprivileged namespaces and mounting the runtime in the sandbox.
-If the capability check fails, `sandbox: "strict"` rejects the task and
-`sandbox: "auto"` falls back to a directory sandbox.
+There are two supported paths to qualify Linux strict runs for cross-runner
+cache hits and remote publication:
+
+- **Locked Nix runtime (`runtime: type: "nix"`):** When `CUENV_SANDBOX_RUNTIME_ROOT`
+  is unset and the project uses a Nix runtime locked in `cuenv.lock`, cuenv
+  resolves the transitive `/nix/store` closure of the task's environment via
+  `nix-store --query --requisites`, verifies every store entry is immutable
+  (non-writable, directly under `/nix/store`), bind-mounts **only** those
+  `/nix/store` entries read-only (with `/bin/sh` and `/usr/bin/env` symlinked
+  into the closure and no host `/usr`, `/bin`, `/lib`, `/lib64`, or `/etc`
+  exposed), and folds a deterministic `nix.closure.digest` into the action key.
+  This works on ephemeral GitHub and Namespace runners without a pre-mounted
+  SquashFS/EROFS image.
+- **Operator-provisioned SquashFS/EROFS image (`CUENV_SANDBOX_RUNTIME_ROOT`):**
+  Mount an operator-managed SquashFS or EROFS image and set
+  `CUENV_SANDBOX_RUNTIME_ROOT` to its absolute mount directory. Build the image
+  with the tools, interpreters, and shared libraries used by the task at their
+  sandbox paths. cuenv mounts the supported runtime paths from this image,
+  including `/usr`, `/bin`, `/lib`, `/lib64`, and `/nix/store`, and includes
+  their content digest in each action key. Use the same immutable image across
+  runners that share results.
+
+Commands resolve using the task’s path inside the mounted runtime. Linux strict
+runs backed by neither a runtime image nor a verified Nix closure fall back to
+the host runtime with invocation-scoped cache keys. Linux runners must permit
+unprivileged namespaces and mounting the runtime in the sandbox. If the
+capability check fails, `sandbox: "strict"` rejects the task and `sandbox: "auto"`
+falls back to a directory sandbox.
 
 ## HTTP/REST protocol
 
@@ -101,6 +119,7 @@ CI usually should not hard-code an endpoint in CUE:
 | `CUENV_REMOTE_CACHE_PROTOCOL` | Sets or replaces the transport protocol (`grpc` or `http`). |
 | `CUENV_REMOTE_CACHE_INSTANCE` | Sets the remote instance. An empty value clears it. |
 | `CUENV_REMOTE_CACHE_UPLOAD` | `true`/`false` override for post-run publication (still gated on strict confinement). |
+| `CUENV_REMOTE_CACHE_CREDENTIAL_HELPER` | Sets or replaces the Bazel credential helper executable (e.g. `bazel-credential-nsc`). |
 | `CUENV_CACHE` | `off`, `read`, `write`, or `read-write` — narrows every task's cache mode for one run. A permission applies only when the task's own mode also grants it. |
 
 ```bash
@@ -119,7 +138,8 @@ true — a typo must not start publishing entries to a shared cache.
 
 ## Credentials and CI trust boundaries
 
-Only the *name* of an environment variable is written in CUE, never a token:
+Only the *name* of an environment variable or credential helper is written in
+CUE, never a token:
 
 ```cue
 cache: remote: {
@@ -140,17 +160,58 @@ cache: remote: {
 }
 ```
 
-Set exactly one of `bearerTokenEnv` and `header`. Use a dedicated environment
-variable for the cache credential.
+Set exactly one of `bearerTokenEnv`, `header`, or `credentialHelper`. Use a
+dedicated environment variable when using `bearerTokenEnv` or `header`.
+
+### Bazel credential helpers and Namespace (`authMode: "ambient"`)
+
+Providers that issue short-lived credentials through a Bazel-compatible
+credential helper — including Namespace (`bazel-credential-nsc`) — or through an
+OIDC step writing into `$GITHUB_ENV` can use `credentialHelper` and
+`ci.authMode: "ambient"`:
+
+```cue
+cache: remote: {
+    endpoint: "grpcs://cache.namespace.so:443"
+    upload:   true
+    auth: credentialHelper: "bazel-credential-nsc"
+    ci: {
+        authMode:         "ambient"
+        isolatedCacheDir: true
+    }
+}
+```
+
+cuenv invokes `<helper> get` with `{"uri": "<endpoint>"}` on stdin and attaches
+all headers returned in `{"headers": {...}}` (for example both `authorization`
+and `x-nsc-ingress-auth`) on every gRPC and HTTP request, registering every
+value for secret redaction.
+
+In `ci.authMode: "ambient"`:
+
+- `cuenv sync ci` does not require static `readSecret`, `writeSecret`,
+  `writeEnvironment`, or `writeQueue`, and does not overwrite `CUENV_REMOTE_CACHE`
+  or auth environment variables provisioned via `$GITHUB_ENV` (such as
+  `nsc cache bazel setup --static -o json`).
+- `cuenv sync ci` still gates `CUENV_REMOTE_CACHE_UPLOAD` to `"true"` only on
+  protected triggers (`false` on pull requests, schedules, and manual runs) and
+  still isolates `CUENV_CACHE_DIR` per trust level when `isolatedCacheDir` is
+  enabled.
+- Pipelines that already declare a GitHub Actions `environment` (for example
+  `environment: "production"`) retain their environment without conflicting with
+  `writeEnvironment`.
 
 Both `cuenv task` and `cuenv ci` use the project’s remote cache. An external
 dependency project uses the local cache. Cache credentials stay with the cuenv
 process. Action keys, task environments, CI hooks, runtime and tool setup, and
 bundled secret resolver commands omit these variables.
 
-Configure GitHub’s `writeEnvironment` with deployment restrictions for trusted
-refs and store the write secret in that environment. A job declaring a different
-environment retains its existing environment and uses the read-only cache policy.
+In `ci.authMode: "secrets"` (the default), configure GitHub’s `writeEnvironment`
+with deployment restrictions for trusted refs and store the write secret in that
+environment. A job declaring a different environment retains its existing
+environment and uses the read-only cache policy; separate cache-writing build
+jobs from deploy jobs (or use `authMode: "ambient"` with OIDC/credential helpers)
+when a pipeline needs both cache uploads and a deploy environment.
 
 Buildkite requires agent 3.106 or newer for step-level secrets. Configure the
 write secret’s access policy for the trusted pipeline, refs, and `writeQueue`.
@@ -159,14 +220,12 @@ separate runners or isolate both processes and cache storage across trust
 levels. Pull requests and other untrusted
 triggers use `readSecret`, or disable the remote when the read secret is omitted.
 
-If the named variable is unset, cuenv warns and may continue with anonymous
-reads, but configured authentication never silently becomes an anonymous
-writer. A missing token degrades the cache; it does not fail the build.
+If the named variable is unset or the credential helper fails, cuenv warns and
+may continue with anonymous reads, but configured authentication never silently
+becomes an anonymous writer. A missing token degrades the cache; it does not
+fail the build.
 
-Bazel's credential-helper protocol and mTLS client certificates are not
-supported yet. Providers that issue short-lived credentials through a helper —
-including Namespace — need the token materialised into an environment variable
-first.
+mTLS client certificates are not supported yet.
 
 ## Diagnostics and maintenance
 

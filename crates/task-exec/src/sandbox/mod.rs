@@ -23,9 +23,105 @@ pub(crate) mod macos;
 use cuenv_core::{Error, Result};
 use cuenv_manifest::tasks::Sandbox;
 use sha2::{Digest as _, Sha256};
-use std::path::Path;
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use tokio::process::Command;
+
+/// Pinned Nix runtime context for Linux strict sandboxing without a
+/// pre-mounted SquashFS/EROFS `CUENV_SANDBOX_RUNTIME_ROOT`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NixSandboxContext {
+    /// Locked Nix runtime digest from `cuenv.lock` (`runtime.nix.digest`).
+    pub lock_digest: String,
+    /// Root `/nix/store/<hash>-<name>` paths referenced by the task environment.
+    pub store_roots: Vec<PathBuf>,
+    /// `PATH` entries under `/nix/store` from the task environment, used to
+    /// locate `/bin/sh` and `/usr/bin/env` inside the Nix closure.
+    pub path_entries: Vec<PathBuf>,
+}
+
+/// Extract a [`NixSandboxContext`] from a project's locked runtime identity
+/// properties and the task's execution environment.
+///
+/// Returns `None` when the project does not use a locked Nix runtime or when
+/// no `/nix/store/<hash>-<name>` paths appear in the environment.
+#[must_use]
+pub fn extract_nix_sandbox_context<'a>(
+    runtime_properties: &BTreeMap<String, String>,
+    env_vars: impl IntoIterator<Item = (&'a str, &'a str)>,
+) -> Option<NixSandboxContext> {
+    if runtime_properties.get("runtime.kind").map(String::as_str) != Some("nix") {
+        return None;
+    }
+    let lock_digest = runtime_properties
+        .get("runtime.nix.digest")
+        .filter(|digest| !digest.is_empty())?
+        .clone();
+
+    let mut store_roots = BTreeSet::new();
+    let mut path_entries = Vec::new();
+    for (key, value) in env_vars {
+        collect_nix_store_roots(value, &mut store_roots);
+        if key == "PATH" {
+            for entry in std::env::split_paths(value) {
+                if entry.starts_with("/nix/store/") && !path_entries.contains(&entry) {
+                    path_entries.push(entry);
+                }
+            }
+        }
+    }
+
+    if store_roots.is_empty() {
+        return None;
+    }
+
+    Some(NixSandboxContext {
+        lock_digest,
+        store_roots: store_roots.into_iter().collect(),
+        path_entries,
+    })
+}
+
+/// Scan `value` for `/nix/store/<32-nixbase32>-<name>` root store paths.
+fn collect_nix_store_roots(value: &str, roots: &mut BTreeSet<PathBuf>) {
+    const PREFIX: &str = "/nix/store/";
+    let mut rest = value;
+    while let Some(idx) = rest.find(PREFIX) {
+        let after_prefix = &rest[idx + PREFIX.len()..];
+        let end = after_prefix
+            .find(|ch: char| !is_nix_store_name_char(ch))
+            .unwrap_or(after_prefix.len());
+        let candidate = &after_prefix[..end];
+        if is_valid_nix_store_basename(candidate) {
+            roots.insert(PathBuf::from(format!("{PREFIX}{candidate}")));
+        }
+        rest = &after_prefix[end..];
+    }
+}
+
+pub(crate) fn is_valid_nix_store_basename(name: &str) -> bool {
+    let bytes = name.as_bytes();
+    // Nix store paths are `<32 nixbase32 chars>-<name>` (at least 34 bytes).
+    if bytes.len() < 34 || bytes[32] != b'-' {
+        return false;
+    }
+    bytes[..32].iter().all(|b| is_nixbase32(*b))
+        && bytes[33..]
+            .iter()
+            .all(|b| is_nix_store_name_char(char::from(*b)))
+}
+
+const fn is_nixbase32(byte: u8) -> bool {
+    matches!(
+        byte,
+        b'0'..=b'9' | b'a'..=b'd' | b'f'..=b'n' | b'p'..=b's' | b'v'..=b'z'
+    )
+}
+
+const fn is_nix_store_name_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || matches!(ch, '+' | '-' | '.' | '_' | '?' | '=')
+}
 
 /// Proof that a task was (or will be) confined by an OS-level sandbox.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,8 +137,8 @@ pub struct StrictSandboxProof {
     /// Whether this sandbox proof is strong enough to authorize publishing
     /// results to a shared remote cache.
     ///
-    /// Currently `true` on Linux with network isolation and a verified
-    /// read-only runtime image.
+    /// Currently `true` on Linux with network isolation and either a verified
+    /// read-only runtime image or a verified pinned Nix store closure.
     pub publish_eligible: bool,
 }
 
@@ -125,6 +221,21 @@ impl NetworkPolicy {
 /// Returns an error only when `requested == Sandbox::Strict` and the host
 /// cannot provide strict confinement.
 pub fn resolve_sandbox(requested: Sandbox, network: NetworkPolicy) -> Result<SandboxResolution> {
+    resolve_sandbox_with_nix(requested, network, None)
+}
+
+/// Probe the host and resolve a task's requested [`Sandbox`] tier, optionally
+/// using a pinned Nix closure runtime when `CUENV_SANDBOX_RUNTIME_ROOT` is unset.
+///
+/// # Errors
+///
+/// Returns an error only when `requested == Sandbox::Strict` and the host
+/// cannot provide strict confinement.
+pub fn resolve_sandbox_with_nix(
+    requested: Sandbox,
+    network: NetworkPolicy,
+    nix_context: Option<&NixSandboxContext>,
+) -> Result<SandboxResolution> {
     match requested {
         Sandbox::None => Ok(SandboxResolution {
             effective: EffectiveSandbox::None,
@@ -134,7 +245,7 @@ pub fn resolve_sandbox(requested: Sandbox, network: NetworkPolicy) -> Result<San
             effective: EffectiveSandbox::Dir,
             fallback_reason: None,
         }),
-        Sandbox::Strict => match probe_strict(network) {
+        Sandbox::Strict => match probe_strict(network, nix_context) {
             Ok(proof) => Ok(SandboxResolution {
                 effective: EffectiveSandbox::Strict(proof),
                 fallback_reason: None,
@@ -144,7 +255,7 @@ pub fn resolve_sandbox(requested: Sandbox, network: NetworkPolicy) -> Result<San
                  unavailable on this host: {reason}"
             ))),
         },
-        Sandbox::Auto => match probe_strict(network) {
+        Sandbox::Auto => match probe_strict(network, nix_context) {
             Ok(proof) => Ok(SandboxResolution {
                 effective: EffectiveSandbox::Strict(proof),
                 fallback_reason: None,
@@ -170,6 +281,8 @@ pub struct StrictSandboxOptions<'paths> {
     pub task_home: &'paths Path,
     /// Network access.
     pub network: NetworkPolicy,
+    /// Optional pinned Nix runtime context for Linux strict sandboxing.
+    pub nix_context: Option<&'paths NixSandboxContext>,
 }
 
 pub(crate) type SandboxExchange =
@@ -283,20 +396,24 @@ pub fn register_linux_launcher() {
     linux::launcher::register();
 }
 
-fn probe_strict(network: NetworkPolicy) -> std::result::Result<StrictSandboxProof, String> {
+fn probe_strict(
+    network: NetworkPolicy,
+    nix_context: Option<&NixSandboxContext>,
+) -> std::result::Result<StrictSandboxProof, String> {
     #[cfg(target_os = "linux")]
     {
-        linux::probe(network)
+        linux::probe(network, nix_context)
     }
 
     #[cfg(target_os = "macos")]
     {
+        let _ = nix_context;
         macos::probe(network)
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
-        let _ = network;
+        let _ = (network, nix_context);
         Err(format!(
             "strict OS sandboxing is not implemented on {}",
             std::env::consts::OS
@@ -339,5 +456,63 @@ mod tests {
         let b =
             compute_policy_digest(&[("platform", "linux".into()), ("network", "allowed".into())]);
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn extract_nix_sandbox_context_collects_valid_store_roots_and_path_entries() {
+        let mut props = BTreeMap::new();
+        props.insert("runtime.kind".to_string(), "nix".to_string());
+        props.insert(
+            "runtime.nix.digest".to_string(),
+            "sha256:abc123".to_string(),
+        );
+
+        let bash = "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-bash-5.2";
+        let coreutils = "/nix/store/1123456789abcdfghijklmnpqrsvwxyz-coreutils-9.5";
+        let cacert = "/nix/store/2123456789abcdfghijklmnpqrsvwxyz-nss-cacert-3.98";
+
+        let path = format!("{bash}/bin:{coreutils}/bin:/usr/bin:/bin");
+        let cert = format!("{cacert}/etc/ssl/certs/ca-bundle.crt");
+        let ctx = extract_nix_sandbox_context(
+            &props,
+            [
+                ("PATH", path.as_str()),
+                ("SSL_CERT_FILE", cert.as_str()),
+                ("BAD", "/nix/store/not-a-valid-hash"),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(ctx.lock_digest, "sha256:abc123");
+        assert_eq!(
+            ctx.store_roots,
+            vec![
+                PathBuf::from(bash),
+                PathBuf::from(coreutils),
+                PathBuf::from(cacert),
+            ]
+        );
+        assert_eq!(
+            ctx.path_entries,
+            vec![
+                PathBuf::from(format!("{bash}/bin")),
+                PathBuf::from(format!("{coreutils}/bin")),
+            ]
+        );
+    }
+
+    #[test]
+    fn extract_nix_sandbox_context_returns_none_without_locked_nix_runtime() {
+        let props = BTreeMap::new();
+        assert!(
+            extract_nix_sandbox_context(
+                &props,
+                [(
+                    "PATH",
+                    "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-bash-5.2/bin"
+                )]
+            )
+            .is_none()
+        );
     }
 }

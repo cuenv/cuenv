@@ -18,6 +18,7 @@ mod vcs;
 pub use base::Base;
 pub use cache::{
     Cache, CacheAuth, CacheAuthHeader, CacheProtocol, LocalCache, RemoteCache, RemoteCacheCi,
+    RemoteCacheCiAuthMode,
 };
 pub use codegen::*;
 pub use diagnostics::NodeDiagnostics;

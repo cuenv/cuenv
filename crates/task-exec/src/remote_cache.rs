@@ -10,10 +10,13 @@ use cuenv_cas_remote::{
     Credentials, HttpActionCache, HttpCas, HttpRemoteClient, LayeredActionCache, LayeredCas,
     RemoteActionCache, RemoteCas, RemoteClient, RemoteConfig, RemoteProtocol, RemotePublisher,
 };
-use cuenv_core::manifest::{Cache, CacheProtocol, RemoteCache};
+use cuenv_core::manifest::{Cache, CacheAuth, CacheProtocol, RemoteCache};
 use cuenv_events::{CacheEvent, EventCategory};
 use serde::Serialize;
+use std::io::{Read as _, Write as _};
+use std::process::{Command, Stdio};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 /// Environment variable overriding the configured endpoint.
 const ENDPOINT_ENV: &str = "CUENV_REMOTE_CACHE";
@@ -22,6 +25,12 @@ const PROTOCOL_ENV: &str = "CUENV_REMOTE_CACHE_PROTOCOL";
 /// Environment variable overriding whether this machine uploads.
 const UPLOAD_ENV: &str = "CUENV_REMOTE_CACHE_UPLOAD";
 const INSTANCE_ENV: &str = "CUENV_REMOTE_CACHE_INSTANCE";
+/// Environment variable overriding the Bazel credential helper executable.
+const CREDENTIAL_HELPER_ENV: &str = "CUENV_REMOTE_CACHE_CREDENTIAL_HELPER";
+/// Maximum time to wait for a Bazel credential helper subprocess.
+const CREDENTIAL_HELPER_TIMEOUT: Duration = Duration::from_secs(15);
+/// Maximum bytes read from a credential helper's stdout or stderr.
+const MAX_CREDENTIAL_HELPER_OUTPUT_BYTES: u64 = 64 * 1024;
 
 /// The local stores, wrapped with a remote layer when one is configured.
 pub struct CacheLayers {
@@ -111,6 +120,16 @@ pub fn resolve(configured: Option<&RemoteCache>) -> Option<RemoteCache> {
     if let Some(upload) = upload_override() {
         remote.upload = upload;
     }
+    if let Ok(helper) = std::env::var(CREDENTIAL_HELPER_ENV) {
+        let helper = helper.trim();
+        if !helper.is_empty() {
+            remote.auth = Some(CacheAuth {
+                bearer_token_env: None,
+                header: None,
+                credential_helper: Some(helper.to_string()),
+            });
+        }
+    }
     Some(remote)
 }
 
@@ -181,9 +200,12 @@ fn credentials(remote: &RemoteCache) -> CredentialResolution {
         return CredentialResolution::Ready(Credentials::None);
     };
 
-    if auth.bearer_token_env.is_some() && auth.header.is_some() {
+    let configured_count = usize::from(auth.bearer_token_env.is_some())
+        + usize::from(auth.header.is_some())
+        + usize::from(auth.credential_helper.is_some());
+    if configured_count > 1 {
         tracing::warn!(
-            "remote cache auth config sets both bearerTokenEnv and header; disabling the remote"
+            "remote cache auth config sets multiple credential methods; disabling the remote"
         );
         return CredentialResolution::Ambiguous;
     }
@@ -222,7 +244,135 @@ fn credentials(remote: &RemoteCache) -> CredentialResolution {
         };
     }
 
+    if let Some(helper) = &auth.credential_helper {
+        return match invoke_credential_helper(helper, &remote.endpoint) {
+            Ok(headers) => {
+                for (_, value) in &headers {
+                    cuenv_events::register_secret(value.clone());
+                }
+                CredentialResolution::Ready(Credentials::Headers(headers))
+            }
+            Err(reason) => {
+                tracing::warn!(
+                    helper = helper,
+                    reason = %reason,
+                    "remote cache credential helper failed"
+                );
+                CredentialResolution::MissingConfigured
+            }
+        };
+    }
+
     CredentialResolution::Ready(Credentials::None)
+}
+
+#[derive(serde::Deserialize)]
+struct CredentialHelperResponse {
+    #[serde(default)]
+    headers: std::collections::BTreeMap<String, Vec<String>>,
+}
+
+/// Invoke a Bazel-compatible credential helper (`<helper> get`) with
+/// `{"uri": "<endpoint>"}` on stdin and parse `{"headers": {...}}` from stdout.
+fn invoke_credential_helper(
+    helper: &str,
+    endpoint: &str,
+) -> std::result::Result<Vec<(String, String)>, String> {
+    let helper = helper.trim();
+    if helper.is_empty() {
+        return Err("credential helper path is empty".to_string());
+    }
+
+    let request = serde_json::to_vec(&serde_json::json!({ "uri": endpoint.trim() }))
+        .map_err(|error| format!("serialize credential helper request: {error}"))?;
+
+    let mut child = Command::new(helper)
+        .arg("get")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("spawn credential helper '{helper}': {error}"))?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(&request);
+        drop(stdin);
+    }
+
+    let stdout_pipe = child.stdout.take();
+    let stderr_pipe = child.stderr.take();
+    let stdout_thread = std::thread::spawn(move || read_bounded_pipe(stdout_pipe));
+    let stderr_thread = std::thread::spawn(move || read_bounded_pipe(stderr_pipe));
+
+    let deadline = Instant::now() + CREDENTIAL_HELPER_TIMEOUT;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!(
+                        "credential helper '{helper}' timed out after {}s",
+                        CREDENTIAL_HELPER_TIMEOUT.as_secs()
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("wait for credential helper '{helper}': {error}"));
+            }
+        }
+    };
+
+    let stdout = stdout_thread
+        .join()
+        .map_err(|_| "credential helper stdout reader panicked".to_string())??;
+    let stderr = stderr_thread
+        .join()
+        .map_err(|_| "credential helper stderr reader panicked".to_string())??;
+
+    if !status.success() {
+        let detail = String::from_utf8_lossy(&stderr).trim().to_string();
+        if detail.is_empty() {
+            return Err(format!("credential helper '{helper}' exited with {status}"));
+        }
+        return Err(format!(
+            "credential helper '{helper}' exited with {status}: {detail}"
+        ));
+    }
+
+    let parsed: CredentialHelperResponse = serde_json::from_slice(&stdout)
+        .map_err(|error| format!("credential helper '{helper}' returned invalid JSON: {error}"))?;
+
+    let mut headers = Vec::new();
+    for (name, values) in parsed.headers {
+        for value in values {
+            if !value.is_empty() {
+                headers.push((name.clone(), value));
+            }
+        }
+    }
+    if headers.is_empty() {
+        return Err(format!(
+            "credential helper '{helper}' returned no credential headers"
+        ));
+    }
+
+    Ok(headers)
+}
+
+fn read_bounded_pipe(pipe: Option<impl std::io::Read>) -> std::result::Result<Vec<u8>, String> {
+    let Some(pipe) = pipe else {
+        return Ok(Vec::new());
+    };
+    let mut buffer = Vec::new();
+    pipe.take(MAX_CREDENTIAL_HELPER_OUTPUT_BYTES)
+        .read_to_end(&mut buffer)
+        .map_err(|error| format!("read credential helper output: {error}"))?;
+    Ok(buffer)
 }
 
 fn emit_degraded(endpoint: &str, reason: impl Into<String>) {
@@ -260,7 +410,7 @@ pub async fn probe_status(cache: Option<&Cache>) -> RemoteCacheStatus {
                 upload_requested: remote.upload,
                 upload_enabled: false,
                 state: "misconfigured".to_string(),
-                detail: Some("auth sets both bearerTokenEnv and header".to_string()),
+                detail: Some("auth sets multiple credential methods".to_string()),
             };
         }
     };
@@ -629,6 +779,7 @@ mod tests {
         remote.auth = Some(CacheAuth {
             bearer_token_env: Some("TEST_CACHE_TOKEN".to_string()),
             header: None,
+            credential_helper: None,
         });
         temp_env::with_var("TEST_CACHE_TOKEN", Some("tok"), || {
             assert!(matches!(
@@ -644,6 +795,7 @@ mod tests {
         remote.auth = Some(CacheAuth {
             bearer_token_env: Some("TEST_CACHE_TOKEN_ABSENT".to_string()),
             header: None,
+            credential_helper: None,
         });
         temp_env::with_var("TEST_CACHE_TOKEN_ABSENT", None::<&str>, || {
             assert!(matches!(
@@ -662,6 +814,7 @@ mod tests {
                 name: "x-api-key".to_string(),
                 value_env: "TEST_CACHE_KEY".to_string(),
             }),
+            credential_helper: None,
         });
         temp_env::with_var("TEST_CACHE_KEY", Some("abc"), || {
             match credentials(&remote) {
@@ -679,6 +832,86 @@ mod tests {
         assert!(matches!(
             credentials(&configured("grpc://cache:1")),
             CredentialResolution::Ready(Credentials::None)
+        ));
+    }
+
+    #[test]
+    fn credential_helper_env_overrides_auth_config() {
+        temp_env::with_vars(
+            [
+                (ENDPOINT_ENV, None::<&str>),
+                (PROTOCOL_ENV, None),
+                (UPLOAD_ENV, None),
+                (CREDENTIAL_HELPER_ENV, Some("bazel-credential-nsc")),
+            ],
+            || {
+                let resolved =
+                    resolve(Some(&configured("grpcs://cache.namespace.so:443"))).unwrap();
+                assert_eq!(
+                    resolved.auth.unwrap().credential_helper.as_deref(),
+                    Some("bazel-credential-nsc")
+                );
+            },
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn credential_helper_invokes_get_and_parses_multi_header_json() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let helper = dir.path().join("fake-bazel-credential-nsc");
+        std::fs::write(
+            &helper,
+            "#!/bin/sh\n\
+             if [ \"$1\" != \"get\" ]; then exit 2; fi\n\
+             input=$(cat)\n\
+             case \"$input\" in\n\
+               *'\"uri\":\"grpcs://cache.namespace.so:443\"'*) ;;\n\
+               *) echo \"unexpected stdin: $input\" >&2; exit 3 ;;\n\
+             esac\n\
+             printf '{\"headers\":{\"Authorization\":[\"Bearer nsc-tok\"],\"x-nsc-ingress-auth\":[\"Bearer nsc-tok\"]}}\\n'\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let mut remote = configured("grpcs://cache.namespace.so:443");
+        remote.auth = Some(CacheAuth {
+            bearer_token_env: None,
+            header: None,
+            credential_helper: Some(helper.to_string_lossy().into_owned()),
+        });
+
+        match credentials(&remote) {
+            CredentialResolution::Ready(Credentials::Headers(headers)) => {
+                assert_eq!(
+                    headers,
+                    vec![
+                        ("Authorization".to_string(), "Bearer nsc-tok".to_string()),
+                        (
+                            "x-nsc-ingress-auth".to_string(),
+                            "Bearer nsc-tok".to_string()
+                        ),
+                    ]
+                );
+            }
+            other => panic!("expected multi-header credentials, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn failing_credential_helper_disables_authenticated_writes() {
+        let mut remote = configured("grpcs://cache.namespace.so:443");
+        remote.auth = Some(CacheAuth {
+            bearer_token_env: None,
+            header: None,
+            credential_helper: Some("/nonexistent/bazel-credential-nsc".to_string()),
+        });
+
+        assert!(matches!(
+            credentials(&remote),
+            CredentialResolution::MissingConfigured
         ));
     }
 }

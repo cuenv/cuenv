@@ -70,19 +70,38 @@ pub struct RemoteCache {
     pub ci: Option<RemoteCacheCi>,
 }
 
+/// Credential provisioning mode for generated CI workflows (`cuenv sync ci`).
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum RemoteCacheCiAuthMode {
+    /// Inject static CI secrets (`read_secret` / `write_secret`) gated by
+    /// `write_environment` (GitHub) or `write_queue` (Buildkite).
+    #[default]
+    Secrets,
+    /// Credentials are provisioned outside static CI secrets (e.g. a Bazel
+    /// credential helper such as `bazel-credential-nsc`, or an OIDC step
+    /// writing into `$GITHUB_ENV`).
+    Ambient,
+}
+
 /// CI trust-boundary settings for remote cache credentials in generated
 /// workflows (`cuenv sync ci`).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct RemoteCacheCi {
+    /// Credential provisioning mode for generated workflows.
+    #[serde(default)]
+    pub auth_mode: RemoteCacheCiAuthMode,
+
     /// Secret name holding a read-only cache credential for untrusted triggers
     /// (pull requests, forks). Omit to disable remote cache access on untrusted
-    /// jobs.
+    /// jobs when `auth_mode` is [`RemoteCacheCiAuthMode::Secrets`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub read_secret: Option<String>,
 
     /// Secret name holding a read-write cache credential, exposed only to
-    /// explicitly authorized jobs on protected refs.
+    /// explicitly authorized jobs on protected refs when `auth_mode` is
+    /// [`RemoteCacheCiAuthMode::Secrets`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub write_secret: Option<String>,
 
@@ -105,6 +124,7 @@ pub struct RemoteCacheCi {
 impl Default for RemoteCacheCi {
     fn default() -> Self {
         Self {
+            auth_mode: RemoteCacheCiAuthMode::Secrets,
             read_secret: None,
             write_secret: None,
             write_environment: None,
@@ -120,8 +140,8 @@ const fn default_true() -> bool {
 
 /// How to authenticate to a remote cache.
 ///
-/// Only the *name* of an environment variable is ever stored, so a token
-/// cannot end up committed in CUE.
+/// Only the *name* of an environment variable or credential helper executable
+/// is ever stored, so a token cannot end up committed in CUE.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct CacheAuth {
@@ -132,6 +152,11 @@ pub struct CacheAuth {
     /// An arbitrary header, for a provider that names its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub header: Option<CacheAuthHeader>,
+
+    /// Path or command name of a Bazel-compatible credential helper
+    /// (e.g. `bazel-credential-nsc`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_helper: Option<String>,
 }
 
 /// A named header carrying a credential.
@@ -204,6 +229,30 @@ mod tests {
         let header = parsed.header.unwrap();
         assert_eq!(header.name, "x-api-key");
         assert_eq!(header.value_env, "CACHE_KEY");
+    }
+
+    #[test]
+    fn credential_helper_and_ambient_ci_mode_round_trip() {
+        let parsed: Cache = serde_json::from_value(serde_json::json!({
+            "remote": {
+                "endpoint": "grpcs://cache.namespace.so:443",
+                "upload": true,
+                "auth": {"credentialHelper": "bazel-credential-nsc"},
+                "ci": {
+                    "authMode": "ambient",
+                    "isolatedCacheDir": true
+                }
+            }
+        }))
+        .unwrap();
+        let remote = parsed.remote.unwrap();
+        assert_eq!(
+            remote.auth.unwrap().credential_helper.as_deref(),
+            Some("bazel-credential-nsc")
+        );
+        let ci = remote.ci.unwrap();
+        assert_eq!(ci.auth_mode, RemoteCacheCiAuthMode::Ambient);
+        assert!(ci.isolated_cache_dir);
     }
 
     #[test]

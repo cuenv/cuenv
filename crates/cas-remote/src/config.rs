@@ -23,6 +23,10 @@ pub enum Credentials {
         /// Header value.
         value: String,
     },
+    /// Send multiple headers, such as those returned by a Bazel credential
+    /// helper (e.g. `bazel-credential-nsc`, which emits both `authorization`
+    /// and `x-nsc-ingress-auth`).
+    Headers(Vec<(String, String)>),
 }
 
 impl std::fmt::Debug for Credentials {
@@ -33,6 +37,10 @@ impl std::fmt::Debug for Credentials {
             Self::Bearer(_) => f.write_str("Bearer(<redacted>)"),
             Self::Header { name, .. } => {
                 write!(f, "Header {{ name: {name:?}, value: <redacted> }}")
+            }
+            Self::Headers(headers) => {
+                let names: Vec<&str> = headers.iter().map(|(name, _)| name.as_str()).collect();
+                write!(f, "Headers {{ names: {names:?}, values: <redacted> }}")
             }
         }
     }
@@ -306,6 +314,16 @@ mod tests {
         let rendered = format!("{header:?}");
         assert!(!rendered.contains("super-secret-token"));
         assert!(rendered.contains("x-api-key"));
+
+        let multi = Credentials::Headers(vec![
+            ("Authorization".into(), "Bearer secret-one".into()),
+            ("x-nsc-ingress-auth".into(), "Bearer secret-two".into()),
+        ]);
+        let rendered = format!("{multi:?}");
+        assert!(!rendered.contains("secret-one"));
+        assert!(!rendered.contains("secret-two"));
+        assert!(rendered.contains("Authorization"));
+        assert!(rendered.contains("x-nsc-ingress-auth"));
     }
 
     #[test]

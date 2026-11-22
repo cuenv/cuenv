@@ -1026,6 +1026,7 @@ mod tests {
             auth: Some(CacheAuth {
                 bearer_token_env: Some("CACHE_TOKEN".into()),
                 header: None,
+                credential_helper: None,
             }),
             ci: Some(RemoteCacheCi {
                 read_secret: Some("CACHE_READ".into()),

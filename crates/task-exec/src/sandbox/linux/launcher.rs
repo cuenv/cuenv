@@ -20,7 +20,7 @@ mod worker;
 
 const PROBE: &str = "__cuenv_linux_sandbox_probe";
 const EXECUTE: &str = "__cuenv_linux_sandbox_execute";
-const MAX_PLAN_BYTES: u32 = 1024 * 1024;
+const MAX_PLAN_BYTES: u32 = 8 * 1024 * 1024;
 const MAX_TASK_BYTES: usize = 16 * 1024 * 1024;
 const READY: u8 = b'R';
 static CLI_LAUNCHER: OnceLock<PathBuf> = OnceLock::new();
