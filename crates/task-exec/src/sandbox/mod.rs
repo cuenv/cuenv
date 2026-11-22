@@ -25,6 +25,7 @@ use cuenv_manifest::tasks::Sandbox;
 use sha2::{Digest as _, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "linux")]
 use std::process::Stdio;
 use tokio::process::Command;
 
@@ -330,18 +331,12 @@ impl StrictSandboxPlan {
 
     /// Transfer the finished command to the CLI launcher without exposing
     /// task-controlled data to the dynamic loader or parent environment.
+    #[cfg(target_os = "linux")]
     pub(crate) fn finish_command(
         &self,
         command: Command,
     ) -> Result<(Command, Option<Stdio>, Option<SandboxExchange>)> {
-        #[cfg(target_os = "linux")]
-        {
-            linux::launcher::finish(&self.inner, command)
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            Ok((command, None, None))
-        }
+        linux::launcher::finish(&self.inner, command)
     }
 
     /// Return the proof associated with this prepared sandbox plan.
@@ -367,7 +362,7 @@ impl StrictSandboxPlan {
 
         #[cfg(target_os = "macos")]
         {
-            let mut command = self.inner.build_command(program, args)?;
+            let mut command = self.inner.build_command(program, args);
             command.kill_on_drop(true);
             Ok(command)
         }

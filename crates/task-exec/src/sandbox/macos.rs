@@ -7,16 +7,49 @@
 use super::{NetworkPolicy, StrictSandboxOptions, StrictSandboxProof, compute_policy_digest};
 use cuenv_core::{Error, Result};
 use std::path::Path;
+use std::sync::OnceLock;
 use tokio::process::Command;
 
 const SANDBOX_EXEC_BIN: &str = "/usr/bin/sandbox-exec";
 
+/// Probe whether `/usr/bin/sandbox-exec` can actually apply a Seatbelt profile
+/// on this macOS host (e.g. nested sandboxes such as Nix Darwin builds deny
+/// `sandbox_apply` with `EPERM`).
+fn probe_seatbelt_available() -> std::result::Result<(), String> {
+    static RESULT: OnceLock<std::result::Result<(), String>> = OnceLock::new();
+    RESULT
+        .get_or_init(|| {
+            if !Path::new(SANDBOX_EXEC_BIN).exists() {
+                return Err(format!("{SANDBOX_EXEC_BIN} not found"));
+            }
+            let output = std::process::Command::new(SANDBOX_EXEC_BIN)
+                .arg("-p")
+                .arg("(version 1)(allow default)")
+                .arg("/usr/bin/true")
+                .output()
+                .map_err(|error| format!("failed to probe {SANDBOX_EXEC_BIN}: {error}"))?;
+            if output.status.success() {
+                Ok(())
+            } else {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                let detail = stderr.trim();
+                if detail.is_empty() {
+                    Err(format!(
+                        "{SANDBOX_EXEC_BIN} probe exited with {}",
+                        output.status
+                    ))
+                } else {
+                    Err(format!("{SANDBOX_EXEC_BIN} unavailable: {detail}"))
+                }
+            }
+        })
+        .clone()
+}
+
 /// Probe whether `/usr/bin/sandbox-exec` is available on this macOS host.
-pub(crate) fn probe(network: NetworkPolicy) -> std::result::Result<StrictSandboxProof, String> {
+pub(super) fn probe(network: NetworkPolicy) -> std::result::Result<StrictSandboxProof, String> {
     let network_allowed = network == NetworkPolicy::Allowed;
-    if !Path::new(SANDBOX_EXEC_BIN).exists() {
-        return Err(format!("{SANDBOX_EXEC_BIN} not found"));
-    }
+    probe_seatbelt_available()?;
 
     let policy_digest = compute_policy_digest(&[
         ("platform", "macos-sandbox-exec".to_string()),
@@ -41,12 +74,12 @@ pub(crate) fn probe(network: NetworkPolicy) -> std::result::Result<StrictSandbox
 
 /// Pre-prepared macOS Seatbelt profile plan.
 #[derive(Clone)]
-pub(crate) struct MacosSandboxPlan {
+pub(super) struct MacosSandboxPlan {
     profile: String,
 }
 
 impl MacosSandboxPlan {
-    pub(crate) fn prepare(options: StrictSandboxOptions<'_>) -> Result<(Self, StrictSandboxProof)> {
+    pub(super) fn prepare(options: StrictSandboxOptions<'_>) -> Result<(Self, StrictSandboxProof)> {
         let StrictSandboxOptions {
             exec_root,
             workdir: _,
@@ -83,10 +116,10 @@ impl MacosSandboxPlan {
         Ok((Self { profile }, proof))
     }
 
-    pub(crate) fn build_command(&self, program: &str, args: &[String]) -> Result<Command> {
+    pub(super) fn build_command(&self, program: &str, args: &[String]) -> Command {
         let mut command = Command::new(SANDBOX_EXEC_BIN);
         command.arg("-p").arg(&self.profile).arg(program).args(args);
-        Ok(command)
+        command
     }
 }
 

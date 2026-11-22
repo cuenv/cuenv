@@ -1055,9 +1055,15 @@ impl TaskExecutor {
             .as_deref()
             .map(|timeout| parse_task_duration("timeout", timeout))
             .transpose()?;
+        #[cfg(target_os = "linux")]
         let (cmd, launcher_stdin, launcher_exchange) = match strict_tmp_home {
             Some((_, _, plan)) => plan.finish_command(cmd)?,
             None => (cmd, None, None),
+        };
+        #[cfg(not(target_os = "linux"))]
+        let (cmd, launcher_stdin, launcher_exchange) = {
+            let _ = strict_tmp_home;
+            (cmd, None, None)
         };
         super::process::run_task_process(
             name,
