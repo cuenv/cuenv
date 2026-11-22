@@ -55,6 +55,10 @@ pub struct CiArgs {
     /// Name of the CUE package to evaluate.
     #[arg(long, default_value = "cuenv", value_name = "PACKAGE")]
     pub package: String,
+
+    /// Deterministic task shard in `<INDEX>/<TOTAL>` format (1-indexed, e.g. `1/4`).
+    #[arg(long, value_name = "INDEX/TOTAL", conflicts_with = "export")]
+    pub shard: Option<cuenv_ci::executor::ShardSpec>,
 }
 
 impl CiArgs {
