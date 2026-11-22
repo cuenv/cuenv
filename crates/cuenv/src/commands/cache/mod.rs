@@ -416,6 +416,165 @@ fn format_bytes(bytes: u64) -> String {
     }
 }
 
+/// Arguments for `cuenv cache diff`.
+#[derive(Debug, Clone)]
+pub struct CacheDiffArgs {
+    /// Baseline action digest (`<sha256>` or `<sha256>/<size>`).
+    pub left: String,
+    /// Target action digest (`<sha256>` or `<sha256>/<size>`).
+    pub right: String,
+    /// Path to the CUE module or project directory.
+    pub path: String,
+    /// Output format (`text` or `json`).
+    pub format: String,
+}
+
+/// Execute `cuenv cache inspect <digest>`.
+///
+/// # Errors
+///
+/// Returns an error if the action cannot be resolved or decoded from the local CAS.
+pub async fn execute_inspect(digest: &str, path: &str, format: &str) -> Result<()> {
+    let project_dir = resolve_project_dir(path)?;
+    let local_root = task_cache::resolve_cache_root(&project_dir);
+    let info = cuenv_cas::inspect_action(&local_root, digest)
+        .await
+        .map_err(|e| Error::configuration(format!("inspect action '{digest}': {e}")))?;
+
+    if format == "json" {
+        let json = serde_json::to_string_pretty(&info)
+            .map_err(|e| Error::configuration(format!("serialize action inspection: {e}")))?;
+        cuenv_events::println_redacted(&json);
+        return Ok(());
+    }
+
+    let mut lines = vec![
+        format!("Action:            {}", info.action_digest),
+        format!("Semantics version: v{}", info.action_semantics_version),
+        format!("Working directory: {}", info.working_directory),
+        format!("Command:           {}", info.arguments.join(" ")),
+        format!(
+            "Input root:        {} ({} files)",
+            info.input_root_digest,
+            info.inputs.len()
+        ),
+    ];
+    if !info.platform.is_empty() {
+        lines.push("Platform:".to_string());
+        for (k, v) in &info.platform {
+            lines.push(format!("  {k} = {v}"));
+        }
+    }
+    if !info.environment_variables.is_empty() {
+        lines.push("Environment:".to_string());
+        for (k, v) in &info.environment_variables {
+            lines.push(format!("  {k}={v}"));
+        }
+    }
+    if !info.output_paths.is_empty() {
+        lines.push(format!(
+            "Declared outputs:  {}",
+            info.output_paths.join(", ")
+        ));
+    }
+    if let Some(result) = &info.cached_result {
+        lines.push(format!(
+            "Cached result:     exit {} ({} files, {} dirs)",
+            result.exit_code,
+            result.output_files.len(),
+            result.output_directories.len()
+        ));
+    } else {
+        lines.push("Cached result:     none in local action cache".to_string());
+    }
+    cuenv_events::println_redacted(&lines.join("\n"));
+    Ok(())
+}
+
+/// Execute `cuenv cache diff <left> <right>`.
+///
+/// # Errors
+///
+/// Returns an error if either action cannot be resolved or decoded from the local CAS.
+pub async fn execute_diff(args: CacheDiffArgs) -> Result<()> {
+    let project_dir = resolve_project_dir(&args.path)?;
+    let local_root = task_cache::resolve_cache_root(&project_dir);
+    let diff = cuenv_cas::diff_actions(&local_root, &args.left, &args.right)
+        .await
+        .map_err(|e| Error::configuration(format!("diff actions: {e}")))?;
+
+    if args.format == "json" {
+        let json = serde_json::to_string_pretty(&diff)
+            .map_err(|e| Error::configuration(format!("serialize action diff: {e}")))?;
+        cuenv_events::println_redacted(&json);
+        return Ok(());
+    }
+
+    if diff.identical {
+        cuenv_events::println_redacted(&format!(
+            "Actions {} and {} have identical keys.",
+            diff.left, diff.right
+        ));
+        return Ok(());
+    }
+
+    let mut lines = vec![format!("Diff {} -> {}", diff.left, diff.right)];
+    if let Some(sem) = &diff.action_semantics_version {
+        lines.push(format!("  semantics: v{} -> v{}", sem.left, sem.right));
+    }
+    if let Some(wd) = &diff.working_directory {
+        lines.push(format!("  workdir:   {} -> {}", wd.left, wd.right));
+    }
+    if let Some(argv) = &diff.arguments {
+        lines.push(format!("  - argv: {}", argv.left.join(" ")));
+        lines.push(format!("  + argv: {}", argv.right.join(" ")));
+    }
+    append_map_diff(&mut lines, "platform", &diff.platform);
+    append_map_diff(&mut lines, "env", &diff.environment);
+    if !diff.outputs.is_empty() {
+        lines.push("  outputs:".to_string());
+        for path in &diff.outputs.removed {
+            lines.push(format!("    - {path}"));
+        }
+        for path in &diff.outputs.added {
+            lines.push(format!("    + {path}"));
+        }
+    }
+    if !diff.inputs.is_empty() {
+        lines.push("  inputs:".to_string());
+        for path in &diff.inputs.removed {
+            lines.push(format!("    - {path}"));
+        }
+        for path in &diff.inputs.added {
+            lines.push(format!("    + {path}"));
+        }
+        for (path, change) in &diff.inputs.changed {
+            lines.push(format!(
+                "    ~ {path} ({} -> {})",
+                change.left.digest.hash, change.right.digest.hash
+            ));
+        }
+    }
+    cuenv_events::println_redacted(&lines.join("\n"));
+    Ok(())
+}
+
+fn append_map_diff(lines: &mut Vec<String>, label: &str, diff: &cuenv_cas::MapDiff) {
+    if diff.is_empty() {
+        return;
+    }
+    lines.push(format!("  {label}:"));
+    for (k, v) in &diff.removed {
+        lines.push(format!("    - {k}={v}"));
+    }
+    for (k, v) in &diff.added {
+        lines.push(format!("    + {k}={v}"));
+    }
+    for (k, change) in &diff.changed {
+        lines.push(format!("    ~ {k}: {} -> {}", change.left, change.right));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

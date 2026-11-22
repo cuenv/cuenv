@@ -564,7 +564,9 @@ impl Commands {
                 }
                 CacheCommands::Stats { .. }
                 | CacheCommands::Verify { .. }
-                | CacheCommands::Prune { .. } => "cuenv",
+                | CacheCommands::Prune { .. }
+                | CacheCommands::Inspect { .. }
+                | CacheCommands::Diff { .. } => "cuenv",
             },
 
             // Nested env subcommands with --package

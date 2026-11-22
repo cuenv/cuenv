@@ -22,6 +22,7 @@ pub mod action_cache;
 pub mod cas;
 pub mod digest;
 pub mod error;
+pub mod inspect;
 pub mod integrity;
 pub mod maintenance;
 pub mod merkle;
@@ -33,6 +34,10 @@ pub use action_cache::{ActionCache, CacheSource, LocalActionCache};
 pub use cas::{Cas, LocalCas};
 pub use digest::{Digest, canonical_bytes, digest_of};
 pub use error::{Error, Result};
+pub use inspect::{
+    ActionDiff, ActionInspection, FieldDiff, InputTreeDiff, InspectedActionResult, InspectedInput,
+    MapDiff, SetDiff, compute_action_diff, diff_actions, inspect_action,
+};
 pub use integrity::{missing_blobs, referenced_blobs};
 pub use maintenance::{
     CacheStats, CorruptBlob, DEFAULT_GC_GRACE_WINDOW, GcOptions, GcReport, InvalidActionEntry,

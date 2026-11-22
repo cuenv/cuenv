@@ -257,6 +257,8 @@ Use `cuenv cache` to inspect, verify, and clean local and remote cache state:
 ```bash
 cuenv cache status                      # Show local root + probe remote reachability
 cuenv cache stats                       # Show local CAS/AC entry counts and disk usage
+cuenv cache inspect <digest>            # Decode an action's command, env, platform, and input tree
+cuenv cache diff <left> <right>         # Explain why two action digests differed (env, platform, inputs)
 cuenv cache verify                      # Read-only digest and referential integrity check
 cuenv cache verify --repair             # Remove corrupt blobs and dangling action entries
 cuenv cache gc --max-size 10G --dry-run # Preview LRU/age eviction (preserves nested trees & grace window)

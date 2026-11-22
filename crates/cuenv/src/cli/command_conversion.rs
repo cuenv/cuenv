@@ -229,6 +229,26 @@ impl Commands {
                     dry_run,
                     format: output_format.to_string(),
                 },
+                CacheCommands::Inspect {
+                    digest,
+                    path,
+                    output_format,
+                } => Command::CacheInspect {
+                    digest,
+                    path,
+                    format: output_format.to_string(),
+                },
+                CacheCommands::Diff {
+                    left,
+                    right,
+                    path,
+                    output_format,
+                } => Command::CacheDiff {
+                    left,
+                    right,
+                    path,
+                    format: output_format.to_string(),
+                },
             },
             _ => unreachable!("nested command conversion called for another command family"),
         }

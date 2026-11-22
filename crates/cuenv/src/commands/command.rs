@@ -436,4 +436,24 @@ pub enum Command {
         /// Output format (`text` or `json`).
         format: String,
     },
+    /// Inspect a cached action's command, environment, platform, and input tree.
+    CacheInspect {
+        /// Action digest (`<sha256>` or `<sha256>/<size>`).
+        digest: String,
+        /// Path to the CUE module or project directory.
+        path: String,
+        /// Output format (`text` or `json`).
+        format: String,
+    },
+    /// Diff two cached action digests to explain cache misses.
+    CacheDiff {
+        /// Baseline action digest (`<sha256>` or `<sha256>/<size>`).
+        left: String,
+        /// Target action digest (`<sha256>` or `<sha256>/<size>`).
+        right: String,
+        /// Path to the CUE module or project directory.
+        path: String,
+        /// Output format (`text` or `json`).
+        format: String,
+    },
 }

@@ -1237,4 +1237,55 @@ pub enum CacheCommands {
         )]
         output_format: OutputFormat,
     },
+    /// Inspect a cached action's command, environment, platform, and input tree.
+    #[command(about = "Inspect a cached action's command, environment, platform, and input tree")]
+    Inspect {
+        /// Action digest (`<sha256>` or `<sha256>/<size>`).
+        #[arg(help = "Action digest (<sha256> or <sha256>/<size>)")]
+        digest: String,
+        /// Path to directory containing CUE files.
+        #[arg(
+            long,
+            short = 'p',
+            help = "Path to directory containing CUE files",
+            default_value = "."
+        )]
+        path: String,
+        /// Output format (text or json).
+        #[arg(
+            long = "output",
+            short = 'o',
+            help = "Output format",
+            value_enum,
+            default_value_t = OutputFormat::Text
+        )]
+        output_format: OutputFormat,
+    },
+    /// Diff two cached action digests to explain why they produced different keys.
+    #[command(about = "Diff two cached action digests to explain why they produced different keys")]
+    Diff {
+        /// Baseline action digest (`<sha256>` or `<sha256>/<size>`).
+        #[arg(help = "Baseline action digest (<sha256> or <sha256>/<size>)")]
+        left: String,
+        /// Target action digest (`<sha256>` or `<sha256>/<size>`).
+        #[arg(help = "Target action digest (<sha256> or <sha256>/<size>)")]
+        right: String,
+        /// Path to directory containing CUE files.
+        #[arg(
+            long,
+            short = 'p',
+            help = "Path to directory containing CUE files",
+            default_value = "."
+        )]
+        path: String,
+        /// Output format (text or json).
+        #[arg(
+            long = "output",
+            short = 'o',
+            help = "Output format",
+            value_enum,
+            default_value_t = OutputFormat::Text
+        )]
+        output_format: OutputFormat,
+    },
 }
