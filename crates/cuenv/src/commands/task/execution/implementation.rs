@@ -98,7 +98,14 @@ pub(in crate::commands::task) async fn execute_task_impl(
     if let Some(output) = help::maybe_render_task_help(&input, &context)? {
         return Ok(output);
     }
-    let resolution = selection::resolve_task_selection(&input, &context, &normalized_labels)?;
+    let Some(resolution) =
+        selection::resolve_task_selection(&input, &context, &normalized_labels).await?
+    else {
+        if input.dry_run.is_dry_run() {
+            return export_task_graph(&TaskGraph::new());
+        }
+        return Ok("No affected tasks to run".to_string());
+    };
 
     let task_graph = build_execution_graph(&input, &resolution)?;
 

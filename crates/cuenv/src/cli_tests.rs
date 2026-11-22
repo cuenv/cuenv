@@ -1007,6 +1007,8 @@ fn test_commands_package_method() {
         skip_dependencies: false,
         continue_on_error: false,
         dry_run: false,
+        affected: false,
+        from: None,
         task_args: vec![],
     };
     assert_eq!(task_cmd.package(), "mypackage");

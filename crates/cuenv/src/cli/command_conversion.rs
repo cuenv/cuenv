@@ -124,6 +124,8 @@ impl Commands {
                 skip_dependencies,
                 continue_on_error,
                 dry_run,
+                affected,
+                from,
                 task_args,
             } => Command::Task {
                 path,
@@ -142,6 +144,8 @@ impl Commands {
                 } else {
                     cuenv_core::DryRun::No
                 },
+                affected,
+                from,
                 task_args,
             },
             _ => unreachable!("task command conversion called for another command family"),

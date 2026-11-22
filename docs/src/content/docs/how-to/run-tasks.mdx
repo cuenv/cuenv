@@ -203,6 +203,25 @@ cuenv task -l ci
 cuenv task -l test -l unit
 ```
 
+### Affected-task runs with `--affected` and `--from`
+
+Run only the tasks whose declared `inputs` (or transitive dependencies, or CUE configuration) are affected by changed files — using the same fail-closed engine as `cuenv ci`:
+
+```bash
+# Run all tasks affected by uncommitted changes vs HEAD
+cuenv task --affected
+
+# Run all tasks affected since a git ref (merge-base with HEAD + uncommitted changes)
+cuenv task --from origin/main
+
+# Combine with labels, a specific task, or --dry-run
+cuenv task -l test --affected --from origin/main
+cuenv task build --affected
+cuenv task --affected --dry-run
+```
+
+Tasks without declared `inputs` are always treated as affected so nothing is silently skipped.
+
 ### Resilient runs with `--continue-on-error`
 
 By default, the first failure aborts the run. `--continue-on-error` keeps unrelated siblings going and marks anything downstream of the failure as skipped:

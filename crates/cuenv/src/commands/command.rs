@@ -121,6 +121,10 @@ pub enum Command {
         continue_on_error: bool,
         /// Dry run mode: export DAG without executing.
         dry_run: DryRun,
+        /// Only run tasks affected by changed files.
+        affected: bool,
+        /// Base git ref for affected-task comparison (implies --affected).
+        from: Option<String>,
         /// Additional arguments to pass to the task.
         task_args: Vec<String>,
     },

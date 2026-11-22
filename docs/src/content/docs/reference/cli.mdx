@@ -245,6 +245,8 @@ cuenv task [NAME] [OPTIONS] [-- TASK_ARGS...]
 - `-S, --skip-dependencies`: Skip executing task dependencies (for CI orchestrators that handle deps externally).
 - `--continue-on-error`: Don't abort on first failure; dependents of the failing task are emitted as `task.skipped` and unrelated siblings keep running.
 - `-n, --dry-run`: Export the task dependency graph as JSON without executing tasks.
+- `--affected`: Only execute tasks affected by changed files (uncommitted changes vs `HEAD`, or since `--from <REF>`).
+- `--from <REF>`: Base git ref for `--affected` comparison (implies `--affected`).
 - `--help`: Print task-specific help (when a task name is provided).
 
 **Label-based execution:**

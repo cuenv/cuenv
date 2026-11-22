@@ -129,6 +129,20 @@ pub enum Commands {
             default_value_t = false
         )]
         dry_run: bool,
+        /// Only run tasks affected by changed files (since HEAD or --from <REF>).
+        #[arg(
+            long = "affected",
+            help = "Only execute tasks affected by changed files (uncommitted changes vs HEAD, or since --from <REF>)",
+            default_value_t = false
+        )]
+        affected: bool,
+        /// Base git ref for affected-task detection (implies --affected).
+        #[arg(
+            long = "from",
+            value_name = "REF",
+            help = "Base git ref for --affected comparison (implies --affected)"
+        )]
+        from: Option<String>,
         /// Arguments to pass to the task (positional and --named values).
         #[arg(help = "Arguments to pass to the task (positional and --named values)")]
         task_args: Vec<String>,
