@@ -7,15 +7,16 @@
 
 use cuenv_cas::{ActionCache, ActionPublisher, Cas};
 use cuenv_cas_remote::{
-    Credentials, HttpActionCache, HttpCas, HttpRemoteClient, LayeredActionCache, LayeredCas,
-    RemoteActionCache, RemoteCas, RemoteClient, RemoteConfig, RemoteProtocol, RemotePublisher,
+    CredentialProvider, Credentials, HttpActionCache, HttpCas, HttpRemoteClient,
+    LayeredActionCache, LayeredCas, RemoteActionCache, RemoteCas, RemoteClient, RemoteConfig,
+    RemoteProtocol, RemotePublisher, TlsConfig,
 };
-use cuenv_core::manifest::{Cache, CacheAuth, CacheProtocol, RemoteCache};
+use cuenv_core::manifest::{Cache, CacheAuth, CacheProtocol, CacheTls, RemoteCache};
 use cuenv_events::{CacheEvent, EventCategory};
 use serde::Serialize;
 use std::io::{Read as _, Write as _};
 use std::process::{Command, Stdio};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// Environment variable overriding the configured endpoint.
@@ -27,8 +28,16 @@ const UPLOAD_ENV: &str = "CUENV_REMOTE_CACHE_UPLOAD";
 const INSTANCE_ENV: &str = "CUENV_REMOTE_CACHE_INSTANCE";
 /// Environment variable overriding the Bazel credential helper executable.
 const CREDENTIAL_HELPER_ENV: &str = "CUENV_REMOTE_CACHE_CREDENTIAL_HELPER";
+/// Environment variable overriding the custom CA certificate PEM path.
+const CA_CERT_ENV: &str = "CUENV_REMOTE_CACHE_CA_CERT";
+/// Environment variable overriding the mTLS client certificate PEM path.
+const CLIENT_CERT_ENV: &str = "CUENV_REMOTE_CACHE_CLIENT_CERT";
+/// Environment variable overriding the mTLS client private key PEM path.
+const CLIENT_KEY_ENV: &str = "CUENV_REMOTE_CACHE_CLIENT_KEY";
 /// Maximum time to wait for a Bazel credential helper subprocess.
 const CREDENTIAL_HELPER_TIMEOUT: Duration = Duration::from_secs(15);
+/// Refresh credential-helper tokens this far ahead of their `expires` timestamp.
+const CREDENTIAL_REFRESH_SKEW_SECS: i64 = 60;
 /// Maximum bytes read from a credential helper's stdout or stderr.
 const MAX_CREDENTIAL_HELPER_OUTPUT_BYTES: u64 = 64 * 1024;
 
@@ -130,7 +139,38 @@ pub fn resolve(configured: Option<&RemoteCache>) -> Option<RemoteCache> {
             });
         }
     }
+    apply_tls_env_overrides(&mut remote);
     Some(remote)
+}
+
+fn apply_tls_env_overrides(remote: &mut RemoteCache) {
+    let ca = std::env::var(CA_CERT_ENV)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let cert = std::env::var(CLIENT_CERT_ENV)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let key = std::env::var(CLIENT_KEY_ENV)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    if ca.is_none() && cert.is_none() && key.is_none() {
+        return;
+    }
+
+    let tls = remote.tls.get_or_insert_with(CacheTls::default);
+    if let Some(ca) = ca {
+        tls.ca_cert_path = Some(ca);
+    }
+    if let Some(cert) = cert {
+        tls.client_cert_path = Some(cert);
+    }
+    if let Some(key) = key {
+        tls.client_key_path = Some(key);
+    }
 }
 
 fn protocol_override() -> Option<CacheProtocol> {
@@ -245,13 +285,8 @@ fn credentials(remote: &RemoteCache) -> CredentialResolution {
     }
 
     if let Some(helper) = &auth.credential_helper {
-        return match invoke_credential_helper(helper, &remote.endpoint) {
-            Ok(headers) => {
-                for (_, value) in &headers {
-                    cuenv_events::register_secret(value.clone());
-                }
-                CredentialResolution::Ready(Credentials::Headers(headers))
-            }
+        return match CachingCredentialHelperProvider::initialize(helper, &remote.endpoint) {
+            Ok(provider) => CredentialResolution::Ready(Credentials::Dynamic(Arc::new(provider))),
             Err(reason) => {
                 tracing::warn!(
                     helper = helper,
@@ -270,14 +305,68 @@ fn credentials(remote: &RemoteCache) -> CredentialResolution {
 struct CredentialHelperResponse {
     #[serde(default)]
     headers: std::collections::BTreeMap<String, Vec<String>>,
+    #[serde(default)]
+    expires: Option<String>,
+}
+
+struct CachedHelperEntry {
+    headers: Vec<(String, String)>,
+    expires_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// Bazel credential helper provider that caches returned headers and refreshes
+/// automatically before the optional RFC 3339 `expires` timestamp.
+struct CachingCredentialHelperProvider {
+    helper: String,
+    endpoint: String,
+    cached: Mutex<CachedHelperEntry>,
+}
+
+impl CachingCredentialHelperProvider {
+    fn initialize(helper: &str, endpoint: &str) -> std::result::Result<Self, String> {
+        let entry = invoke_credential_helper(helper, endpoint)?;
+        Ok(Self {
+            helper: helper.to_string(),
+            endpoint: endpoint.to_string(),
+            cached: Mutex::new(entry),
+        })
+    }
+
+    fn is_expired(expires_at: Option<chrono::DateTime<chrono::Utc>>) -> bool {
+        let Some(expires) = expires_at else {
+            return false;
+        };
+        let refresh_at = expires - chrono::Duration::seconds(CREDENTIAL_REFRESH_SKEW_SECS);
+        chrono::Utc::now() >= refresh_at
+    }
+}
+
+impl CredentialProvider for CachingCredentialHelperProvider {
+    fn headers(&self) -> cuenv_cas_remote::Result<Vec<(String, String)>> {
+        let mut guard = self.cached.lock().map_err(|_| {
+            cuenv_cas_remote::Error::config("credential helper cache lock poisoned")
+        })?;
+        if Self::is_expired(guard.expires_at) {
+            match invoke_credential_helper(&self.helper, &self.endpoint) {
+                Ok(refreshed) => *guard = refreshed,
+                Err(reason) => {
+                    return Err(cuenv_cas_remote::Error::config(format!(
+                        "failed to refresh remote cache credentials: {reason}"
+                    )));
+                }
+            }
+        }
+        Ok(guard.headers.clone())
+    }
 }
 
 /// Invoke a Bazel-compatible credential helper (`<helper> get`) with
-/// `{"uri": "<endpoint>"}` on stdin and parse `{"headers": {...}}` from stdout.
+/// `{"uri": "<endpoint>"}` on stdin and parse `{"headers": {...}, "expires"?: "..."}`
+/// from stdout.
 fn invoke_credential_helper(
     helper: &str,
     endpoint: &str,
-) -> std::result::Result<Vec<(String, String)>, String> {
+) -> std::result::Result<CachedHelperEntry, String> {
     let helper = helper.trim();
     if helper.is_empty() {
         return Err("credential helper path is empty".to_string());
@@ -351,6 +440,7 @@ fn invoke_credential_helper(
     for (name, values) in parsed.headers {
         for value in values {
             if !value.is_empty() {
+                cuenv_events::register_secret(value.clone());
                 headers.push((name.clone(), value));
             }
         }
@@ -361,7 +451,23 @@ fn invoke_credential_helper(
         ));
     }
 
-    Ok(headers)
+    let expires_at = parsed.expires.as_deref().and_then(|raw| {
+        chrono::DateTime::parse_from_rfc3339(raw)
+            .map(|dt| dt.with_timezone(&chrono::Utc))
+            .map_err(|error| {
+                tracing::warn!(
+                    helper = helper,
+                    error = %error,
+                    "ignoring unparseable expires timestamp from credential helper"
+                );
+            })
+            .ok()
+    });
+
+    Ok(CachedHelperEntry {
+        headers,
+        expires_at,
+    })
 }
 
 fn read_bounded_pipe(pipe: Option<impl std::io::Read>) -> std::result::Result<Vec<u8>, String> {
@@ -373,6 +479,43 @@ fn read_bounded_pipe(pipe: Option<impl std::io::Read>) -> std::result::Result<Ve
         .read_to_end(&mut buffer)
         .map_err(|error| format!("read credential helper output: {error}"))?;
     Ok(buffer)
+}
+
+fn resolve_tls(remote: &RemoteCache) -> std::result::Result<TlsConfig, String> {
+    let Some(tls) = &remote.tls else {
+        return Ok(TlsConfig::default());
+    };
+    let ca_cert_pem = tls
+        .ca_cert_path
+        .as_deref()
+        .map(|path| {
+            std::fs::read(path)
+                .map_err(|error| format!("read remote cache CA certificate '{path}': {error}"))
+        })
+        .transpose()?;
+    let client_cert_pem = tls
+        .client_cert_path
+        .as_deref()
+        .map(|path| {
+            std::fs::read(path)
+                .map_err(|error| format!("read remote cache client certificate '{path}': {error}"))
+        })
+        .transpose()?;
+    let client_key_pem = tls
+        .client_key_path
+        .as_deref()
+        .map(|path| {
+            std::fs::read(path)
+                .map_err(|error| format!("read remote cache client key '{path}': {error}"))
+        })
+        .transpose()?;
+    let config = TlsConfig {
+        ca_cert_pem,
+        client_cert_pem,
+        client_key_pem,
+    };
+    config.validate().map_err(|error| error.to_string())?;
+    Ok(config)
 }
 
 fn emit_degraded(endpoint: &str, reason: impl Into<String>) {
@@ -415,10 +558,27 @@ pub async fn probe_status(cache: Option<&Cache>) -> RemoteCacheStatus {
         }
     };
 
+    let tls = match resolve_tls(&remote) {
+        Ok(tls) => tls,
+        Err(detail) => {
+            return RemoteCacheStatus {
+                configured: true,
+                endpoint: Some(remote.endpoint),
+                protocol: Some(proto_label),
+                instance: Some(remote.instance),
+                upload_requested: remote.upload,
+                upload_enabled: false,
+                state: "misconfigured".to_string(),
+                detail: Some(detail),
+            };
+        }
+    };
+
     let config = RemoteConfig::new(&remote.endpoint)
         .with_protocol(to_remote_protocol(remote.protocol))
         .with_instance_name(&remote.instance)
-        .with_credentials(credentials);
+        .with_credentials(credentials)
+        .with_tls(tls);
 
     let probe_result = match remote.protocol {
         CacheProtocol::Grpc => match RemoteClient::connect(config).await {
@@ -489,6 +649,18 @@ pub async fn build(
             return local;
         }
     };
+    let tls = match resolve_tls(&remote) {
+        Ok(tls) => tls,
+        Err(reason) => {
+            tracing::warn!(
+                endpoint = remote.endpoint,
+                reason = %reason,
+                "invalid remote cache TLS configuration; continuing with the local cache only"
+            );
+            emit_degraded(&remote.endpoint, reason);
+            return local;
+        }
+    };
     let upload = remote.upload && credential_allows_upload;
     // Ordinary CAS / ActionCache layers are ALWAYS read-only so action
     // construction, cache hits, failed sandbox setups, and failed tasks can
@@ -497,7 +669,8 @@ pub async fn build(
     let read_config = RemoteConfig::new(&remote.endpoint)
         .with_protocol(to_remote_protocol(remote.protocol))
         .with_instance_name(&remote.instance)
-        .with_credentials(credentials);
+        .with_credentials(credentials)
+        .with_tls(tls);
     let write_config = read_config.clone().writable();
 
     let (remote_cas, remote_ac, publisher): RemoteHandles = match remote.protocol {
@@ -885,9 +1058,9 @@ mod tests {
         });
 
         match credentials(&remote) {
-            CredentialResolution::Ready(Credentials::Headers(headers)) => {
+            CredentialResolution::Ready(Credentials::Dynamic(provider)) => {
                 assert_eq!(
-                    headers,
+                    provider.headers().unwrap(),
                     vec![
                         ("Authorization".to_string(), "Bearer nsc-tok".to_string()),
                         (
@@ -897,8 +1070,88 @@ mod tests {
                     ]
                 );
             }
-            other => panic!("expected multi-header credentials, got {other:?}"),
+            other => panic!("expected dynamic credential helper provider, got {other:?}"),
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn credential_helper_refreshes_when_expires_is_past() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let counter = dir.path().join("count");
+        let helper = dir.path().join("refreshing-helper");
+        std::fs::write(
+            &helper,
+            format!(
+                "#!/bin/sh\n\
+                 n=0\n\
+                 if [ -f \"{}\" ]; then n=$(cat \"{}\"); fi\n\
+                 n=$((n + 1))\n\
+                 printf '%s' \"$n\" > \"{}\"\n\
+                 cat >/dev/null\n\
+                 if [ \"$n\" = \"1\" ]; then\n\
+                   printf '{{\"headers\":{{\"Authorization\":[\"Bearer tok-1\"]}},\"expires\":\"2020-01-01T00:00:00Z\"}}\\n'\n\
+                 else\n\
+                   printf '{{\"headers\":{{\"Authorization\":[\"Bearer tok-2\"]}},\"expires\":\"2099-01-01T00:00:00Z\"}}\\n'\n\
+                 fi\n",
+                counter.display(),
+                counter.display(),
+                counter.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let mut remote = configured("grpcs://cache.namespace.so:443");
+        remote.auth = Some(CacheAuth {
+            bearer_token_env: None,
+            header: None,
+            credential_helper: Some(helper.to_string_lossy().into_owned()),
+        });
+
+        let CredentialResolution::Ready(Credentials::Dynamic(provider)) = credentials(&remote)
+        else {
+            panic!("expected dynamic provider");
+        };
+        // First headers() sees past `expires`, refreshes to tok-2.
+        assert_eq!(
+            provider.headers().unwrap(),
+            vec![("Authorization".to_string(), "Bearer tok-2".to_string())]
+        );
+        // Second headers() serves cached tok-2 without invoking helper again (count stays 2).
+        assert_eq!(
+            provider.headers().unwrap(),
+            vec![("Authorization".to_string(), "Bearer tok-2".to_string())]
+        );
+        assert_eq!(std::fs::read_to_string(&counter).unwrap(), "2");
+    }
+
+    #[test]
+    fn tls_env_overrides_populate_ca_and_mtls_paths() {
+        temp_env::with_vars(
+            [
+                (ENDPOINT_ENV, None::<&str>),
+                (PROTOCOL_ENV, None),
+                (UPLOAD_ENV, None),
+                (CREDENTIAL_HELPER_ENV, None),
+                (CA_CERT_ENV, Some("/etc/ssl/custom-ca.pem")),
+                (CLIENT_CERT_ENV, Some("/run/mtls/client.crt")),
+                (CLIENT_KEY_ENV, Some("/run/mtls/client.key")),
+            ],
+            || {
+                let resolved =
+                    resolve(Some(&configured("grpcs://cache.namespace.so:443"))).unwrap();
+                let tls = resolved.tls.unwrap();
+                assert_eq!(tls.ca_cert_path.as_deref(), Some("/etc/ssl/custom-ca.pem"));
+                assert_eq!(
+                    tls.client_cert_path.as_deref(),
+                    Some("/run/mtls/client.crt")
+                );
+                assert_eq!(tls.client_key_path.as_deref(), Some("/run/mtls/client.key"));
+            },
+        );
     }
 
     #[test]

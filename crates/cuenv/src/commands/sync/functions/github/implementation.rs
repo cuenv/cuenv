@@ -1028,6 +1028,7 @@ mod tests {
                 header: None,
                 credential_helper: None,
             }),
+            tls: None,
             ci: Some(RemoteCacheCi {
                 read_secret: Some("CACHE_READ".into()),
                 write_secret: Some("CACHE_WRITE".into()),

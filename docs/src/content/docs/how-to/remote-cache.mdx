@@ -120,6 +120,9 @@ CI usually should not hard-code an endpoint in CUE:
 | `CUENV_REMOTE_CACHE_INSTANCE` | Sets the remote instance. An empty value clears it. |
 | `CUENV_REMOTE_CACHE_UPLOAD` | `true`/`false` override for post-run publication (still gated on strict confinement). |
 | `CUENV_REMOTE_CACHE_CREDENTIAL_HELPER` | Sets or replaces the Bazel credential helper executable (e.g. `bazel-credential-nsc`). |
+| `CUENV_REMOTE_CACHE_CA_CERT` | Path to a PEM-encoded custom CA certificate bundle. |
+| `CUENV_REMOTE_CACHE_CLIENT_CERT` | Path to a PEM-encoded mTLS client certificate chain (paired with `CUENV_REMOTE_CACHE_CLIENT_KEY`). |
+| `CUENV_REMOTE_CACHE_CLIENT_KEY` | Path to a PEM-encoded mTLS client private key (paired with `CUENV_REMOTE_CACHE_CLIENT_CERT`). |
 | `CUENV_CACHE` | `off`, `read`, `write`, or `read-write` — narrows every task's cache mode for one run. A permission applies only when the task's own mode also grants it. |
 
 ```bash
@@ -223,9 +226,29 @@ triggers use `readSecret`, or disable the remote when the read secret is omitted
 If the named variable is unset or the credential helper fails, cuenv warns and
 may continue with anonymous reads, but configured authentication never silently
 becomes an anonymous writer. A missing token degrades the cache; it does not
-fail the build.
+fail the build. When a credential helper returns an RFC 3339 `expires` field,
+cuenv caches the headers and automatically refreshes them 60 seconds before
+expiry.
 
-mTLS client certificates are not supported yet.
+### Custom CA bundles and mTLS client certificates
+
+For self-hosted clusters or workload mTLS (such as Namespace), configure PEM
+file paths under `cache.remote.tls` (or via `CUENV_REMOTE_CACHE_CA_CERT`,
+`CUENV_REMOTE_CACHE_CLIENT_CERT`, and `CUENV_REMOTE_CACHE_CLIENT_KEY`):
+
+```cue
+cache: remote: {
+    endpoint: "grpcs://cache.example.com:443"
+    tls: {
+        caCertPath:     "/etc/ssl/custom-ca.pem"
+        clientCertPath: "/run/mtls/client.crt"
+        clientKeyPath:  "/run/mtls/client.key"
+    }
+}
+```
+
+Both gRPC (`grpcs://`) and HTTP (`https://`) endpoints support `tls`. Unpaired
+or unreadable certificate/key files degrade cleanly to the local cache.
 
 ## Diagnostics and maintenance
 

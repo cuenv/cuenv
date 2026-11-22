@@ -1,7 +1,79 @@
 //! Endpoint, instance and credential configuration for a remote cache.
 
 use crate::error::{Error, Result};
+use crate::retry::RetryPolicy;
+use std::sync::Arc;
 use std::time::Duration;
+
+/// Dynamic credential supplier invoked per request (for example a cached Bazel
+/// credential helper that refreshes automatically before `expires`).
+pub trait CredentialProvider: Send + Sync {
+    /// Return the headers to attach to the next request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if credentials cannot be obtained or refreshed.
+    fn headers(&self) -> Result<Vec<(String, String)>>;
+}
+
+/// Custom CA bundle and/or mTLS client identity for TLS remote cache endpoints.
+#[derive(Clone, Default)]
+pub struct TlsConfig {
+    /// PEM-encoded CA certificate bundle added to the TLS trust store.
+    pub ca_cert_pem: Option<Vec<u8>>,
+    /// PEM-encoded client certificate chain for mTLS.
+    pub client_cert_pem: Option<Vec<u8>>,
+    /// PEM-encoded client private key for mTLS.
+    pub client_key_pem: Option<Vec<u8>>,
+}
+
+impl TlsConfig {
+    /// Whether any custom CA or client certificate is configured.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.ca_cert_pem.is_none()
+            && self.client_cert_pem.is_none()
+            && self.client_key_pem.is_none()
+    }
+
+    /// Validate that client certificate and private key are paired.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Config`] when only one of `client_cert_pem` or
+    /// `client_key_pem` is provided.
+    pub fn validate(&self) -> Result<()> {
+        match (&self.client_cert_pem, &self.client_key_pem) {
+            (Some(_), None) => Err(Error::config(
+                "mTLS client certificate is set without a matching client private key",
+            )),
+            (None, Some(_)) => Err(Error::config(
+                "mTLS client private key is set without a matching client certificate",
+            )),
+            _ => Ok(()),
+        }
+    }
+}
+
+impl std::fmt::Debug for TlsConfig {
+    /// Never render private key bytes in debug/trace output.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TlsConfig")
+            .field(
+                "ca_cert_pem",
+                &self.ca_cert_pem.as_ref().map(|_| "<present>"),
+            )
+            .field(
+                "client_cert_pem",
+                &self.client_cert_pem.as_ref().map(|_| "<present>"),
+            )
+            .field(
+                "client_key_pem",
+                &self.client_key_pem.as_ref().map(|_| "<redacted>"),
+            )
+            .finish()
+    }
+}
 
 /// How a client proves who it is to the remote cache.
 #[derive(Clone, Default)]
@@ -27,6 +99,9 @@ pub enum Credentials {
     /// helper (e.g. `bazel-credential-nsc`, which emits both `authorization`
     /// and `x-nsc-ingress-auth`).
     Headers(Vec<(String, String)>),
+    /// Dynamically resolve headers per request (e.g. a credential helper with
+    /// `expires`-aware caching and automatic mid-build refresh).
+    Dynamic(Arc<dyn CredentialProvider>),
 }
 
 impl std::fmt::Debug for Credentials {
@@ -42,6 +117,7 @@ impl std::fmt::Debug for Credentials {
                 let names: Vec<&str> = headers.iter().map(|(name, _)| name.as_str()).collect();
                 write!(f, "Headers {{ names: {names:?}, values: <redacted> }}")
             }
+            Self::Dynamic(_) => f.write_str("Dynamic(<provider>)"),
         }
     }
 }
@@ -72,8 +148,12 @@ pub struct RemoteConfig {
     pub instance_name: String,
     /// Credentials sent with every request.
     pub credentials: Credentials,
+    /// Custom CA bundle and/or mTLS client identity.
+    pub tls: TlsConfig,
     /// Per-request deadline.
     pub timeout: Duration,
+    /// Retry policy for transient RPC failures.
+    pub retry: RetryPolicy,
     /// Whether this client may write. A build that cannot be trusted to have
     /// produced sound results — a fork's pull request, say — should read the
     /// shared cache without being able to poison it.
@@ -87,7 +167,9 @@ impl Default for RemoteConfig {
             protocol: RemoteProtocol::Grpc,
             instance_name: String::new(),
             credentials: Credentials::None,
+            tls: TlsConfig::default(),
             timeout: Duration::from_secs(60),
+            retry: RetryPolicy::default(),
             writable: false,
         }
     }
@@ -124,6 +206,13 @@ impl RemoteConfig {
         self
     }
 
+    /// Set custom CA and/or mTLS client certificates.
+    #[must_use]
+    pub fn with_tls(mut self, tls: TlsConfig) -> Self {
+        self.tls = tls;
+        self
+    }
+
     /// Allow this client to upload blobs and update action results.
     #[must_use]
     pub fn writable(mut self) -> Self {
@@ -135,6 +224,13 @@ impl RemoteConfig {
     #[must_use]
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
+        self
+    }
+
+    /// Set the transient RPC retry policy.
+    #[must_use]
+    pub fn with_retry(mut self, retry: RetryPolicy) -> Self {
+        self.retry = retry;
         self
     }
 
@@ -329,7 +425,38 @@ mod tests {
     #[test]
     fn config_debug_does_not_leak_credentials() {
         let config = RemoteConfig::new("grpcs://cache.example.com")
-            .with_credentials(Credentials::Bearer("super-secret-token".into()));
-        assert!(!format!("{config:?}").contains("super-secret-token"));
+            .with_credentials(Credentials::Bearer("super-secret-token".into()))
+            .with_tls(TlsConfig {
+                ca_cert_pem: Some(b"ca-pem".to_vec()),
+                client_cert_pem: Some(b"cert-pem".to_vec()),
+                client_key_pem: Some(b"super-secret-private-key".to_vec()),
+            });
+        let rendered = format!("{config:?}");
+        assert!(!rendered.contains("super-secret-token"));
+        assert!(!rendered.contains("super-secret-private-key"));
+    }
+
+    #[test]
+    fn tls_config_rejects_unpaired_client_cert_or_key() {
+        let cert_only = TlsConfig {
+            ca_cert_pem: None,
+            client_cert_pem: Some(b"cert".to_vec()),
+            client_key_pem: None,
+        };
+        assert!(cert_only.validate().is_err());
+
+        let key_only = TlsConfig {
+            ca_cert_pem: None,
+            client_cert_pem: None,
+            client_key_pem: Some(b"key".to_vec()),
+        };
+        assert!(key_only.validate().is_err());
+
+        let paired = TlsConfig {
+            ca_cert_pem: None,
+            client_cert_pem: Some(b"cert".to_vec()),
+            client_key_pem: Some(b"key".to_vec()),
+        };
+        assert!(paired.validate().is_ok());
     }
 }

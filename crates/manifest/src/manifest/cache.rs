@@ -61,13 +61,34 @@ pub struct RemoteCache {
     #[serde(default)]
     pub upload: bool,
 
-    /// Credentials, named by environment variable rather than value.
+    /// Credentials, named by environment variable or credential helper rather than value.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth: Option<CacheAuth>,
+
+    /// Custom CA bundle and/or mTLS client certificate paths.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tls: Option<CacheTls>,
 
     /// CI trust-boundary settings for generated workflows (`cuenv sync ci`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ci: Option<RemoteCacheCi>,
+}
+
+/// Custom CA bundle and/or mTLS client certificate paths for a remote cache.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CacheTls {
+    /// Path to a PEM-encoded CA certificate bundle.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ca_cert_path: Option<String>,
+
+    /// Path to a PEM-encoded client certificate chain for mTLS.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_cert_path: Option<String>,
+
+    /// Path to a PEM-encoded client private key for mTLS.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_key_path: Option<String>,
 }
 
 /// Credential provisioning mode for generated CI workflows (`cuenv sync ci`).

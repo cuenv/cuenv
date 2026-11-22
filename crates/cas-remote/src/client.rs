@@ -2,16 +2,19 @@
 
 use crate::config::{Credentials, RemoteConfig};
 use crate::error::{Error, Result};
+use crate::retry::{CircuitBreaker, RetryRunner};
 use bazel_remote_apis::build::bazel::remote::execution::v2 as pb;
 use bazel_remote_apis::build::bazel::remote::execution::v2::capabilities_client::CapabilitiesClient;
+use std::sync::Arc;
 use tonic::metadata::{MetadataKey, MetadataValue};
-use tonic::transport::{Channel, ClientTlsConfig};
+use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity};
 
 /// A connected REAPI channel plus the settings every request needs.
 #[derive(Clone, Debug)]
 pub struct RemoteClient {
     channel: Channel,
     config: RemoteConfig,
+    circuit_breaker: Arc<CircuitBreaker>,
 }
 
 impl RemoteClient {
@@ -22,18 +25,36 @@ impl RemoteClient {
     /// Returns an error if the endpoint is malformed or the connection
     /// cannot be established.
     pub async fn connect(config: RemoteConfig) -> Result<Self> {
+        config.tls.validate()?;
         let uri = config.uri()?;
         let mut endpoint = Channel::builder(uri).timeout(config.timeout);
         if config.is_tls()? {
+            let mut tls = ClientTlsConfig::new().with_enabled_roots();
+            if let Some(ca_pem) = &config.tls.ca_cert_pem {
+                tls = tls.ca_certificate(Certificate::from_pem(ca_pem));
+            }
+            if let (Some(cert_pem), Some(key_pem)) =
+                (&config.tls.client_cert_pem, &config.tls.client_key_pem)
+            {
+                tls = tls.identity(Identity::from_pem(cert_pem, key_pem));
+            }
             endpoint = endpoint
-                .tls_config(ClientTlsConfig::new().with_enabled_roots())
+                .tls_config(tls)
                 .map_err(|e| Error::connect(&config.endpoint, e.to_string()))?;
+        } else if !config.tls.is_empty() {
+            return Err(Error::config(
+                "TLS certificates configured for a non-TLS remote cache endpoint; use grpcs:// or https://",
+            ));
         }
         let channel = endpoint
             .connect()
             .await
             .map_err(|e| Error::connect(&config.endpoint, e.to_string()))?;
-        Ok(Self { channel, config })
+        Ok(Self {
+            channel,
+            config,
+            circuit_breaker: Arc::new(CircuitBreaker::default()),
+        })
     }
 
     /// Build a client around an already-connected channel.
@@ -42,7 +63,11 @@ impl RemoteClient {
     /// manage the channel themselves.
     #[must_use]
     pub fn from_channel(channel: Channel, config: RemoteConfig) -> Self {
-        Self { channel, config }
+        Self {
+            channel,
+            config,
+            circuit_breaker: Arc::new(CircuitBreaker::default()),
+        }
     }
 
     /// The underlying channel.
@@ -55,6 +80,15 @@ impl RemoteClient {
     #[must_use]
     pub fn config(&self) -> &RemoteConfig {
         &self.config
+    }
+
+    /// Retry runner backed by this client's retry policy and circuit breaker.
+    #[must_use]
+    pub fn retry_runner(&self) -> RetryRunner<'_> {
+        RetryRunner {
+            policy: self.config.retry,
+            breaker: &self.circuit_breaker,
+        }
     }
 
     /// The REAPI instance name to put on every request.
@@ -100,6 +134,11 @@ impl RemoteClient {
             Credentials::Headers(headers) => {
                 for (name, value) in headers {
                     insert_grpc_header(&mut request, name, value)?;
+                }
+            }
+            Credentials::Dynamic(provider) => {
+                for (name, value) in provider.headers()? {
+                    insert_grpc_header(&mut request, &name, &value)?;
                 }
             }
         }

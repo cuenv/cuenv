@@ -318,6 +318,7 @@ fn test_remote_cache_separates_ro_pr_and_protected_rw_credentials() {
             header: None,
             credential_helper: None,
         }),
+        tls: None,
         ci: Some(RemoteCacheCi {
             read_secret: Some("CACHE_RO_TOKEN".to_string()),
             write_secret: Some("CACHE_RW_TOKEN".to_string()),
@@ -396,6 +397,7 @@ fn test_remote_cache_ambient_mode_preserves_env_and_gates_uploads() {
             header: None,
             credential_helper: Some("bazel-credential-nsc".to_string()),
         }),
+        tls: None,
         ci: Some(RemoteCacheCi {
             auth_mode: RemoteCacheCiAuthMode::Ambient,
             isolated_cache_dir: true,

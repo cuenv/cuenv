@@ -73,11 +73,33 @@ package schema
 	upload?: bool | *false
 
 	// Credentials. Values are never written in CUE — only the name of the
-	// environment variable holding them.
+	// environment variable holding them or a credential helper executable.
 	auth?: #CacheAuth
+
+	// Custom CA bundle and/or mTLS client certificate paths.
+	tls?: #CacheTls
 
 	// CI trust-boundary settings for generated workflows (`cuenv sync ci`).
 	ci?: #RemoteCacheCi
+}
+
+// TLS settings for a remote cache (custom CA bundle and/or mTLS client
+// identity). Paths point to PEM-encoded files on disk (for example Namespace
+// workload mTLS certificates or a private cluster CA).
+#CacheTls: {
+	// Path to a PEM-encoded CA certificate bundle added to the TLS root store.
+	// Overridden by $CUENV_REMOTE_CACHE_CA_CERT.
+	caCertPath?: string & !=""
+
+	// Path to a PEM-encoded client certificate chain for mTLS.
+	// Must be paired with `clientKeyPath`.
+	// Overridden by $CUENV_REMOTE_CACHE_CLIENT_CERT.
+	clientCertPath?: string & !=""
+
+	// Path to a PEM-encoded client private key for mTLS.
+	// Must be paired with `clientCertPath`.
+	// Overridden by $CUENV_REMOTE_CACHE_CLIENT_KEY.
+	clientKeyPath?: string & !=""
 }
 
 // Credential provisioning mode for generated CI workflows (`cuenv sync ci`).

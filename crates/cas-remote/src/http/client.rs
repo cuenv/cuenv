@@ -4,9 +4,13 @@
 use crate::client::is_valid_header_value;
 use crate::config::{Credentials, RemoteConfig, RemoteProtocol};
 use crate::error::{Error, Result};
+use crate::retry::{CircuitBreaker, RetryRunner};
 use cuenv_cas::Digest;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, LOCATION};
-use reqwest::{Client, Method, RequestBuilder, Response, StatusCode, Url, redirect};
+use reqwest::{
+    Certificate, Client, Identity, Method, RequestBuilder, Response, StatusCode, Url, redirect,
+};
+use std::sync::Arc;
 
 /// Maximum requests made in one same-origin redirect chain.
 const MAX_REDIRECT_REQUESTS: usize = 5;
@@ -19,6 +23,7 @@ pub struct HttpRemoteClient {
     base_url: Url,
     config: RemoteConfig,
     auth_headers: Vec<(HeaderName, HeaderValue)>,
+    circuit_breaker: Arc<CircuitBreaker>,
 }
 
 impl HttpRemoteClient {
@@ -42,7 +47,13 @@ impl HttpRemoteClient {
 
         let _ = rustls::crypto::ring::default_provider().install_default();
 
+        config.tls.validate()?;
         let base_url = build_base_url(&config)?;
+        if base_url.scheme() != "https" && !config.tls.is_empty() {
+            return Err(Error::config(
+                "TLS certificates configured for a non-HTTPS remote cache endpoint; use https://",
+            ));
+        }
         let auth_headers = build_auth_headers(&config.credentials)?;
 
         let allowed_origin = Origin::from_url(&base_url);
@@ -67,6 +78,7 @@ impl HttpRemoteClient {
             base_url,
             config,
             auth_headers,
+            circuit_breaker: Arc::new(CircuitBreaker::default()),
         })
     }
 
@@ -74,6 +86,15 @@ impl HttpRemoteClient {
     #[must_use]
     pub fn config(&self) -> &RemoteConfig {
         &self.config
+    }
+
+    /// Retry runner backed by this client's retry policy and circuit breaker.
+    #[must_use]
+    pub fn retry_runner(&self) -> RetryRunner<'_> {
+        RetryRunner {
+            policy: self.config.retry,
+            breaker: &self.circuit_breaker,
+        }
     }
 
     /// The normalized base URL (including any configured path prefix and
@@ -171,6 +192,22 @@ impl HttpRemoteClient {
 
     fn authenticated_request(&self, http: &Client, method: Method, url: Url) -> RequestBuilder {
         let mut builder = http.request(method, url);
+        if let Credentials::Dynamic(provider) = &self.config.credentials {
+            if let Ok(raw_headers) = provider.headers()
+                && let Ok(parsed) = raw_headers
+                    .iter()
+                    .map(|(name, value)| parse_http_header(name, value))
+                    .collect::<Result<Vec<_>>>()
+                && !parsed.is_empty()
+            {
+                let mut headers = HeaderMap::with_capacity(parsed.len());
+                for (name, value) in parsed {
+                    headers.append(name, value);
+                }
+                builder = builder.headers(headers);
+            }
+            return builder;
+        }
         if !self.auth_headers.is_empty() {
             let mut headers = HeaderMap::with_capacity(self.auth_headers.len());
             for (name, value) in &self.auth_headers {
@@ -216,9 +253,26 @@ impl HttpRemoteClient {
 }
 
 fn build_http_client(config: &RemoteConfig, policy: redirect::Policy) -> Result<Client> {
-    Client::builder()
-        .timeout(config.timeout)
-        .redirect(policy)
+    let mut builder = Client::builder().timeout(config.timeout).redirect(policy);
+    if let Some(ca_pem) = &config.tls.ca_cert_pem {
+        let cert = Certificate::from_pem(ca_pem)
+            .map_err(|e| Error::config(format!("invalid TLS CA certificate PEM: {e}")))?;
+        builder = builder.add_root_certificate(cert);
+    }
+    if let (Some(cert_pem), Some(key_pem)) =
+        (&config.tls.client_cert_pem, &config.tls.client_key_pem)
+    {
+        let mut combined = Vec::with_capacity(cert_pem.len() + key_pem.len() + 1);
+        combined.extend_from_slice(cert_pem);
+        if !combined.ends_with(b"\n") {
+            combined.push(b'\n');
+        }
+        combined.extend_from_slice(key_pem);
+        let identity = Identity::from_pem(&combined)
+            .map_err(|e| Error::config(format!("invalid mTLS client certificate/key PEM: {e}")))?;
+        builder = builder.identity(identity);
+    }
+    builder
         .build()
         .map_err(|e| Error::connect(&config.endpoint, e.to_string()))
 }
@@ -293,7 +347,7 @@ fn build_base_url(config: &RemoteConfig) -> Result<Url> {
 
 fn build_auth_headers(credentials: &Credentials) -> Result<Vec<(HeaderName, HeaderValue)>> {
     match credentials {
-        Credentials::None => Ok(Vec::new()),
+        Credentials::None | Credentials::Dynamic(_) => Ok(Vec::new()),
         Credentials::Bearer(token) => Ok(vec![parse_http_header(
             "authorization",
             &format!("Bearer {token}"),

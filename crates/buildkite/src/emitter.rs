@@ -947,6 +947,7 @@ mod tests {
                 header: None,
                 credential_helper: None,
             }),
+            tls: None,
             ci: Some(RemoteCacheCi {
                 read_secret: Some("CACHE_RO_TOKEN".into()),
                 write_secret: Some("CACHE_RW_TOKEN".into()),
@@ -1017,6 +1018,7 @@ mod tests {
                 header: None,
                 credential_helper: Some("bazel-credential-nsc".into()),
             }),
+            tls: None,
             ci: Some(RemoteCacheCi {
                 auth_mode: RemoteCacheCiAuthMode::Ambient,
                 isolated_cache_dir: true,
