@@ -137,8 +137,10 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path().canonicalize().unwrap();
 
-        let mut manifest = Project::default();
-        manifest.name = "demo".to_string();
+        let mut manifest = Project {
+            name: "demo".to_string(),
+            ..Default::default()
+        };
         manifest.tasks.insert(
             "build_a".to_string(),
             TaskNode::Task(Box::new(Task {
@@ -179,6 +181,6 @@ mod tests {
 
         // Changing an unrelated file affects none of the tasks with explicit inputs.
         let none = filter_with_changed_files(&candidates, &context, &[PathBuf::from("README.md")]);
-        assert!(none.is_empty());
+        assert_eq!(none, Vec::<String>::new());
     }
 }

@@ -158,6 +158,7 @@ mod tests {
             environment: None,
             path: ".".to_string(),
             package: "cuenv".to_string(),
+            shard: None,
         };
         assert_eq!(args.pipeline_name(), "default");
     }
@@ -175,6 +176,7 @@ mod tests {
             environment: None,
             path: ".".to_string(),
             package: "cuenv".to_string(),
+            shard: None,
         };
         assert_eq!(args.pipeline_name(), "release");
     }
@@ -192,6 +194,7 @@ mod tests {
             environment: None,
             path: ".".to_string(),
             package: "cuenv".to_string(),
+            shard: None,
         };
         // Should return num_cpus, which is at least 1
         assert!(args.effective_jobs() >= 1);
@@ -210,6 +213,7 @@ mod tests {
             environment: None,
             path: ".".to_string(),
             package: "cuenv".to_string(),
+            shard: None,
         };
         assert_eq!(args.effective_jobs(), 8);
     }
