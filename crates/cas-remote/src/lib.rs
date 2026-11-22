@@ -54,12 +54,14 @@ pub mod error;
 pub mod http;
 pub mod layered;
 pub mod publisher;
+pub mod retry;
 
 pub use action_cache::RemoteActionCache;
 pub use cas::RemoteCas;
 pub use client::{Compressor, RemoteClient, ServerCapabilities};
-pub use config::{Credentials, RemoteConfig, RemoteProtocol};
+pub use config::{CredentialProvider, Credentials, RemoteConfig, RemoteProtocol, TlsConfig};
 pub use error::{Error, Result};
 pub use http::{HttpActionCache, HttpCas, HttpRemoteClient};
 pub use layered::{LayeredActionCache, LayeredCas};
 pub use publisher::RemotePublisher;
+pub use retry::{CircuitBreaker, RetryPolicy};

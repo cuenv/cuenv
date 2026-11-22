@@ -30,56 +30,94 @@ impl HttpActionCache {
 
     async fn get(&self, action_digest: &Digest) -> Result<Option<ActionResult>> {
         let url = self.client.ac_url(action_digest)?;
-        let mut response = self
+        let maybe_bytes = self
             .client
-            .request(Method::GET, url)
-            .send()
-            .await
-            .map_err(|e| Error::Rpc {
-                operation: "HTTP.GET.ac",
-                message: format_reqwest_error(&e),
-            })?;
+            .retry_runner()
+            .run("HTTP.GET.ac", || {
+                let url = url.clone();
+                async move {
+                    let mut response = self
+                        .client
+                        .request(Method::GET, url)
+                        .send()
+                        .await
+                        .map_err(|e| {
+                            let retryable = e.is_timeout() || e.is_connect() || e.is_request();
+                            (
+                                Error::Rpc {
+                                    operation: "HTTP.GET.ac",
+                                    message: format_reqwest_error(&e),
+                                },
+                                retryable,
+                            )
+                        })?;
 
-        match response.status() {
-            StatusCode::OK => {}
-            StatusCode::NOT_FOUND => {
-                trace!(action = %action_digest, "HTTP remote action cache miss");
-                return Ok(None);
-            }
-            status => {
-                return Err(Error::Rpc {
-                    operation: "HTTP.GET.ac",
-                    message: format!("HTTP status {status}"),
-                });
-            }
-        }
+                    match response.status() {
+                        StatusCode::OK => {}
+                        StatusCode::NOT_FOUND => return Ok(None),
+                        status => {
+                            return Err((
+                                Error::Rpc {
+                                    operation: "HTTP.GET.ac",
+                                    message: format!("HTTP status {status}"),
+                                },
+                                crate::retry::is_transient_http_status(status),
+                            ));
+                        }
+                    }
 
-        if let Some(len) = response.content_length()
-            && usize::try_from(len).unwrap_or(usize::MAX) > MAX_ACTION_RESULT_BYTES
-        {
-            return Err(Error::protocol(
-                "HTTP.GET.ac",
-                format!("ActionResult size {len} exceeds limit of {MAX_ACTION_RESULT_BYTES} bytes"),
-            ));
-        }
+                    if let Some(len) = response.content_length()
+                        && usize::try_from(len).unwrap_or(usize::MAX) > MAX_ACTION_RESULT_BYTES
+                    {
+                        return Err((
+                            Error::protocol(
+                                "HTTP.GET.ac",
+                                format!(
+                                    "ActionResult size {len} exceeds limit of {MAX_ACTION_RESULT_BYTES} bytes"
+                                ),
+                            ),
+                            false,
+                        ));
+                    }
 
-        let mut bytes = Vec::new();
-        while let Some(chunk) = response.chunk().await.map_err(|e| Error::Rpc {
-            operation: "HTTP.GET.ac",
-            message: format_reqwest_error(&e),
-        })? {
-            let next_len = bytes
-                .len()
-                .checked_add(chunk.len())
-                .ok_or_else(|| Error::protocol("HTTP.GET.ac", "response size overflow"))?;
-            if next_len > MAX_ACTION_RESULT_BYTES {
-                return Err(Error::protocol(
-                    "HTTP.GET.ac",
-                    format!("ActionResult body exceeds limit of {MAX_ACTION_RESULT_BYTES} bytes"),
-                ));
-            }
-            bytes.extend_from_slice(&chunk);
-        }
+                    let mut bytes = Vec::new();
+                    while let Some(chunk) = response.chunk().await.map_err(|e| {
+                        (
+                            Error::Rpc {
+                                operation: "HTTP.GET.ac",
+                                message: format_reqwest_error(&e),
+                            },
+                            e.is_timeout() || e.is_body(),
+                        )
+                    })? {
+                        let next_len = bytes.len().checked_add(chunk.len()).ok_or_else(|| {
+                            (
+                                Error::protocol("HTTP.GET.ac", "response size overflow"),
+                                false,
+                            )
+                        })?;
+                        if next_len > MAX_ACTION_RESULT_BYTES {
+                            return Err((
+                                Error::protocol(
+                                    "HTTP.GET.ac",
+                                    format!(
+                                        "ActionResult body exceeds limit of {MAX_ACTION_RESULT_BYTES} bytes"
+                                    ),
+                                ),
+                                false,
+                            ));
+                        }
+                        bytes.extend_from_slice(&chunk);
+                    }
+                    Ok(Some(bytes))
+                }
+            })
+            .await?;
+
+        let Some(bytes) = maybe_bytes else {
+            trace!(action = %action_digest, "HTTP remote action cache miss");
+            return Ok(None);
+        };
 
         let proto = pb::ActionResult::decode(bytes.as_slice()).map_err(|e| {
             Error::protocol(
@@ -96,24 +134,44 @@ impl HttpActionCache {
         self.client.ensure_writable("update an action result")?;
         let url = self.client.ac_url(action_digest)?;
         let encoded = result.to_proto()?.encode_to_vec();
-        let response = self
-            .client
-            .request(Method::PUT, url)
-            .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
-            .body(encoded)
-            .send()
-            .await
-            .map_err(|e| Error::Rpc {
-                operation: "HTTP.PUT.ac",
-                message: e.to_string(),
-            })?;
+        self.client
+            .retry_runner()
+            .run("HTTP.PUT.ac", || {
+                let url = url.clone();
+                let encoded = encoded.clone();
+                async move {
+                    let response = self
+                        .client
+                        .request(Method::PUT, url)
+                        .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
+                        .body(encoded)
+                        .send()
+                        .await
+                        .map_err(|e| {
+                            let retryable = e.is_timeout() || e.is_connect() || e.is_request();
+                            (
+                                Error::Rpc {
+                                    operation: "HTTP.PUT.ac",
+                                    message: format_reqwest_error(&e),
+                                },
+                                retryable,
+                            )
+                        })?;
 
-        if !response.status().is_success() {
-            return Err(Error::Rpc {
-                operation: "HTTP.PUT.ac",
-                message: format!("HTTP status {}", response.status()),
-            });
-        }
+                    if !response.status().is_success() {
+                        let status = response.status();
+                        return Err((
+                            Error::Rpc {
+                                operation: "HTTP.PUT.ac",
+                                message: format!("HTTP status {status}"),
+                            },
+                            crate::retry::is_transient_http_status(status),
+                        ));
+                    }
+                    Ok(())
+                }
+            })
+            .await?;
         trace!(action = %action_digest, "HTTP remote action cache updated");
         Ok(())
     }

@@ -174,6 +174,22 @@ impl Default for ExecutorConfig {
     }
 }
 
+/// Controls whether remote cache uploads block task completion or run in the
+/// background until [`TaskExecutor::flush_remote_uploads`] is awaited.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UploadDispatchMode {
+    /// Wait for the remote upload to finish before `execute_task` returns.
+    Inline,
+    /// Spawn remote uploads onto the shared `pending_uploads` queue so
+    /// dependent tasks in a DAG can start immediately; `execute_graph` drains
+    /// the queue before returning.
+    Background,
+}
+
+/// Upper bound on how long [`TaskExecutor::flush_remote_uploads`] waits for
+/// in-flight background remote cache uploads to complete after a graph run.
+const REMOTE_UPLOAD_FLUSH_TIMEOUT: Duration = Duration::from_secs(120);
+
 /// Task executor
 pub struct TaskExecutor {
     config: ExecutorConfig,
@@ -181,6 +197,10 @@ pub struct TaskExecutor {
     /// configured. Created on first use, shared by every clone of this
     /// executor, and removed when the last one is dropped.
     sandbox_store: Arc<OnceLock<SandboxStore>>,
+    /// In-flight background remote cache uploads spawned during DAG execution.
+    pending_uploads: Arc<tokio::sync::Mutex<tokio::task::JoinSet<()>>>,
+    /// Whether `maybe_publish_remote` runs inline or spawns onto `pending_uploads`.
+    upload_dispatch: UploadDispatchMode,
 }
 
 /// Where exec roots live when there is no result cache to put them beside.
@@ -202,6 +222,8 @@ impl TaskExecutor {
         Self {
             config,
             sandbox_store: Arc::new(OnceLock::new()),
+            pending_uploads: Arc::new(tokio::sync::Mutex::new(tokio::task::JoinSet::new())),
+            upload_dispatch: UploadDispatchMode::Inline,
         }
     }
 
@@ -294,12 +316,27 @@ impl TaskExecutor {
         reject_unbound_file_references(name, task)?;
         reject_unmaterialized_mapping(name, task)?;
 
+        // Load the base task environment before probing strict sandboxing so a
+        // locked Nix runtime can derive its verified `/nix/store` closure.
+        let base_environment = self.base_task_environment(name, task).await?;
+        let nix_context = frame.cache.and_then(|cache| {
+            if cache.cache_disabled_reason.is_some() {
+                return None;
+            }
+            let exec_env = base_environment.execution_environment(task.env_passthrough());
+            super::sandbox::extract_nix_sandbox_context(
+                &cache.runtime_identity_properties,
+                exec_env.iter().map(|(k, v)| (k.as_str(), v.as_str())),
+            )
+        });
+
         // Resolve the effective sandbox tier up front so explicit `strict`
         // fails closed even when caching is disabled, and `auto` keys the
         // action under the tier that will actually be enforced.
-        let sandbox_resolution = super::sandbox::resolve_sandbox(
+        let sandbox_resolution = super::sandbox::resolve_sandbox_with_nix(
             task.sandbox(),
             super::sandbox::NetworkPolicy::for_task(task),
+            nix_context.as_ref(),
         )?;
         if let Some(reason) = &sandbox_resolution.fallback_reason {
             tracing::warn!(
@@ -309,9 +346,8 @@ impl TaskExecutor {
             );
         }
         let effective_sandbox = sandbox_resolution.effective;
-        let task_environment = self
-            .task_environment(name, task, &effective_sandbox)
-            .await?;
+        let task_environment =
+            Self::finalize_task_environment(base_environment, task, &effective_sandbox)?;
 
         // Input resolution and directory isolation remain available when
         // result caching is disabled. A sandbox-only config supplies the
@@ -410,6 +446,7 @@ impl TaskExecutor {
                             inputs,
                             working_directory,
                             effective_sandbox,
+                            nix_context,
                         })
                     } else {
                         cuenv_events::emit_task_cache_skipped!(
@@ -448,6 +485,7 @@ impl TaskExecutor {
                             inputs,
                             working_directory,
                             effective_sandbox,
+                            nix_context,
                         })
                     }
                 }
@@ -496,6 +534,7 @@ impl TaskExecutor {
                             inputs: execution.inputs,
                             working_directory: execution.working_directory,
                             effective_sandbox,
+                            nix_context,
                         })
                     } else {
                         None
@@ -554,7 +593,7 @@ impl TaskExecutor {
                 .mode
                 .allows_write()
             && result.exit_code == Some(0)
-            && let Some(_guard) = acquire_cache_use(&handle.cache, name)
+            && let Some(guard) = acquire_cache_use(&handle.cache, name)
         {
             let recorded = super::cache::record_resolved(
                 RecordInput {
@@ -572,7 +611,13 @@ impl TaskExecutor {
             .await;
             match recorded {
                 Ok(Some(action_result)) => {
-                    maybe_publish_remote(name, handle, &action_result).await;
+                    self.maybe_publish_remote(PublishRemoteInput {
+                        task_name: name,
+                        handle,
+                        action_result,
+                        cache_use_guard: guard,
+                    })
+                    .await;
                 }
                 Ok(None) => {}
                 Err(e) => {
@@ -584,18 +629,21 @@ impl TaskExecutor {
         Ok(result)
     }
 
-    async fn task_environment(
-        &self,
-        name: &str,
-        task: &Task,
-        sandbox: &super::sandbox::EffectiveSandbox,
-    ) -> Result<Environment> {
+    async fn base_task_environment(&self, name: &str, task: &Task) -> Result<Environment> {
         let selected = match &self.config.task_environments {
             Some(environments) => environments.environment_for(name, task).await?,
             None => None,
         };
         let mut environment = selected.unwrap_or_else(|| self.config.environment.clone());
         environment.withhold(self.config.environment.withheld_names().iter().cloned());
+        Ok(environment)
+    }
+
+    fn finalize_task_environment(
+        mut environment: Environment,
+        task: &Task,
+        sandbox: &super::sandbox::EffectiveSandbox,
+    ) -> Result<Environment> {
         if cfg!(target_os = "linux") && sandbox.strict_proof().is_some() {
             environment.set("HOME".to_string(), "/cuenv-home".to_string());
             environment.set("TMPDIR".to_string(), "/tmp".to_string());
@@ -925,6 +973,7 @@ impl TaskExecutor {
                     task_tmp: &tmp_dir,
                     task_home: &home_dir,
                     network: super::sandbox::NetworkPolicy::for_task(task),
+                    nix_context: handle.nix_context.as_ref(),
                 })?;
             let cmd = plan.build_command(&command_spec.program, &command_spec.args)?;
             Some((cmd, tmp_dir, home_dir, plan))
@@ -1245,7 +1294,8 @@ impl TaskExecutor {
             continue_on_error: self.config.continue_on_error,
         };
 
-        let summary = graph_walk::walk_parallel_graph(
+        let graph_executor = Arc::new(self.clone_with_upload_mode(UploadDispatchMode::Background));
+        let summary_result = graph_walk::walk_parallel_graph(
             graph.inner(),
             policy,
             WalkCallbacks {
@@ -1277,7 +1327,7 @@ impl TaskExecutor {
                     Ok(node)
                 },
                 run_node: {
-                    let executor = Arc::new(self.clone_with_config());
+                    let executor = Arc::clone(&graph_executor);
                     move |node: cuenv_task_graph::GraphNode<Task>| {
                         let executor = Arc::clone(&executor);
                         async move {
@@ -1297,7 +1347,13 @@ impl TaskExecutor {
                 },
             },
         )
-        .await?;
+        .await;
+
+        // Always drain background remote uploads before returning so tasks that
+        // already succeeded finish publishing even when a later task fails.
+        graph_executor.flush_remote_uploads().await;
+
+        let summary = summary_result?;
 
         let mut all_results: Vec<TaskResult> = summary
             .outcomes
@@ -1344,11 +1400,124 @@ impl TaskExecutor {
         Ok(all_results)
     }
 
+    /// Wait for all in-flight background remote cache uploads to complete.
+    ///
+    /// Bounded by [`REMOTE_UPLOAD_FLUSH_TIMEOUT`] so a stalled remote endpoint
+    /// cannot hang process exit indefinitely.
+    pub async fn flush_remote_uploads(&self) {
+        let mut set = {
+            let mut guard = self.pending_uploads.lock().await;
+            std::mem::take(&mut *guard)
+        };
+        if set.is_empty() {
+            return;
+        }
+        let pending = set.len();
+        tracing::debug!(pending, "flushing background remote cache uploads");
+        let drain = async {
+            while let Some(joined) = set.join_next().await {
+                if let Err(error) = joined {
+                    tracing::warn!(%error, "background remote cache upload task panicked");
+                }
+            }
+        };
+        if tokio::time::timeout(REMOTE_UPLOAD_FLUSH_TIMEOUT, drain)
+            .await
+            .is_err()
+        {
+            let remaining = set.len();
+            set.abort_all();
+            tracing::warn!(
+                remaining,
+                timeout_secs = REMOTE_UPLOAD_FLUSH_TIMEOUT.as_secs(),
+                "timed out waiting for background remote cache uploads; aborting remaining"
+            );
+        }
+    }
+
+    async fn maybe_publish_remote(&self, input: PublishRemoteInput<'_>) {
+        let PublishRemoteInput {
+            task_name,
+            handle,
+            action_result,
+            cache_use_guard,
+        } = input;
+
+        let Some(publisher) = &handle.cache.publisher else {
+            return;
+        };
+
+        let skip_reason: Option<String> = if !handle.publish_authorized {
+            Some("external project is not authorized to publish to remote cache".to_string())
+        } else if handle.contains_secrets {
+            Some("secret-bearing tasks are kept local-only".to_string())
+        } else {
+            match handle.effective_sandbox.strict_proof() {
+                Some(proof) if proof.publish_eligible => None,
+                Some(proof) => Some(format!(
+                    "sandbox '{}' requires network isolation and a verified runtime for remote publication",
+                    proof.platform
+                )),
+                None => Some(format!(
+                    "sandbox tier '{}' does not enforce strict OS confinement",
+                    handle.effective_sandbox.key_value()
+                )),
+            }
+        };
+
+        if let Some(reason) = skip_reason {
+            tracing::debug!(task = %task_name, %reason, "skipping remote cache publication");
+            let _ = cuenv_events::emit(cuenv_events::EventCategory::Cache(
+                cuenv_events::CacheEvent::RemoteUploadSkipped {
+                    task: task_name.to_string(),
+                    reason,
+                },
+            ));
+            return;
+        }
+
+        let (Some(action_digest), Some(action), Some(command), Some(command_digest)) = (
+            handle.action_digest.as_ref(),
+            handle.action.as_ref(),
+            handle.command.as_ref(),
+            handle.command_digest.as_ref(),
+        ) else {
+            return;
+        };
+
+        let job = OwnedPublishJob {
+            task_name: task_name.to_string(),
+            publisher: Arc::clone(publisher),
+            local_cas: Arc::clone(&handle.cache.cas),
+            action: action.clone(),
+            action_digest: action_digest.clone(),
+            command: command.clone(),
+            command_digest: command_digest.clone(),
+            action_result,
+            _cache_use_guard: cache_use_guard,
+        };
+
+        match self.upload_dispatch {
+            UploadDispatchMode::Inline => run_remote_publish(job).await,
+            UploadDispatchMode::Background => {
+                let mut uploads = self.pending_uploads.lock().await;
+                uploads.spawn(run_remote_publish(job));
+            }
+        }
+    }
+
     fn clone_with_config(&self) -> Self {
-        // Share the sandbox store so one run creates one.
+        self.clone_with_upload_mode(self.upload_dispatch)
+    }
+
+    fn clone_with_upload_mode(&self, upload_dispatch: UploadDispatchMode) -> Self {
+        // Share the sandbox store and background upload queue so one run
+        // creates one store and flushes all spawned uploads together.
         Self {
             config: self.config.clone(),
             sandbox_store: self.sandbox_store.clone(),
+            pending_uploads: self.pending_uploads.clone(),
+            upload_dispatch,
         }
     }
 }
@@ -1383,82 +1552,59 @@ struct TaskFrame<'frame> {
     publish_authorized: bool,
 }
 
-async fn maybe_publish_remote(
-    task_name: &str,
-    handle: &CacheHandle,
-    action_result: &cuenv_cas::ActionResult,
-) {
-    let Some(publisher) = &handle.cache.publisher else {
-        return;
-    };
+struct PublishRemoteInput<'a> {
+    task_name: &'a str,
+    handle: &'a CacheHandle,
+    action_result: cuenv_cas::ActionResult,
+    cache_use_guard: cuenv_cas::maintenance::CacheUseGuard,
+}
 
-    let skip_reason: Option<String> = if !handle.publish_authorized {
-        Some("external project is not authorized to publish to remote cache".to_string())
-    } else if handle.contains_secrets {
-        Some("secret-bearing tasks are kept local-only".to_string())
-    } else {
-        match handle.effective_sandbox.strict_proof() {
-            Some(proof) if proof.publish_eligible => None,
-            Some(proof) => Some(format!(
-                "sandbox '{}' requires network isolation and a verified runtime for remote publication",
-                proof.platform
-            )),
-            None => Some(format!(
-                "sandbox tier '{}' does not enforce strict OS confinement",
-                handle.effective_sandbox.key_value()
-            )),
-        }
-    };
+struct OwnedPublishJob {
+    task_name: String,
+    publisher: Arc<dyn cuenv_cas::ActionPublisher>,
+    local_cas: Arc<dyn cuenv_cas::Cas>,
+    action: cuenv_cas::Action,
+    action_digest: cuenv_cas::Digest,
+    command: cuenv_cas::Command,
+    command_digest: cuenv_cas::Digest,
+    action_result: cuenv_cas::ActionResult,
+    _cache_use_guard: cuenv_cas::maintenance::CacheUseGuard,
+}
 
-    if let Some(reason) = skip_reason {
-        tracing::debug!(task = %task_name, %reason, "skipping remote cache publication");
-        let _ = cuenv_events::emit(cuenv_events::EventCategory::Cache(
-            cuenv_events::CacheEvent::RemoteUploadSkipped {
-                task: task_name.to_string(),
-                reason,
-            },
-        ));
-        return;
-    }
-
-    let (Some(action_digest), Some(action), Some(command), Some(command_digest)) = (
-        handle.action_digest.as_ref(),
-        handle.action.as_ref(),
-        handle.command.as_ref(),
-        handle.command_digest.as_ref(),
-    ) else {
-        return;
-    };
-
+async fn run_remote_publish(job: OwnedPublishJob) {
     let publish_request = cuenv_cas::PublishActionRequest {
-        local_cas: handle.cache.cas.as_ref(),
-        action,
-        action_digest,
-        command,
-        command_digest,
-        result: action_result,
+        local_cas: job.local_cas.as_ref(),
+        action: &job.action,
+        action_digest: &job.action_digest,
+        command: &job.command,
+        command_digest: &job.command_digest,
+        result: &job.action_result,
     };
 
-    match publisher.publish(publish_request).await {
+    match job.publisher.publish(publish_request).await {
         Ok(()) => {
-            tracing::debug!(task = %task_name, action = %action_digest, "published action to remote cache");
+            tracing::debug!(
+                task = %job.task_name,
+                action = %job.action_digest,
+                "published action to remote cache"
+            );
             let _ = cuenv_events::emit(cuenv_events::EventCategory::Cache(
                 cuenv_events::CacheEvent::RemoteUploaded {
-                    task: task_name.to_string(),
-                    digest: action_digest.to_resource(),
+                    task: job.task_name,
+                    digest: job.action_digest.to_resource(),
                 },
             ));
         }
         Err(error) => {
             tracing::warn!(
-                task = %task_name,
-                action = %action_digest,
+                task = %job.task_name,
+                action = %job.action_digest,
                 %error,
                 "remote cache publication failed"
             );
             let _ = cuenv_events::emit(cuenv_events::EventCategory::Cache(
                 cuenv_events::CacheEvent::RemoteUploadFailed {
-                    task: task_name.to_string(),
+                    task: job.task_name,
                     error: error.to_string(),
                 },
             ));
@@ -1579,6 +1725,8 @@ struct CacheHandle {
     working_directory: PathBuf,
     /// The OS/directory sandbox tier actually enforced for this run.
     effective_sandbox: super::sandbox::EffectiveSandbox,
+    /// Optional pinned Nix runtime context for Linux strict sandboxing.
+    nix_context: Option<super::sandbox::NixSandboxContext>,
 }
 
 #[derive(Clone, Copy)]

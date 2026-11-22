@@ -191,10 +191,6 @@ impl GitHubActionsEmitter {
                 .filter(|name| valid_cache_credential_env(name))
         });
 
-        if let Some(name) = auth_env {
-            step.env.shift_remove(name);
-        }
-
         let protected_trigger = ir.pipeline.trigger.as_ref().is_some_and(|trigger| {
             trigger.pull_request != Some(true)
                 && trigger.scheduled.is_empty()
@@ -203,6 +199,26 @@ impl GitHubActionsEmitter {
                     || !trigger.tags.is_empty()
                     || !trigger.release.is_empty())
         });
+
+        if ci.is_some_and(|ci| ci.auth_mode == cuenv_core::manifest::RemoteCacheCiAuthMode::Ambient)
+        {
+            let can_upload = remote.upload && protected_trigger;
+            step.env
+                .insert("CUENV_REMOTE_CACHE_UPLOAD".into(), can_upload.to_string());
+            if ci.is_none_or(|ci| ci.isolated_cache_dir) {
+                let cache_dir = if can_upload { "trusted" } else { "untrusted" };
+                step.env.insert(
+                    "CUENV_CACHE_DIR".into(),
+                    format!("${{{{ runner.temp }}}}/cuenv-cache/{cache_dir}"),
+                );
+            }
+            return None;
+        }
+
+        if let Some(name) = auth_env {
+            step.env.shift_remove(name);
+        }
+
         let write_secret = ci.and_then(|ci| ci.write_secret.as_deref());
         let write = if remote.upload && protected_trigger {
             write_secret

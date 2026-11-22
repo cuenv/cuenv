@@ -45,8 +45,42 @@ pub struct TaskExecutionRequest<'request> {
     /// Dry run mode: export DAG as JSON without executing
     pub dry_run: DryRun,
 
+    /// Affected-file filtering mode (`--affected` / `--from <REF>`).
+    pub affected: AffectedFilter,
+
     /// Executor for cached module evaluation (required - single CUE eval per process)
     pub executor: &'request CommandExecutor,
+}
+
+/// Affected-task filtering mode for `cuenv task`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum AffectedFilter {
+    /// Run all selected tasks without affected-file filtering.
+    #[default]
+    All,
+    /// Only run tasks affected by changed files (uncommitted changes vs `HEAD`,
+    /// or committed + uncommitted changes since `from`).
+    Affected {
+        /// Optional git ref to compare against (merge-base with `HEAD`).
+        from: Option<String>,
+    },
+}
+
+impl AffectedFilter {
+    /// Whether affected-task filtering is active.
+    #[must_use]
+    pub const fn is_affected(&self) -> bool {
+        matches!(self, Self::Affected { .. })
+    }
+
+    /// Optional base git ref when affected filtering is active.
+    #[must_use]
+    pub fn base_ref(&self) -> Option<&str> {
+        match self {
+            Self::All => None,
+            Self::Affected { from } => from.as_deref(),
+        }
+    }
 }
 
 impl fmt::Debug for TaskExecutionRequest<'_> {
@@ -61,6 +95,7 @@ impl fmt::Debug for TaskExecutionRequest<'_> {
             .field("skip_dependencies", &self.skip_dependencies)
             .field("continue_on_error", &self.continue_on_error)
             .field("dry_run", &self.dry_run)
+            .field("affected", &self.affected)
             .field("executor", &"<CommandExecutor>")
             .finish()
     }
@@ -163,6 +198,7 @@ impl<'request> TaskExecutionRequest<'request> {
             skip_dependencies: false,
             continue_on_error: false,
             dry_run: DryRun::No,
+            affected: AffectedFilter::All,
             executor,
         }
     }
@@ -187,6 +223,7 @@ impl<'request> TaskExecutionRequest<'request> {
             skip_dependencies: false,
             continue_on_error: false,
             dry_run: DryRun::No,
+            affected: AffectedFilter::All,
             executor,
         }
     }
@@ -208,6 +245,7 @@ impl<'request> TaskExecutionRequest<'request> {
             skip_dependencies: false,
             continue_on_error: false,
             dry_run: DryRun::No,
+            affected: AffectedFilter::All,
             executor,
         }
     }
@@ -229,6 +267,7 @@ impl<'request> TaskExecutionRequest<'request> {
             skip_dependencies: false,
             continue_on_error: false,
             dry_run: DryRun::No,
+            affected: AffectedFilter::All,
             executor,
         }
     }
@@ -296,6 +335,13 @@ impl<'request> TaskExecutionRequest<'request> {
     #[must_use]
     pub const fn with_dry_run(mut self) -> Self {
         self.dry_run = DryRun::Yes;
+        self
+    }
+
+    /// Filter selected tasks to only those affected by changed files.
+    #[must_use]
+    pub fn with_affected(mut self, from: Option<String>) -> Self {
+        self.affected = AffectedFilter::Affected { from };
         self
     }
 }

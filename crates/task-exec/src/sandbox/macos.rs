@@ -53,6 +53,7 @@ impl MacosSandboxPlan {
             task_tmp,
             task_home,
             network,
+            nix_context: _,
         } = options;
         let network_allowed = network == NetworkPolicy::Allowed;
         let proof = probe(network).map_err(Error::configuration)?;

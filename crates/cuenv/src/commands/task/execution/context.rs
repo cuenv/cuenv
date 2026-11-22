@@ -1,6 +1,8 @@
 //! Context for task selection and execution.
 
-use super::super::types::{ExecutionMode, OutputConfig, TaskExecutionRequest, TaskSelection};
+use super::super::types::{
+    AffectedFilter, ExecutionMode, OutputConfig, TaskExecutionRequest, TaskSelection,
+};
 use cuenv_core::manifest::Project;
 use cuenv_core::tasks::Tasks;
 use cuenv_core::{DryRun, OutputCapture};
@@ -19,6 +21,7 @@ pub(super) struct TaskExecutionInput<'input> {
     pub(super) skip_dependencies: bool,
     pub(super) continue_on_error: bool,
     pub(super) dry_run: DryRun,
+    pub(super) affected: &'input AffectedFilter,
     pub(super) executor: &'input crate::commands::CommandExecutor,
     pub(super) task_name: Option<&'input str>,
     pub(super) labels: &'input [String],
@@ -45,6 +48,7 @@ impl<'input> TaskExecutionInput<'input> {
             skip_dependencies: request.skip_dependencies,
             continue_on_error: request.continue_on_error,
             dry_run: request.dry_run,
+            affected: &request.affected,
             executor: request.executor,
             task_name,
             labels,
@@ -63,7 +67,7 @@ impl<'input> TaskExecutionInput<'input> {
     }
 
     pub(super) fn lists_tasks(&self) -> bool {
-        self.task_name.is_none() && self.labels.is_empty()
+        self.task_name.is_none() && self.labels.is_empty() && !self.affected.is_affected()
     }
 
     pub(super) fn shows_help(&self) -> bool {

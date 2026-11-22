@@ -8,33 +8,60 @@ pub(super) mod launcher;
 mod runtime;
 mod supervisor;
 
-use self::runtime::{MountKind, RuntimeSource};
-use super::{NetworkPolicy, StrictSandboxOptions, StrictSandboxProof, compute_policy_digest};
+use self::runtime::{MountKind, RuntimeSource, VerifiedEntry};
+use super::{
+    NetworkPolicy, NixSandboxContext, StrictSandboxOptions, StrictSandboxProof,
+    compute_policy_digest,
+};
 use cuenv_core::{Error, Result};
+use std::collections::HashMap;
 use std::ffi::CString;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::symlink;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 use tokio::process::Command;
 
 /// Minimal `/dev` character devices bind-mounted into the sandbox.
 const LINUX_DEV_NODES: &[&str] = &["/dev/null", "/dev/zero", "/dev/urandom", "/dev/random"];
 
-static PROBE_CACHE: OnceLock<std::result::Result<(), String>> = OnceLock::new();
+type ProbeCache = Mutex<HashMap<String, std::result::Result<(), String>>>;
+
+static PROBE_CACHE: OnceLock<ProbeCache> = OnceLock::new();
 
 /// Probe whether this Linux host can enter and supervise a strict sandbox.
-pub fn probe(network: NetworkPolicy) -> std::result::Result<StrictSandboxProof, String> {
+pub fn probe(
+    network: NetworkPolicy,
+    nix_context: Option<&NixSandboxContext>,
+) -> std::result::Result<StrictSandboxProof, String> {
     let network_allowed = network == NetworkPolicy::Allowed;
-    let runtime = runtime::Runtime::resolve()?;
-    let support = PROBE_CACHE.get_or_init(|| probe_runtime(runtime));
-    if let Err(reason) = support {
-        return Err(reason.clone());
-    }
+    let runtime = runtime::Runtime::resolve(nix_context)?;
+    let (runtime_key, runtime_value) = runtime.identity();
+    let cache_key = if runtime_key == "host.invocation" {
+        "host".to_string()
+    } else {
+        format!("{runtime_key}={runtime_value}")
+    };
+    let support = {
+        let cache = PROBE_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+        let cached = cache
+            .lock()
+            .ok()
+            .and_then(|guard| guard.get(&cache_key).cloned());
+        if let Some(result) = cached {
+            result
+        } else {
+            let result = probe_runtime(&runtime);
+            if let Ok(mut guard) = cache.lock() {
+                guard.insert(cache_key, result.clone());
+            }
+            result
+        }
+    };
+    support?;
 
     let network_enforced = !network_allowed;
-    let (runtime_key, runtime_value) = runtime.identity();
     let policy_digest = compute_policy_digest(&[
         ("platform", "linux-namespaces-v2".to_string()),
         (
@@ -61,7 +88,7 @@ pub fn probe(network: NetworkPolicy) -> std::result::Result<StrictSandboxProof, 
         platform: "linux-namespaces",
         policy_digest,
         network_enforced,
-        publish_eligible: network_enforced && runtime.is_image(),
+        publish_eligible: network_enforced && runtime.is_publishable(),
     })
 }
 
@@ -84,6 +111,7 @@ fn probe_runtime(runtime: &runtime::Runtime) -> std::result::Result<(), String> 
             task_tmp: &scratch,
             task_home: &home,
             network: NetworkPolicy::Disabled,
+            nix_context: None,
         },
         runtime,
     )
@@ -174,9 +202,10 @@ pub struct LinuxSandboxPlan {
 
 impl LinuxSandboxPlan {
     pub(crate) fn prepare(options: StrictSandboxOptions<'_>) -> Result<(Self, StrictSandboxProof)> {
-        let proof = probe(options.network).map_err(Error::configuration)?;
-        let runtime = runtime::Runtime::resolve().map_err(Error::configuration)?;
-        Ok((Self::with_runtime(options, runtime)?, proof))
+        let proof = probe(options.network, options.nix_context).map_err(Error::configuration)?;
+        let runtime =
+            runtime::Runtime::resolve(options.nix_context).map_err(Error::configuration)?;
+        Ok((Self::with_runtime(options, &runtime)?, proof))
     }
 
     fn with_runtime(options: StrictSandboxOptions<'_>, runtime: &runtime::Runtime) -> Result<Self> {
@@ -186,6 +215,7 @@ impl LinuxSandboxPlan {
             task_tmp,
             task_home,
             network,
+            nix_context: _,
         } = options;
         let network_allowed = network == NetworkPolicy::Allowed;
         let exec_root = canonicalize(exec_root)?;
@@ -204,34 +234,73 @@ impl LinuxSandboxPlan {
 
         let mut mounts = Vec::new();
 
-        // Mount only the validated runtime roots. Preserve links inside the
-        // image so absolute links resolve inside the sandbox after pivot_root.
-        for &pathname in runtime::ROOTS {
-            let source = runtime
-                .source(pathname)
-                .map_err(|error| Error::io(format!("read runtime source {pathname}"), error))?;
-            let target = root_dir.join(pathname.trim_start_matches('/'));
-            match source {
-                Some(RuntimeSource::Link(link)) => {
-                    create_mount_parent(&target)?;
-                    symlink(link, &target).map_err(|error| {
-                        Error::io_with_path("stage runtime link", target, error)
-                    })?;
+        if let Some(closure) = runtime.nix_closure() {
+            // Expose only the verified Nix closure under /nix/store, plus
+            // /bin/sh and /usr/bin/env pointing into that closure. No host
+            // /usr, /bin, /lib, /lib64, or /etc trees are mounted.
+            for item in &closure.entries {
+                let target = root_dir.join(strip_leading_slash(&item.store_path));
+                match &item.entry {
+                    VerifiedEntry::Link(link) => {
+                        create_mount_parent(&target)?;
+                        symlink(link, &target).map_err(|error| {
+                            Error::io_with_path("stage Nix store link", target, error)
+                        })?;
+                    }
+                    VerifiedEntry::Bind { kind, identity } => {
+                        prepare_mount_target_kind(*kind, &target)?;
+                        mounts.push(BindMount {
+                            source: path_to_cstring(&item.store_path)?,
+                            target: path_to_cstring(&target)?,
+                            read_only: true,
+                            image_identity: Some(*identity),
+                        });
+                    }
                 }
-                Some(RuntimeSource::Bind {
-                    path,
-                    kind,
-                    identity,
-                }) => {
-                    prepare_mount_target_kind(kind, &target)?;
-                    mounts.push(BindMount {
-                        source: path_to_cstring(&path)?,
-                        target: path_to_cstring(&target)?,
-                        read_only: true,
-                        image_identity: identity,
-                    });
+            }
+            if let Some(sh) = &closure.bin_sh {
+                let target = root_dir.join("bin/sh");
+                create_mount_parent(&target)?;
+                symlink(sh, &target)
+                    .map_err(|error| Error::io_with_path("stage Nix /bin/sh", target, error))?;
+            }
+            if let Some(env_bin) = &closure.usr_bin_env {
+                let target = root_dir.join("usr/bin/env");
+                create_mount_parent(&target)?;
+                symlink(env_bin, &target).map_err(|error| {
+                    Error::io_with_path("stage Nix /usr/bin/env", target, error)
+                })?;
+            }
+        } else {
+            // Mount only the validated runtime roots. Preserve links inside the
+            // image so absolute links resolve inside the sandbox after pivot_root.
+            for &pathname in runtime::ROOTS {
+                let source = runtime
+                    .source(pathname)
+                    .map_err(|error| Error::io(format!("read runtime source {pathname}"), error))?;
+                let target = root_dir.join(pathname.trim_start_matches('/'));
+                match source {
+                    Some(RuntimeSource::Link(link)) => {
+                        create_mount_parent(&target)?;
+                        symlink(link, &target).map_err(|error| {
+                            Error::io_with_path("stage runtime link", target, error)
+                        })?;
+                    }
+                    Some(RuntimeSource::Bind {
+                        path,
+                        kind,
+                        identity,
+                    }) => {
+                        prepare_mount_target_kind(kind, &target)?;
+                        mounts.push(BindMount {
+                            source: path_to_cstring(&path)?,
+                            target: path_to_cstring(&target)?,
+                            read_only: true,
+                            image_identity: identity,
+                        });
+                    }
+                    None => {}
                 }
-                None => {}
             }
         }
 
@@ -268,7 +337,7 @@ impl LinuxSandboxPlan {
 
         // Verified actions use a stable absolute path even when their local
         // cache roots differ. Host-backed tasks retain the original path.
-        let workspace = if runtime.is_image() {
+        let workspace = if runtime.is_publishable() {
             Path::new("/workspace")
         } else {
             &exec_root

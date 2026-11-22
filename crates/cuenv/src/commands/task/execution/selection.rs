@@ -88,22 +88,29 @@ pub(super) fn validate_task_selection(input: &TaskExecutionInput<'_>) -> Result<
     Ok(normalized_labels)
 }
 
-pub(super) fn resolve_task_selection(
+pub(super) async fn resolve_task_selection(
     input: &TaskExecutionInput<'_>,
     context: &TaskExecutionContext,
     normalized_labels: &[String],
-) -> Result<TaskResolution> {
-    if normalized_labels.is_empty() {
-        resolve_named_task(input, context)
-    } else {
-        resolve_label_tasks(input, context, normalized_labels)
+) -> Result<Option<TaskResolution>> {
+    if !normalized_labels.is_empty() {
+        return resolve_label_tasks(input, context, normalized_labels).await;
     }
+    if input.task_name.is_some() {
+        return resolve_named_task(input, context).await;
+    }
+    if input.affected.is_affected() {
+        return resolve_affected_tasks(input, context).await;
+    }
+    Err(cuenv_core::Error::configuration(
+        "task name required when no labels or --affected provided",
+    ))
 }
 
-fn resolve_named_task(
+async fn resolve_named_task(
     input: &TaskExecutionInput<'_>,
     context: &TaskExecutionContext,
-) -> Result<TaskResolution> {
+) -> Result<Option<TaskResolution>> {
     let requested_task = input.task_name.ok_or_else(|| {
         cuenv_core::Error::configuration("task name required when no labels provided")
     })?;
@@ -117,6 +124,18 @@ fn resolve_named_task(
     })?;
     tracing::debug!("Found task node: {:?}", original_task_node);
 
+    if input.affected.is_affected() {
+        let affected = super::affected::filter_affected_candidates(
+            vec![display_task_name.clone()],
+            context,
+            input.affected.base_ref(),
+        )
+        .await?;
+        if affected.is_empty() {
+            return Ok(None);
+        }
+    }
+
     let mut tasks_in_scope = context.local_tasks.clone();
     apply_task_arguments(input, &mut tasks_in_scope, &display_task_name)?;
     let scope = task_scope(
@@ -128,12 +147,12 @@ fn resolve_named_task(
         },
     )?;
 
-    Ok(TaskResolution {
+    Ok(Some(TaskResolution {
         display_name: display_task_name.clone(),
         node: node_in_scope(&scope, &display_task_name)?,
         scope,
         graph_root_name: display_task_name,
-    })
+    }))
 }
 
 fn log_task_resolution_context(context: &TaskExecutionContext, requested_task: &str) {
@@ -194,12 +213,11 @@ fn apply_task_arguments(
     Ok(())
 }
 
-fn resolve_label_tasks(
+async fn resolve_label_tasks(
     input: &TaskExecutionInput<'_>,
     context: &TaskExecutionContext,
     normalized_labels: &[String],
-) -> Result<TaskResolution> {
-    let mut tasks_in_scope = context.local_tasks.clone();
+) -> Result<Option<TaskResolution>> {
     let matching_tasks = discovery::find_tasks_with_labels(&context.local_tasks, normalized_labels);
 
     if matching_tasks.is_empty() {
@@ -208,24 +226,101 @@ fn resolve_label_tasks(
         )));
     }
 
+    let selected_tasks = if input.affected.is_affected() {
+        let affected = super::affected::filter_affected_candidates(
+            matching_tasks,
+            context,
+            input.affected.base_ref(),
+        )
+        .await?;
+        if affected.is_empty() {
+            return Ok(None);
+        }
+        affected
+    } else {
+        matching_tasks
+    };
+
     let display_task_name = discovery::format_label_root(normalized_labels);
+    let description = format!(
+        "Run all tasks matching labels: {}",
+        normalized_labels.join(", ")
+    );
+    build_synthetic_multi_task_resolution(
+        input,
+        context,
+        SyntheticRoot {
+            display_name: display_task_name,
+            description,
+            depends_on: selected_tasks,
+        },
+    )
+    .map(Some)
+}
+
+async fn resolve_affected_tasks(
+    input: &TaskExecutionInput<'_>,
+    context: &TaskExecutionContext,
+) -> Result<Option<TaskResolution>> {
+    let mut candidates: Vec<String> = context
+        .local_tasks
+        .tasks
+        .iter()
+        .filter(|(_, node)| matches!(node, TaskNode::Task(_)))
+        .map(|(name, _)| name.clone())
+        .collect();
+    candidates.sort();
+
+    let affected =
+        super::affected::filter_affected_candidates(candidates, context, input.affected.base_ref())
+            .await?;
+    if affected.is_empty() {
+        return Ok(None);
+    }
+
+    let display_name = match input.affected.base_ref() {
+        Some(base_ref) => format!("affected:{base_ref}"),
+        None => "affected".to_string(),
+    };
+    build_synthetic_multi_task_resolution(
+        input,
+        context,
+        SyntheticRoot {
+            display_name,
+            description: "Run all affected tasks".to_string(),
+            depends_on: affected,
+        },
+    )
+    .map(Some)
+}
+
+struct SyntheticRoot {
+    display_name: String,
+    description: String,
+    depends_on: Vec<String>,
+}
+
+fn build_synthetic_multi_task_resolution(
+    input: &TaskExecutionInput<'_>,
+    context: &TaskExecutionContext,
+    root: SyntheticRoot,
+) -> Result<TaskResolution> {
+    let mut tasks_in_scope = context.local_tasks.clone();
     let synthetic = Task {
         script: Some("true".to_string()),
         hermetic: cuenv_core::tasks::Hermetic::Enabled(false),
-        depends_on: matching_tasks
+        depends_on: root
+            .depends_on
             .into_iter()
             .map(cuenv_core::tasks::TaskDependency::from_name)
             .collect(),
         project_root: Some(context.project_root.clone()),
-        description: Some(format!(
-            "Run all tasks matching labels: {}",
-            normalized_labels.join(", ")
-        )),
+        description: Some(root.description),
         ..Default::default()
     };
 
     tasks_in_scope.tasks.insert(
-        display_task_name.clone(),
+        root.display_name.clone(),
         TaskNode::Task(Box::new(synthetic)),
     );
 
@@ -234,14 +329,14 @@ fn resolve_label_tasks(
         context,
         SelectedTasks {
             tasks: tasks_in_scope,
-            root: &display_task_name,
+            root: &root.display_name,
         },
     )?;
 
     Ok(TaskResolution {
-        display_name: display_task_name.clone(),
-        node: node_in_scope(&scope, &display_task_name)?,
+        display_name: root.display_name.clone(),
+        node: node_in_scope(&scope, &root.display_name)?,
         scope,
-        graph_root_name: display_task_name,
+        graph_root_name: root.display_name,
     })
 }

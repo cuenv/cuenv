@@ -212,17 +212,35 @@ impl RemoteCas {
     }
 
     async fn find_missing_chunk(&self, blob_digests: Vec<pb::Digest>) -> Result<Vec<Digest>> {
-        let request = self.client.request(pb::FindMissingBlobsRequest {
-            instance_name: self.client.instance_name(),
-            blob_digests,
-            ..Default::default()
-        })?;
         let response = self
-            .cas_client()
-            .find_missing_blobs(request)
-            .await
-            .map_err(|status| Error::rpc("FindMissingBlobs", &status))?
-            .into_inner();
+            .client
+            .retry_runner()
+            .run("FindMissingBlobs", || {
+                let mut client = self.cas_client();
+                let blob_digests = blob_digests.clone();
+                let instance_name = self.client.instance_name();
+                async move {
+                    let request = self
+                        .client
+                        .request(pb::FindMissingBlobsRequest {
+                            instance_name,
+                            blob_digests,
+                            ..Default::default()
+                        })
+                        .map_err(|error| (error, false))?;
+                    client
+                        .find_missing_blobs(request)
+                        .await
+                        .map(tonic::Response::into_inner)
+                        .map_err(|status| {
+                            (
+                                Error::rpc("FindMissingBlobs", &status),
+                                crate::retry::is_transient_grpc(&status),
+                            )
+                        })
+                }
+            })
+            .await?;
 
         response
             .missing_blob_digests
@@ -306,17 +324,35 @@ impl RemoteCas {
         requests: Vec<pb::batch_update_blobs_request::Request>,
         expected: &HashSet<Digest>,
     ) -> Result<()> {
-        let request = self.client.request(pb::BatchUpdateBlobsRequest {
-            instance_name: self.client.instance_name(),
-            requests,
-            ..Default::default()
-        })?;
         let response = self
-            .cas_client()
-            .batch_update_blobs(request)
-            .await
-            .map_err(|status| Error::rpc("BatchUpdateBlobs", &status))?
-            .into_inner();
+            .client
+            .retry_runner()
+            .run("BatchUpdateBlobs", || {
+                let mut client = self.cas_client();
+                let requests = requests.clone();
+                let instance_name = self.client.instance_name();
+                async move {
+                    let request = self
+                        .client
+                        .request(pb::BatchUpdateBlobsRequest {
+                            instance_name,
+                            requests,
+                            ..Default::default()
+                        })
+                        .map_err(|error| (error, false))?;
+                    client
+                        .batch_update_blobs(request)
+                        .await
+                        .map(tonic::Response::into_inner)
+                        .map_err(|status| {
+                            (
+                                Error::rpc("BatchUpdateBlobs", &status),
+                                crate::retry::is_transient_grpc(&status),
+                            )
+                        })
+                }
+            })
+            .await?;
 
         let mut seen = HashSet::with_capacity(expected.len());
         for entry in response.responses {
@@ -416,18 +452,37 @@ impl RemoteCas {
             Vec::new()
         };
 
-        let request = self.client.request(pb::BatchReadBlobsRequest {
-            instance_name: self.client.instance_name(),
-            digests: proto_digests,
-            acceptable_compressors,
-            ..Default::default()
-        })?;
         let response = self
-            .cas_client()
-            .batch_read_blobs(request)
-            .await
-            .map_err(|status| Error::rpc("BatchReadBlobs", &status))?
-            .into_inner();
+            .client
+            .retry_runner()
+            .run("BatchReadBlobs", || {
+                let mut client = self.cas_client();
+                let digests = proto_digests.clone();
+                let acceptable_compressors = acceptable_compressors.clone();
+                let instance_name = self.client.instance_name();
+                async move {
+                    let request = self
+                        .client
+                        .request(pb::BatchReadBlobsRequest {
+                            instance_name,
+                            digests,
+                            acceptable_compressors,
+                            ..Default::default()
+                        })
+                        .map_err(|error| (error, false))?;
+                    client
+                        .batch_read_blobs(request)
+                        .await
+                        .map(tonic::Response::into_inner)
+                        .map_err(|status| {
+                            (
+                                Error::rpc("BatchReadBlobs", &status),
+                                crate::retry::is_transient_grpc(&status),
+                            )
+                        })
+                }
+            })
+            .await?;
 
         let mut out = HashMap::with_capacity(expected.len());
         for entry in response.responses {

@@ -1,7 +1,9 @@
 //! Runtime roots that may be exposed to strict sandbox tasks on Linux.
 
+use super::super::{NixSandboxContext, is_valid_nix_store_basename};
 use super::MountIdentity;
 use sha2::{Digest as _, Sha256};
+use std::collections::{BTreeSet, HashMap};
 use std::ffi::CString;
 use std::fs::{self, File};
 use std::io::{self, Read};
@@ -9,7 +11,8 @@ use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex, OnceLock};
 
 /// Explicit read-only locations exposed inside the sandbox.
 pub(super) const ROOTS: &[&str] = &[
@@ -28,7 +31,17 @@ pub(super) const ROOTS: &[&str] = &[
 ];
 
 const RUNTIME_ROOT_ENV: &str = "CUENV_SANDBOX_RUNTIME_ROOT";
-static RUNTIME: OnceLock<Result<Runtime, String>> = OnceLock::new();
+const NIX_STORE_DIR: &str = "/nix/store";
+
+static BASE_RUNTIME: OnceLock<Result<Arc<Runtime>, String>> = OnceLock::new();
+static NIX_CLOSURES: OnceLock<Mutex<HashMap<NixClosureCacheKey, Arc<Runtime>>>> = OnceLock::new();
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct NixClosureCacheKey {
+    lock_digest: String,
+    store_roots: Vec<PathBuf>,
+    path_entries: Vec<PathBuf>,
+}
 
 pub(super) enum Runtime {
     /// An unfingerprinted host toolchain may only reuse results within this run.
@@ -39,6 +52,21 @@ pub(super) enum Runtime {
         verification: Verification,
         _anchor: File,
     },
+    /// A pinned Nix store closure bind-mounted read-only from `/nix/store`,
+    /// exposing no host `/usr`, `/bin`, `/lib`, `/lib64`, or `/etc`.
+    NixClosure(NixClosureRuntime),
+}
+
+pub(super) struct NixClosureRuntime {
+    pub(super) digest: String,
+    pub(super) entries: Vec<VerifiedNixEntry>,
+    pub(super) bin_sh: Option<PathBuf>,
+    pub(super) usr_bin_env: Option<PathBuf>,
+}
+
+pub(super) struct VerifiedNixEntry {
+    pub(super) store_path: PathBuf,
+    pub(super) entry: VerifiedEntry,
 }
 
 pub(super) struct Verification {
@@ -51,7 +79,7 @@ struct VerifiedRoot {
     entry: VerifiedEntry,
 }
 
-enum VerifiedEntry {
+pub(super) enum VerifiedEntry {
     Link(PathBuf),
     Bind {
         kind: MountKind,
@@ -85,14 +113,64 @@ pub(super) enum RuntimeSource<'runtime> {
 }
 
 impl Runtime {
-    pub(super) fn resolve() -> Result<&'static Self, String> {
-        RUNTIME
-            .get_or_init(|| Self::load().map_err(|error| format!("{RUNTIME_ROOT_ENV}: {error}")))
+    pub(super) fn resolve(nix_context: Option<&NixSandboxContext>) -> Result<Arc<Self>, String> {
+        // An explicit operator-provisioned SquashFS/EROFS image always wins.
+        if std::env::var_os(RUNTIME_ROOT_ENV).is_some() {
+            return Self::resolve_base();
+        }
+
+        if let Some(ctx) = nix_context
+            && Path::new(NIX_STORE_DIR).is_dir()
+        {
+            match Self::resolve_nix_closure(ctx) {
+                Ok(runtime) => return Ok(runtime),
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        "could not verify Nix closure for strict sandbox; falling back to host runtime"
+                    );
+                }
+            }
+        }
+
+        Self::resolve_base()
+    }
+
+    fn resolve_base() -> Result<Arc<Self>, String> {
+        BASE_RUNTIME
+            .get_or_init(|| {
+                Self::load_base()
+                    .map(Arc::new)
+                    .map_err(|error| format!("{RUNTIME_ROOT_ENV}: {error}"))
+            })
             .as_ref()
+            .map(Arc::clone)
             .map_err(Clone::clone)
     }
 
-    fn load() -> io::Result<Self> {
+    fn resolve_nix_closure(ctx: &NixSandboxContext) -> io::Result<Arc<Self>> {
+        let key = NixClosureCacheKey {
+            lock_digest: ctx.lock_digest.clone(),
+            store_roots: ctx.store_roots.clone(),
+            path_entries: ctx.path_entries.clone(),
+        };
+        let cache = NIX_CLOSURES.get_or_init(|| Mutex::new(HashMap::new()));
+        if let Ok(guard) = cache.lock()
+            && let Some(existing) = guard.get(&key)
+        {
+            return Ok(Arc::clone(existing));
+        }
+
+        let closure_paths = query_nix_closure(&ctx.store_roots)?;
+        let closure = verify_nix_closure(ctx, &closure_paths, Path::new(NIX_STORE_DIR))?;
+        let runtime = Arc::new(Self::NixClosure(closure));
+        if let Ok(mut guard) = cache.lock() {
+            guard.insert(key, Arc::clone(&runtime));
+        }
+        Ok(runtime)
+    }
+
+    fn load_base() -> io::Result<Self> {
         let Some(configured) = std::env::var_os(RUNTIME_ROOT_ENV) else {
             let mut random = [0_u8; 32];
             File::open("/dev/urandom")?.read_exact(&mut random)?;
@@ -151,6 +229,14 @@ impl Runtime {
                         identity: Some(*identity),
                     },
                 })),
+            Self::NixClosure(_) => Ok(None),
+        }
+    }
+
+    pub(super) fn nix_closure(&self) -> Option<&NixClosureRuntime> {
+        match self {
+            Self::NixClosure(closure) => Some(closure),
+            Self::Host { .. } | Self::Image { .. } => None,
         }
     }
 
@@ -158,12 +244,201 @@ impl Runtime {
         match self {
             Self::Host { invocation } => ("host.invocation", invocation),
             Self::Image { verification, .. } => ("image.digest", &verification.digest),
+            Self::NixClosure(closure) => ("nix.closure.digest", &closure.digest),
         }
     }
 
-    pub(super) fn is_image(&self) -> bool {
-        matches!(self, Self::Image { .. })
+    pub(super) fn is_publishable(&self) -> bool {
+        matches!(self, Self::Image { .. } | Self::NixClosure(_))
     }
+}
+
+fn query_nix_closure(store_roots: &[PathBuf]) -> io::Result<Vec<PathBuf>> {
+    let existing_roots: Vec<&PathBuf> = store_roots.iter().filter(|p| p.exists()).collect();
+    if existing_roots.is_empty() {
+        return Err(io::Error::other(
+            "none of the Nix store roots referenced in the environment exist",
+        ));
+    }
+
+    let output = Command::new("nix-store")
+        .arg("--query")
+        .arg("--requisites")
+        .args(&existing_roots)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(io::Error::other(format!(
+            "nix-store --query --requisites failed ({}): {}",
+            output.status,
+            stderr.trim()
+        )));
+    }
+
+    let stdout = String::from_utf8(output.stdout).map_err(io::Error::other)?;
+    let paths: BTreeSet<PathBuf> = stdout
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(PathBuf::from)
+        .collect();
+    if paths.is_empty() {
+        return Err(io::Error::other("nix-store returned an empty closure"));
+    }
+    Ok(paths.into_iter().collect())
+}
+
+fn verify_nix_closure(
+    ctx: &NixSandboxContext,
+    closure_paths: &[PathBuf],
+    store_root: &Path,
+) -> io::Result<NixClosureRuntime> {
+    let mut basenames = BTreeSet::new();
+    for path in closure_paths {
+        let relative = path.strip_prefix(store_root).map_err(|_| {
+            io::Error::other(format!(
+                "Nix closure path is outside {}: {}",
+                store_root.display(),
+                path.display()
+            ))
+        })?;
+        let mut components = relative.components();
+        let Some(std::path::Component::Normal(name)) = components.next() else {
+            return Err(io::Error::other(format!(
+                "invalid Nix store path: {}",
+                path.display()
+            )));
+        };
+        if components.next().is_some() {
+            return Err(io::Error::other(format!(
+                "Nix closure entry must be a top-level store path: {}",
+                path.display()
+            )));
+        }
+        let name_str = name
+            .to_str()
+            .filter(|s| is_valid_nix_store_basename(s))
+            .ok_or_else(|| {
+                io::Error::other(format!(
+                    "invalid Nix store basename: {}",
+                    name.to_string_lossy()
+                ))
+            })?;
+        basenames.insert(name_str.to_string());
+    }
+
+    if basenames.is_empty() {
+        return Err(io::Error::other("Nix closure is empty"));
+    }
+
+    let mut entries = Vec::with_capacity(basenames.len());
+    for basename in &basenames {
+        let path = store_root.join(basename);
+        let metadata = fs::symlink_metadata(&path)?;
+        let kind = metadata.file_type();
+        let entry = if kind.is_symlink() {
+            let link = fs::read_link(&path)?;
+            if !link.starts_with(store_root) && link.is_absolute() {
+                return Err(io::Error::other(format!(
+                    "Nix store symlink escapes store root: {} -> {}",
+                    path.display(),
+                    link.display()
+                )));
+            }
+            VerifiedEntry::Link(link)
+        } else if kind.is_dir() || kind.is_file() {
+            if metadata.mode() & 0o222 != 0 {
+                return Err(io::Error::other(format!(
+                    "Nix store entry is writable (mode {:o}): {}",
+                    metadata.mode() & 0o777,
+                    path.display()
+                )));
+            }
+            VerifiedEntry::Bind {
+                kind: MountKind::from(&metadata),
+                identity: MountIdentity {
+                    device: metadata.dev(),
+                    inode: metadata.ino(),
+                },
+            }
+        } else {
+            return Err(io::Error::other(format!(
+                "special file in Nix store closure: {}",
+                path.display()
+            )));
+        };
+        entries.push(VerifiedNixEntry {
+            store_path: path,
+            entry,
+        });
+    }
+
+    let closure_view = NixStoreClosureView {
+        store_root,
+        basenames: &basenames,
+    };
+    let bin_sh = find_closure_binary(&ctx.path_entries, &["sh", "bash"], closure_view);
+    let usr_bin_env = find_closure_binary(&ctx.path_entries, &["env"], closure_view);
+
+    let mut digest = Sha256::new();
+    digest.update(b"cuenv.linux.nix-closure.v1\0");
+    hash_field(&mut digest, ctx.lock_digest.as_bytes());
+    match &bin_sh {
+        Some(target) => hash_field(&mut digest, target.as_os_str().as_bytes()),
+        None => digest.update(b"missing\0"),
+    }
+    match &usr_bin_env {
+        Some(target) => hash_field(&mut digest, target.as_os_str().as_bytes()),
+        None => digest.update(b"missing\0"),
+    }
+    for basename in &basenames {
+        hash_field(&mut digest, basename.as_bytes());
+    }
+
+    Ok(NixClosureRuntime {
+        digest: hex::encode(digest.finalize()),
+        entries,
+        bin_sh,
+        usr_bin_env,
+    })
+}
+
+#[derive(Clone, Copy)]
+struct NixStoreClosureView<'a> {
+    store_root: &'a Path,
+    basenames: &'a BTreeSet<String>,
+}
+
+fn find_closure_binary(
+    path_entries: &[PathBuf],
+    names: &[&str],
+    closure: NixStoreClosureView<'_>,
+) -> Option<PathBuf> {
+    for dir in path_entries {
+        let Ok(relative) = dir.strip_prefix(closure.store_root) else {
+            continue;
+        };
+        let Some(std::path::Component::Normal(store_entry)) = relative.components().next() else {
+            continue;
+        };
+        let Some(store_entry) = store_entry.to_str() else {
+            continue;
+        };
+        if !closure.basenames.contains(store_entry) {
+            continue;
+        }
+        for name in names {
+            let candidate = dir.join(name);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
 }
 
 #[expect(
@@ -427,6 +702,77 @@ mod tests {
         let tree = tempfile::tempdir()?;
         let root = File::open(tree.path())?;
         assert!(verify_image_fs(&root).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn nix_closure_verifies_readonly_store_entries_and_is_publishable() -> io::Result<()> {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let store = tempfile::tempdir()?;
+        let bash_dir = store
+            .path()
+            .join("0123456789abcdfghijklmnpqrsvwxyz-bash-5.2");
+        let coreutils_dir = store
+            .path()
+            .join("1123456789abcdfghijklmnpqrsvwxyz-coreutils-9.5");
+        fs::create_dir_all(bash_dir.join("bin"))?;
+        fs::create_dir_all(coreutils_dir.join("bin"))?;
+        fs::write(bash_dir.join("bin/sh"), b"#!/bin/sh\n")?;
+        fs::write(coreutils_dir.join("bin/env"), b"#!/bin/sh\n")?;
+        fs::set_permissions(&bash_dir, fs::Permissions::from_mode(0o555))?;
+        fs::set_permissions(&coreutils_dir, fs::Permissions::from_mode(0o555))?;
+
+        let ctx = NixSandboxContext {
+            lock_digest: "sha256:lock123".to_string(),
+            store_roots: vec![bash_dir.clone(), coreutils_dir.clone()],
+            path_entries: vec![bash_dir.join("bin"), coreutils_dir.join("bin")],
+        };
+
+        let a = verify_nix_closure(
+            &ctx,
+            &[bash_dir.clone(), coreutils_dir.clone()],
+            store.path(),
+        )?;
+        let b = verify_nix_closure(
+            &ctx,
+            &[coreutils_dir.clone(), bash_dir.clone()],
+            store.path(),
+        )?;
+
+        // Restore write bit so tempdir cleanup succeeds.
+        fs::set_permissions(&bash_dir, fs::Permissions::from_mode(0o755))?;
+        fs::set_permissions(&coreutils_dir, fs::Permissions::from_mode(0o755))?;
+
+        assert_eq!(a.digest, b.digest);
+        assert_eq!(a.bin_sh, Some(bash_dir.join("bin/sh")));
+        assert_eq!(a.usr_bin_env, Some(coreutils_dir.join("bin/env")));
+        assert_eq!(a.entries.len(), 2);
+
+        let runtime = Runtime::NixClosure(a);
+        assert!(runtime.is_publishable());
+        assert_eq!(runtime.identity().0, "nix.closure.digest");
+        Ok(())
+    }
+
+    #[test]
+    fn nix_closure_rejects_writable_store_entry() -> io::Result<()> {
+        let store = tempfile::tempdir()?;
+        let writable = store
+            .path()
+            .join("0123456789abcdfghijklmnpqrsvwxyz-bash-5.2");
+        fs::create_dir_all(&writable)?;
+
+        let ctx = NixSandboxContext {
+            lock_digest: "sha256:lock123".to_string(),
+            store_roots: vec![writable.clone()],
+            path_entries: Vec::new(),
+        };
+
+        let err = verify_nix_closure(&ctx, &[writable], store.path())
+            .err()
+            .ok_or_else(|| io::Error::other("writable Nix store entry must be rejected"))?;
+        assert!(err.to_string().contains("writable"));
         Ok(())
     }
 }

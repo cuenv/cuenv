@@ -84,6 +84,25 @@ impl CommandExecutor {
                 })
                 .await
             }
+            Command::CacheInspect {
+                digest,
+                path,
+                format,
+            } => super::cache::execute_inspect(&digest, &path, &format).await,
+            Command::CacheDiff {
+                left,
+                right,
+                path,
+                format,
+            } => {
+                super::cache::execute_diff(super::cache::CacheDiffArgs {
+                    left,
+                    right,
+                    path,
+                    format,
+                })
+                .await
+            }
             Command::Completions { .. }
             | Command::Info { .. }
             | Command::Fmt { .. }
