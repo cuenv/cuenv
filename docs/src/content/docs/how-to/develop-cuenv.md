@@ -129,6 +129,9 @@ failures:
   not learn: in-flight markers, unrecorded-change files and `state recover`
   (`crates/infrastructure/src/engine/infrastructure_engine.rs`,
   `crates/infrastructure/src/unrecorded.rs`).
+- `state_migration.qnt`: `state migrate` forward, rollback and copy-back
+  (`crates/cuenv/src/commands/infrastructure/migrate.rs`,
+  `crates/infrastructure/src/state/object/store/legacy_migration.rs`).
 - `task_cache.qnt`: the layered task cache, local and remote CAS and action
   cache (`crates/cas`, `crates/cas-remote`, `crates/task-exec/src/cache.rs`).
 

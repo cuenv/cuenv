@@ -8,6 +8,7 @@ every reachable state of each model's finite instance.
 | --- | --- | --- |
 | `object_state_cas.qnt` | object-store state backend: lock, conditional PUTs, retries (`crates/infrastructure/src/state/object/store/object_state_store.rs`), and the CLI's release retry (`crates/cuenv/src/commands/infrastructure/lock.rs`) | `safety`, `unlockReportsTruth` |
 | `infrastructure_changes.qnt` | provider changes the state may not learn: in-flight markers, unrecorded-change files and `state recover` (`crates/infrastructure/src/engine/infrastructure_engine.rs`, `crates/infrastructure/src/unrecorded.rs`, `crates/infrastructure/src/in_flight.rs`) | `safety` |
+| `state_migration.qnt` | `state migrate` forward, rollback and copy-back: source fence, target commit receipt, rollback lock and tombstone, manifest (`crates/cuenv/src/commands/infrastructure/migrate.rs`, `crates/infrastructure/src/state/object/store/legacy_migration.rs`) | `safety` |
 | `task_cache.qnt` | layered task cache: local and remote CAS and action cache (`crates/cas`, `crates/cas-remote`, `crates/task-exec/src/cache.rs`) | `safety`, `fixes` |
 
 Run what CI runs (the `cuenv-quint-specs` flake check, about a minute):
@@ -36,6 +37,9 @@ timed-out release without its writer nonce; both fail `unlockReportsTruth`.
 In `infrastructure_changes.qnt`, writing the marker after the provider call,
 not writing it, plans that ignore it, recovery that clears the marker first,
 and recovery that clears another run's marker each fail `safety`.
+In `state_migration.qnt`, a rollback that ignores writes made since the
+commit, one that does not tombstone the target, and a forward that reads the
+source before fencing it each fail `safety`.
 In `task_cache.qnt`, each switch turns off one integrity mechanism of the
 cache and fails `safety` or `fixes`.
 

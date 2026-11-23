@@ -627,6 +627,8 @@
             --invariants safety fixes
           quint verify infrastructure_changes.qnt --backend=tlc --tlc-config=tlc.json \
             --invariants safety
+          quint verify state_migration.qnt --backend=tlc --tlc-config=tlc.json \
+            --invariants safety
           touch $out
         '';
 

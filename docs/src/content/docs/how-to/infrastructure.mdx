@@ -738,6 +738,13 @@ The target remains protected with its records retained if source release is
 uncertain. Interrupted multi-environment rollback or an unconfirmed target lock
 requires manual reconciliation under the maintenance freeze.
 
+The fence, the target's migration and rollback locks, its tombstone and the
+manifest are model-checked together (`specs/quint/state_migration.qnt`): with
+crashes and failed or lost writes at every step, and clients writing to
+whichever store accepts them, the source and the target never both accept
+writes and no acknowledged write is lost. The maintenance freeze is still
+required, because an interrupted run is reconciled by hand.
+
 For a Turso source, this migration path accepts only a root URL; non-root paths
 may contain sensitive routing material and cannot be safely used as a stored
 connection identity.

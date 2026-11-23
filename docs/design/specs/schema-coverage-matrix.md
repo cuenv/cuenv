@@ -255,7 +255,8 @@ CI note: `checks.quint` builds the flake check `cuenv-quint-specs` (Linux),
 which model-checks the Quint specs in `specs/quint` with TLC: the object-store
 state lock, compare-and-swap writes and the CLI's release retry; provider
 changes the state may not learn (in-flight markers, unrecorded-change files
-and `state recover`); and the layered task cache (CAS and action cache, local
+and `state recover`); `state migrate` forward, rollback and copy-back; and the
+layered task cache (CAS and action cache, local
 and remote). `specs/quint` is
 listed under `specTrees` in `nix/source-files.json`, so it is a flake input
 outside the Rust fileset. No schema or CLI support status changes.
