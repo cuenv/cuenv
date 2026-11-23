@@ -1725,6 +1725,7 @@ mod tests {
                 resource: &resource,
                 expected: RecordVersion::Absent,
             },
+            None,
         )?;
         let state = MemoryStateStore::new();
         let lock = state.lock(&tenant, "numeric recovery").await?;

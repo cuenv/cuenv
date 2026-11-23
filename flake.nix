@@ -625,6 +625,8 @@
             --invariants safety unlockReportsTruth
           quint verify task_cache.qnt --backend=tlc --tlc-config=tlc.json \
             --invariants safety fixes
+          quint verify infrastructure_changes.qnt --backend=tlc --tlc-config=tlc.json \
+            --invariants safety
           touch $out
         '';
 

@@ -689,6 +689,7 @@ async fn turso_recovery_refuses_recreated_records_at_the_same_serial() -> TestRe
                 resource: &pending,
                 expected: RecordVersion::of(Some(&previous)),
             },
+            None,
         )?;
         state.delete(&tenant, &lock, &original.address).await?;
         state
@@ -733,6 +734,7 @@ async fn turso_recovery_refuses_recreated_records_at_the_same_serial() -> TestRe
                 resource: &original,
                 expected: RecordVersion::Absent,
             },
+            None,
         )?;
         let pending = independent_saved.list(&tenant)?[0].record.clone();
         state.put(&tenant, &lock, &pending).await?;
