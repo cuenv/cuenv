@@ -188,7 +188,7 @@ walkdir = "2.5"
 globset = "0.4"
 ignore = "0.4"
 indexmap = "2.14"
-base64 = "0.22"
+base64 = "0.23"
 zip = "2"
 
 # GitHub API client

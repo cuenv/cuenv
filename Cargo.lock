@@ -444,6 +444,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
+name = "base64"
+version = "0.23.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
+
+[[package]]
 name = "base64-simd"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1871,7 +1877,7 @@ name = "cuenv-gcp"
 version = "0.77.1"
 dependencies = [
  "async-trait",
- "base64 0.22.1",
+ "base64 0.23.1",
  "cuenv-secrets",
  "reqwest 0.13.4",
  "serde",
@@ -1913,7 +1919,7 @@ dependencies = [
 name = "cuenv-homebrew"
 version = "0.77.1"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "cuenv-release",
  "octocrab",
  "tracing",
@@ -1976,7 +1982,7 @@ dependencies = [
  "async-trait",
  "aws-credential-types",
  "aws-sigv4",
- "base64 0.22.1",
+ "base64 0.23.1",
  "chrono",
  "cuenv-events",
  "cuenv-manifest",
