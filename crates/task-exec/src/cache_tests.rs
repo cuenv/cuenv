@@ -295,6 +295,53 @@ async fn runtime_env_skip_keeps_resolved_inputs_for_sandboxing() {
     assert_eq!(execution.unwrap().inputs.len(), 1);
 }
 
+/// The key a task with `env: {MODE: <mode>}` gets when the executor has
+/// resolved that env into its environment.
+async fn key_with_resolved_task_env(tmp: &TempDir, mode: &str) -> Option<Digest> {
+    let cache = make_cache(tmp.path());
+    let mut task = make_task(
+        "echo",
+        &["hi"],
+        TaskPaths {
+            inputs: &["input.txt"],
+            outputs: &[],
+        },
+    );
+    task.env.insert("MODE".to_string(), serde_json::json!(mode));
+    let mut env = Environment::new();
+    env.set("MODE".to_string(), mode.to_string());
+
+    build_action_for_test(BuildActionInput {
+        task: &task,
+        task_name: "task-env",
+        environment: &env,
+        cache: &cache,
+        workdir: tmp.path(),
+        project_root: tmp.path(),
+        module_root: &cache.vcs_hasher_root,
+    })
+    .await
+    .map(|(_, digest)| digest)
+}
+
+#[tokio::test]
+async fn a_resolved_task_env_is_cached_and_keyed_on_its_values() {
+    let tmp = TempDir::new().unwrap();
+    fs::write(tmp.path().join("input.txt"), "payload").unwrap();
+
+    let production = key_with_resolved_task_env(&tmp, "production")
+        .await
+        .expect("a task whose env was resolved into the action environment is cacheable");
+    let development = key_with_resolved_task_env(&tmp, "development")
+        .await
+        .expect("a task whose env was resolved into the action environment is cacheable");
+
+    assert_ne!(
+        production, development,
+        "a different task env value must produce a different action key"
+    );
+}
+
 #[tokio::test]
 async fn input_resolution_failure_precedes_runtime_env_cache_skip() {
     let tmp = TempDir::new().unwrap();
