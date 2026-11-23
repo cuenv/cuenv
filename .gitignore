@@ -16,4 +16,6 @@ dist
 node_modules
 result
 sbom.json
+specs/quint/_apalache-out
+specs/quint/tmp
 target
