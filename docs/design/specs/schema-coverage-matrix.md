@@ -256,7 +256,9 @@ which model-checks the Quint specs in `specs/quint` with TLC: the object-store
 state lock, compare-and-swap writes and the CLI's release retry; provider
 changes the state may not learn (in-flight markers, unrecorded-change files
 and `state recover`); `state migrate` forward, rollback and copy-back; the SQL
-state backends' lock row, fenced writes and retried statements; and the
+state backends' lock row, fenced writes and retried statements; hook runs
+across processes (reservation, hook child, cancellation, publish and
+recovery); and the
 layered task cache (CAS and action cache, local
 and remote). `specs/quint` is
 listed under `specTrees` in `nix/source-files.json`, so it is a flake input
