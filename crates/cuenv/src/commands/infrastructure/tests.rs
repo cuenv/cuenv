@@ -1781,6 +1781,8 @@ async fn unlock_with_another_identifier_is_a_lock_failure() {
 #[derive(Debug, Default)]
 struct UnreleasableStore {
     unlock_attempts: AtomicUsize,
+    /// After this many failed releases, the lock is found gone.
+    gone_after_failures: Option<usize>,
     force_unlock_attempts: AtomicUsize,
     reported_lock: Option<LockInformation>,
 }
@@ -1850,7 +1852,13 @@ impl StateStore for UnreleasableStore {
         _tenant: &TenantKey,
         _lock: &StateLock,
     ) -> cuenv_infrastructure::Result<bool> {
-        self.unlock_attempts.fetch_add(1, Ordering::SeqCst);
+        let failed = self.unlock_attempts.fetch_add(1, Ordering::SeqCst);
+        if self
+            .gone_after_failures
+            .is_some_and(|failures| failed >= failures)
+        {
+            return Ok(false);
+        }
         Err(InfrastructureError::state("unavailable"))
     }
 
@@ -2052,6 +2060,34 @@ async fn a_lock_that_was_taken_away_during_the_run_is_not_reported_as_released()
     .unwrap();
 }
 
+#[tokio::test(start_paused = true)]
+async fn a_lock_found_gone_after_a_failed_release_is_uncertain() {
+    let store = UnreleasableStore {
+        gone_after_failures: Some(1),
+        ..UnreleasableStore::default()
+    };
+    let tenant = TenantKey::try_new("example.com/infrastructure", "app").unwrap();
+    let release = super::lock::release(&store, &tenant, &StateLock::generate())
+        .await
+        .unwrap();
+    assert_eq!(release, super::lock::Release::Uncertain);
+    assert_eq!(store.unlock_attempts.load(Ordering::SeqCst), 2);
+
+    // The run's error never reports the lock released.
+    let mut harness = Harness::new(OutputFormat::Json, Script::Line("yes"));
+    harness.store = Arc::new(UnreleasableStore {
+        gone_after_failures: Some(1),
+        ..UnreleasableStore::default()
+    });
+    let context = harness.context();
+    let error = super::lock::under_lock(&context, "apply", |_lock| async {
+        Err::<(), _>(super::interrupts::interrupted())
+    })
+    .await
+    .unwrap_err();
+    assert!(!lock_of(&error).unwrap().released);
+}
+
 #[test]
 fn the_release_notice_says_what_the_release_did() {
     let lock = StateLock::generate();
@@ -2064,6 +2100,13 @@ fn the_release_notice_says_what_the_release_did() {
     assert!(gone.contains("no longer held"), "{gone}");
     assert!(gone.contains("nothing was released"), "{gone}");
     assert!(gone.contains(&lock.lock_identifier), "{gone}");
+    let uncertain = super::lock::release_notice(&lock, &tenant, super::lock::Release::Uncertain);
+    assert!(!uncertain.starts_with("Released"), "{uncertain}");
+    assert!(
+        uncertain.contains("does not claim the release"),
+        "{uncertain}"
+    );
+    assert!(!uncertain.contains("nothing was released"), "{uncertain}");
 }
 
 // ---------------------------------------------------------------------------
