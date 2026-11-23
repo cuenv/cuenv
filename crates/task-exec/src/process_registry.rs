@@ -85,6 +85,20 @@ impl ProcessRegistry {
         }
     }
 
+    /// Unregisters a process without waiting for the registry: returns
+    /// whether the registry was free, so the pid is no longer tracked.
+    ///
+    /// For code that cannot await, such as a `Drop` implementation.
+    #[must_use]
+    pub fn try_unregister(&self, pid: u32) -> bool {
+        self.pids.try_lock().is_ok_and(|mut pids| {
+            if let Some(task_name) = pids.remove(&pid) {
+                debug!(pid, task = %task_name, "Unregistering process");
+            }
+            true
+        })
+    }
+
     /// Returns the number of currently tracked processes.
     pub async fn count(&self) -> usize {
         self.pids.lock().await.len()
