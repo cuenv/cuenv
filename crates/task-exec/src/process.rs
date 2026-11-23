@@ -64,10 +64,14 @@ async fn run_captured_process(
     let mut child = command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        .kill_on_drop(true)
         .spawn()
         .map_err(|e| Error::io(format!("spawn task {}", name), e))?;
 
     let child_pid = child.id();
+    // Declared after `child`, so it is dropped first, while the leader is
+    // not yet reaped and its process group id cannot have been reused.
+    let mut guard = ProcessGroupGuard::new(child_pid);
     if let Some(pid) = child_pid {
         process_registry::global_registry()
             .register(pid, name.to_string())
@@ -117,9 +121,11 @@ async fn run_captured_process(
             // Reap any lingering background descendants in the task's process
             // group before collecting outputs or publishing cache entries.
             reap_process_group(child_pid).await;
+            guard.disarm();
             status
         }
         WaitOutcome::TimedOut(timeout) => {
+            guard.disarm();
             if let Some(pid) = child_pid {
                 process_registry::global_registry().unregister(pid).await;
             }
@@ -186,10 +192,13 @@ async fn run_inherited_process(
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .stdin(stdin)
+        .kill_on_drop(true)
         .spawn()
         .map_err(|e| Error::io(format!("spawn task {}", name), e))?;
 
     let child_pid = child.id();
+    // Dropped before `child`; see `run_captured_process`.
+    let mut guard = ProcessGroupGuard::new(child_pid);
     if let Some(pid) = child_pid {
         process_registry::global_registry()
             .register(pid, name.to_string())
@@ -209,9 +218,11 @@ async fn run_inherited_process(
     {
         WaitOutcome::Exited(status) => {
             reap_process_group(child_pid).await;
+            guard.disarm();
             status
         }
         WaitOutcome::TimedOut(timeout) => {
+            guard.disarm();
             if let Some(pid) = child_pid {
                 process_registry::global_registry().unregister(pid).await;
             }
@@ -336,6 +347,65 @@ fn format_duration(duration: Duration) -> String {
     }
 }
 
+/// Kills a task's process group when the future running the task is
+/// dropped before the task finished.
+///
+/// Fail-fast aborts the futures of sibling tasks (issue 458). Dropping a
+/// future does not stop the processes it started, so without this they
+/// would keep running, and writing into the workspace, after cuenv reported
+/// the failure and exited. The guard signals only its own group, while the
+/// group leader is still unreaped, so the group id cannot belong to anyone
+/// else; it never walks the process-wide registry.
+struct ProcessGroupGuard {
+    /// The group leader's pid, until the task has finished.
+    pid: Option<u32>,
+}
+
+impl ProcessGroupGuard {
+    const fn new(pid: Option<u32>) -> Self {
+        Self { pid }
+    }
+
+    /// The task finished and its group was reaped: nothing to kill.
+    const fn disarm(&mut self) {
+        self.pid = None;
+    }
+}
+
+impl Drop for ProcessGroupGuard {
+    fn drop(&mut self) {
+        let Some(pid) = self.pid.take() else {
+            return;
+        };
+        #[cfg(unix)]
+        if let Ok(pgid) = i32::try_from(pid) {
+            #[expect(
+                unsafe_code,
+                reason = "Required to stop an abandoned task's process group"
+            )]
+            // SAFETY: `kill` takes plain integers. The child was placed in its
+            // own process group by `setup_process_group`, and its leader has
+            // not been reaped, so `-pgid` names that group alone.
+            unsafe {
+                libc::kill(-pgid, libc::SIGKILL);
+            }
+        }
+        forget_registration(pid);
+    }
+}
+
+/// Remove `pid` from the process registry without awaiting, so a later
+/// shutdown never signals a pid that may have been reused.
+fn forget_registration(pid: u32) {
+    let registry = process_registry::global_registry();
+    if registry.try_unregister(pid) {
+        return;
+    }
+    if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+        runtime.spawn(async move { registry.unregister(pid).await });
+    }
+}
+
 /// Ensure no lingering descendants in the child's process group remain alive
 /// after the lead process has exited.
 async fn reap_process_group(child_pid: Option<u32>) {
@@ -438,13 +508,23 @@ fn setup_process_group(cmd: &mut Command, options: &ProcessOptions) {
     let close_extra_fds = options.isolate_stdio_and_fds;
     #[expect(
         unsafe_code,
-        reason = "Required for POSIX process group and FD hygiene"
+        reason = "Required for POSIX process group, parent-death signal and FD hygiene"
     )]
     // SAFETY: the child-side pre-exec closure only calls async-signal-safe
-    // `setpgid`, `close_range`, and `fcntl`.
+    // `setpgid`, `prctl`, `close_range`, and `fcntl`.
     unsafe {
         cmd.pre_exec(move || {
             libc::setpgid(0, 0);
+            // Die with cuenv, as services do: a task nobody supervises any
+            // more must not keep writing into the workspace after a
+            // `kill -9`, an OOM kill or a hard-stopped CI job (issue 458).
+            // A strict sandbox may run this hook in a namespace process
+            // below the one cuenv spawned; the signal then follows that
+            // process, which the sandbox tethers to cuenv itself.
+            #[cfg(target_os = "linux")]
+            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
             if close_extra_fds {
                 mark_non_stdio_fds_close_on_exec()?;
             }
@@ -487,4 +567,70 @@ fn mark_non_stdio_fds_close_on_exec() -> std::io::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    fn options(capture_output: OutputCapture) -> ProcessOptions {
+        ProcessOptions {
+            capture_output,
+            timeout: None,
+            isolate_stdio_and_fds: true,
+            launcher_stdin: None,
+            launcher_exchange: None,
+        }
+    }
+
+    /// A task that, left alone, writes `survived` after a while, from the
+    /// shell and from a background descendant.
+    fn slow_writer(directory: &std::path::Path) -> Command {
+        let mut command = Command::new("sh");
+        command
+            .args([
+                "-c",
+                "(sleep 0.5; touch descendant-survived) & sleep 0.5; touch survived; wait",
+            ])
+            .current_dir(directory);
+        command
+    }
+
+    #[tokio::test]
+    async fn an_abandoned_task_stops_with_its_descendants()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        for capture in [OutputCapture::Capture, OutputCapture::Stream] {
+            let directory = tempfile::TempDir::new()?;
+            let running =
+                run_task_process("abandoned", slow_writer(directory.path()), options(capture));
+            // Fail-fast abandons a sibling the same way: its future is dropped.
+            assert!(
+                tokio::time::timeout(Duration::from_millis(150), running)
+                    .await
+                    .is_err()
+            );
+            tokio::time::sleep(Duration::from_millis(900)).await;
+            assert!(!directory.path().join("survived").exists(), "{capture:?}");
+            assert!(
+                !directory.path().join("descendant-survived").exists(),
+                "{capture:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_finished_task_is_not_signalled_again()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::TempDir::new()?;
+        let attempt = run_task_process(
+            "finished",
+            slow_writer(directory.path()),
+            options(OutputCapture::Capture),
+        )
+        .await?;
+        assert!(matches!(attempt, TaskAttempt::Completed(ref result) if result.success));
+        assert!(directory.path().join("survived").exists());
+        Ok(())
+    }
 }

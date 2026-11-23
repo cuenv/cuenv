@@ -177,7 +177,7 @@ where
                 let prepared = match prepare_node(node, &outcomes_by_name) {
                     Ok(p) => p,
                     Err(err) => {
-                        join_set.abort_all();
+                        cancel(&mut join_set).await;
                         return Err(err);
                     }
                 };
@@ -206,16 +206,16 @@ where
                     outcomes_by_name.insert(name.clone(), outcome.clone());
                     outcomes.push((name, outcome));
                     if !(success || policy.continue_on_error || continue_on_error) {
-                        join_set.abort_all();
+                        cancel(&mut join_set).await;
                         break 'outer;
                     }
                 }
                 Ok(Err(err)) => {
-                    join_set.abort_all();
+                    cancel(&mut join_set).await;
                     return Err(err);
                 }
                 Err(join_err) => {
-                    join_set.abort_all();
+                    cancel(&mut join_set).await;
                     return Err(from_join_error(join_err));
                 }
             }
@@ -241,6 +241,17 @@ pub fn passthrough_prepare<T, O, E>(
     _outcomes: &HashMap<String, O>,
 ) -> Result<GraphNode<T>, E> {
     Ok(node)
+}
+
+/// Abort every running node and wait until each one has stopped.
+///
+/// Aborting only requests cancellation; a node's future, and the guard that
+/// kills its task's process group, is dropped later. Waiting here means a
+/// failed walk returns only after its siblings' processes are gone, so
+/// nothing keeps running once the failure is reported (issue 458).
+async fn cancel<T: 'static>(join_set: &mut JoinSet<T>) {
+    join_set.abort_all();
+    while join_set.join_next().await.is_some() {}
 }
 
 #[cfg(test)]
