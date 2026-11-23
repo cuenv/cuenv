@@ -1525,6 +1525,7 @@ async fn state_remove_and_recover_work_from_a_moved_directory() {
                     resource: &saved,
                     expected: RecordVersion::of(Some(pet)),
                 },
+                None,
             )
             .unwrap();
 
@@ -1637,6 +1638,7 @@ async fn state_recover_records_and_deletes_unrecorded_files() {
                 resource: &managed("random_pet.pet"),
                 expected: RecordVersion::Absent,
             },
+            None,
         )
         .unwrap();
 
@@ -1677,6 +1679,7 @@ async fn state_recover_refuses_to_overwrite_a_newer_record_unless_forced() {
                 resource: &managed("random_pet.pet"),
                 expected: RecordVersion::Absent,
             },
+            None,
         )
         .unwrap();
     // Another run recorded the resource since the change was saved.
@@ -1729,6 +1732,7 @@ async fn an_unusable_unrecorded_file_names_the_file_not_the_state_store() {
                 resource: &managed("random_pet.pet"),
                 expected: RecordVersion::Absent,
             },
+            None,
         )
         .unwrap();
     let file = unrecorded.list(&harness.tenant).unwrap()[0].file.clone();
@@ -2977,8 +2981,8 @@ async fn recover_refuses_an_unreadable_sibling_before_writing_current_state() {
         resource: &resource,
         expected: RecordVersion::Absent,
     };
-    let own_file = unrecorded.save(&harness.tenant, &put).unwrap();
-    let dev_file = unrecorded.save(&dev, &put).unwrap();
+    let own_file = unrecorded.save(&harness.tenant, &put, None).unwrap();
+    let dev_file = unrecorded.save(&dev, &put, None).unwrap();
     let dev_directory = dev_file.parent().unwrap().to_path_buf();
     std::fs::remove_file(dev_file).unwrap();
     std::fs::remove_dir(&dev_directory).unwrap();
@@ -3511,6 +3515,7 @@ async fn recovering_without_env_mentions_pending_changes_of_declared_environment
                 resource: &managed("random_pet.pet"),
                 expected: RecordVersion::Absent,
             },
+            None,
         )
         .unwrap();
     let siblings = Siblings {

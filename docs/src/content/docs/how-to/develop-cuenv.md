@@ -117,7 +117,7 @@ cargo test -p cuenv-core
 
 ## Formal specs (Quint)
 
-`specs/quint` holds [Quint](https://quint-lang.org) models of two protocols
+`specs/quint` holds [Quint](https://quint-lang.org) models of protocols
 whose bugs only show up under concurrency, lost responses and partial
 failures:
 
@@ -125,6 +125,10 @@ failures:
   compare-and-swap writes
   (`crates/infrastructure/src/state/object/store/object_state_store.rs`), and
   the CLI's release retry (`crates/cuenv/src/commands/infrastructure/lock.rs`).
+- `infrastructure_changes.qnt`: provider changes whose outcome the state may
+  not learn: in-flight markers, unrecorded-change files and `state recover`
+  (`crates/infrastructure/src/engine/infrastructure_engine.rs`,
+  `crates/infrastructure/src/unrecorded.rs`).
 - `task_cache.qnt`: the layered task cache, local and remote CAS and action
   cache (`crates/cas`, `crates/cas-remote`, `crates/task-exec/src/cache.rs`).
 

@@ -175,6 +175,7 @@ async fn rename_refuses_pending_or_unreadable_recovery_files_before_state_mutati
                     resource: &super::managed("random_pet.pet"),
                     expected: cuenv_infrastructure::RecordVersion::Absent,
                 },
+                None,
             )
             .unwrap();
         let before_keys = server.keys("state");
@@ -336,6 +337,7 @@ async fn restore_writes_a_snapshot_back_and_refuses_pending_changes() {
                 resource: &current[0],
                 expected: cuenv_infrastructure::RecordVersion::of(Some(&current[0])),
             },
+            None,
         )
         .unwrap();
     let error = harness.run(restore(Some(first))).await.unwrap_err();

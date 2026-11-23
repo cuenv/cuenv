@@ -2057,7 +2057,11 @@ async fn recreate_over_an_existing_row_recovers_after_a_lost_write_response() {
         .put_if_unchanged(&tenant(), &lock, &put)
         .await
         .unwrap();
-    let saved = engine.save_unrecorded(&put, &InfrastructureError::state("write response lost"));
+    let saved = engine.save_unrecorded(
+        &put,
+        &lock,
+        &InfrastructureError::state("write response lost"),
+    );
     assert!(matches!(
         saved,
         InfrastructureError::UnrecordedChange { .. }
@@ -3414,6 +3418,7 @@ async fn planning_refuses_while_unrecorded_changes_are_pending() {
                 resource: &record("random_pet", "pet", &[]),
                 expected: RecordVersion::Absent,
             },
+            None,
         )
         .unwrap();
     let error = engine.plan(PlanMode::Apply).await.unwrap_err();
@@ -3551,7 +3556,7 @@ fn unrecorded_changes_are_saved_and_never_leak_state_into_errors() {
         resource: &resource_record,
         expected: replaced,
     };
-    let saved = engine.save_unrecorded(&pending_write, &cause);
+    let saved = engine.save_unrecorded(&pending_write, &StateLock::generate(), &cause);
     let message = saved.to_string();
     assert!(
         matches!(saved, InfrastructureError::UnrecordedChange { .. }),
@@ -3572,7 +3577,7 @@ fn unrecorded_changes_are_saved_and_never_leak_state_into_errors() {
     std::fs::write(blocked.path().join("unrecorded"), b"not a directory").unwrap();
     let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
     let engine = self::engine(store, blocked.path());
-    let lost = engine.save_unrecorded(&pending_write, &cause);
+    let lost = engine.save_unrecorded(&pending_write, &StateLock::generate(), &cause);
     let message = lost.to_string();
     assert!(
         matches!(lost, InfrastructureError::UnrecordedChangeLost { .. }),
