@@ -251,6 +251,13 @@ CI note: `schema.#GitHubConfig.trustedPublishing` supports `cratesIo` and
 and generated workflow action; it requires `id-token: write` and is intended
 for production release pipelines.
 
+CI note: `checks.quint` builds the flake check `cuenv-quint-specs` (Linux),
+which model-checks the Quint specs in `specs/quint` with TLC: the object-store
+state lock, compare-and-swap writes and the CLI's release retry, and the
+layered task cache (CAS and action cache, local and remote). `specs/quint` is
+listed under `specTrees` in `nix/source-files.json`, so it is a flake input
+outside the Rust fileset. No schema or CLI support status changes.
+
 Build-only note: the root flake, which also builds Cuetty and the release
 tools, pins Rust `1.100.0` with a matching `rust-overlay` lock, and the
 workspace MSRV (`rust-version`) is `1.100`. This compiler update changes no

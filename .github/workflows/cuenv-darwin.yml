@@ -53,6 +53,7 @@ on:
     - schema/**
     - schema/*.cue
     - schema/codegen/*.cue
+    - specs/quint/**
     - tools/function-enum/Cargo.lock
     - tools/function-enum/Cargo.lock/**
     - tools/function-enum/Cargo.toml
