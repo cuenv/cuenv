@@ -7,6 +7,7 @@ every reachable state of each model's finite instance.
 | Spec | Code it models | Checked in CI |
 | --- | --- | --- |
 | `object_state_cas.qnt` | object-store state backend: lock, conditional PUTs, retries (`crates/infrastructure/src/state/object/store/object_state_store.rs`), and the CLI's release retry (`crates/cuenv/src/commands/infrastructure/lock.rs`) | `safety`, `unlockReportsTruth` |
+| `hook_runs.qnt` | hook runs in one directory across processes: reservation, worker, hook child, cancellation, publish and operator recovery, with processes dying between any two file writes (`crates/hooks/src/state/coordinator.rs`, `crates/cuenv/src/hook_supervisor.rs`) | `safety` |
 | `infrastructure_changes.qnt` | provider changes the state may not learn: in-flight markers, unrecorded-change files and `state recover` (`crates/infrastructure/src/engine/infrastructure_engine.rs`, `crates/infrastructure/src/unrecorded.rs`, `crates/infrastructure/src/in_flight.rs`) | `safety` |
 | `state_migration.qnt` | `state migrate` forward, rollback and copy-back: source fence, target commit receipt, rollback lock and tombstone, manifest (`crates/cuenv/src/commands/infrastructure/migrate.rs`, `crates/infrastructure/src/state/object/store/legacy_migration.rs`) | `safety` |
 | `sql_state_store.qnt` | SQL state backends (Turso, D1): lock row, writes fenced by the lock and serial, retried statements (`crates/infrastructure/src/state/sql/implementation.rs`), and the CLI's release retry | `safety`, `unlockReportsTruth` |
@@ -35,6 +36,10 @@ they are meant to. In `object_state_cas.qnt`,
 `RELEASE = "trusting"` restores the CLI that reported a lock gone on a retried
 release as "no longer held", and `READBACK_WRITER = false` confirms a
 timed-out release without its writer nonce; both fail `unlockReportsTruth`.
+In `hook_runs.qnt`, spawning a hook before the reservation says a child is
+starting, starting a run while another reserves the directory, finishing a
+run before its child is reaped, and publishing after a cancellation was
+accepted each fail `safety`.
 In `infrastructure_changes.qnt`, writing the marker after the provider call,
 not writing it, plans that ignore it, recovery that clears the marker first,
 and recovery that clears another run's marker each fail `safety`.

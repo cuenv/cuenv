@@ -125,6 +125,9 @@ failures:
   compare-and-swap writes
   (`crates/infrastructure/src/state/object/store/object_state_store.rs`), and
   the CLI's release retry (`crates/cuenv/src/commands/infrastructure/lock.rs`).
+- `hook_runs.qnt`: hook runs in one directory across processes: reservation,
+  worker, hook child, cancellation, publish and operator recovery
+  (`crates/hooks/src/state/coordinator.rs`, `crates/cuenv/src/hook_supervisor.rs`).
 - `infrastructure_changes.qnt`: provider changes whose outcome the state may
   not learn: in-flight markers, unrecorded-change files and `state recover`
   (`crates/infrastructure/src/engine/infrastructure_engine.rs`,
