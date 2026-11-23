@@ -363,10 +363,21 @@ pub async fn build_action_with_sandbox(
         );
         return Ok(skipped(CacheSkipReason::NoResolvedInputs, Some(execution)));
     }
-    if !task.env.is_empty() {
+    // The executor resolves a task's own `env` into `environment` before the
+    // key is built, so the key covers the values the process receives
+    // (secrets as salted fingerprints). A caller that did not, or a host
+    // passthrough the host does not set, leaves a name the key cannot see:
+    // skip rather than key on a fraction of the environment.
+    let unresolved = task
+        .env
+        .keys()
+        .filter(|name| !environment.contains(name))
+        .count();
+    if unresolved > 0 {
         tracing::debug!(
             task = %task_name,
-            "skipping cache: task defines task-level environment entries resolved at execution time"
+            unresolved,
+            "skipping cache: task-level environment entries were not resolved into the action environment"
         );
         return Ok(skipped(CacheSkipReason::RuntimeEnv, Some(execution)));
     }

@@ -193,8 +193,12 @@ tasks: publish: schema.#Task & {
 }
 ```
 
-Task-level environment entries are resolved at execution time. Tasks that define task-local `env`
-entries are therefore excluded from task-result caching.
+Task-level environment entries are resolved before the task's cache key is
+built, so a task with task-local `env` is cached and keyed on the values its
+process receives: literals and host passthroughs as they resolve, output
+references as their upstream produced them, and secrets (or values built
+around one) as salted fingerprints, which need `CUENV_SECRET_SALT`. A host
+passthrough the host does not set leaves the task uncached.
 ### #When and #TaskFilter
 
 `contexts.<name>` is a filter: `#When` over the facts of one invocation, or

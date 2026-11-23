@@ -972,8 +972,8 @@ tasks: {
 #### When isolation cannot be constructed
 
 Result-cache eligibility and sandboxing are separate. Cache skip reasons such
-as an empty input set, `cache: mode: "never"`, task-local runtime environment,
-or `CUENV_CACHE=off` still retain the resolved input snapshot and run in a
+as an empty input set, `cache: mode: "never"`, an unset host passthrough in
+task-local `env`, or `CUENV_CACHE=off` still retain the resolved input snapshot and run in a
 directory sandbox. If an input declaration cannot be resolved safely, the
 task errors rather than silently running against the live checkout.
 

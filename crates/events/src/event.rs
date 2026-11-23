@@ -294,7 +294,7 @@ pub enum CacheSkipReason {
     NonPathRef,
     /// Inputs hashed to zero files after resolution.
     NoResolvedInputs,
-    /// Task carries task-level env vars resolved at execution time.
+    /// Task-level env vars were not resolved into the action environment.
     RuntimeEnv,
     /// Cache was explicitly disabled for this task.
     Disabled {

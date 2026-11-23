@@ -348,6 +348,9 @@ impl TaskExecutor {
         let effective_sandbox = sandbox_resolution.effective;
         let task_environment =
             Self::finalize_task_environment(base_environment, task, &effective_sandbox)?;
+        // Resolve the task's own `env` before the action key is built, so the
+        // key and the process see the same values.
+        let task_environment = Self::apply_task_env(name, task, task_environment).await?;
 
         // Input resolution and directory isolation remain available when
         // result caching is disabled. A sandbox-only config supplies the
@@ -636,6 +639,51 @@ impl TaskExecutor {
         };
         let mut environment = selected.unwrap_or_else(|| self.config.environment.clone());
         environment.withhold(self.config.environment.withheld_names().iter().cloned());
+        Ok(environment)
+    }
+
+    /// Layer a task's own `env` over its environment.
+    ///
+    /// A value that carries a resolved secret is stored with
+    /// [`Environment::set_secret`], so the action key holds a salted
+    /// fingerprint instead of the credential. A value built around a secret
+    /// (`"Bearer ${token}"`) counts as one too.
+    async fn apply_task_env(
+        name: &str,
+        task: &Task,
+        mut environment: Environment,
+    ) -> Result<Environment> {
+        if task.env.is_empty() {
+            return Ok(environment);
+        }
+        // A policy on one of them names the task as its own project does.
+        let own_name = ExternalTaskName::parse(name).map_or(name, |external| external.task);
+        let (task_env, secrets) = super::env::resolve_task_env_withheld(
+            own_name,
+            &task.env,
+            environment.withheld_names(),
+        )
+        .await?;
+        let carries_secret = |value: &str| {
+            secrets
+                .iter()
+                .any(|secret| !secret.is_empty() && value.contains(secret.as_str()))
+        };
+        let resolved: Vec<(String, String, bool)> = task_env
+            .into_iter()
+            .map(|(key, value)| {
+                let secret = carries_secret(&value);
+                (key, value, secret)
+            })
+            .collect();
+        for (key, value, secret) in resolved {
+            if secret {
+                environment.set_secret(key, value);
+            } else {
+                environment.set(key, value);
+            }
+        }
+        cuenv_events::register_secrets(secrets);
         Ok(environment)
     }
 
@@ -1022,18 +1070,15 @@ impl TaskExecutor {
             }
         }
 
-        // Apply task-level env vars, including secrets resolved at execution time.
-        // A policy on one of them names the task as its own project does.
-        let own_name = ExternalTaskName::parse(name).map_or(name, |external| external.task);
-        let (task_env, secrets) = super::env::resolve_task_env_withheld(
-            own_name,
-            &task.env,
-            environment.withheld_names(),
-        )
-        .await?;
-        cuenv_events::register_secrets(secrets);
-        for (key, value) in task_env {
-            cmd.env(key, value);
+        // Task-level env vars are already in `environment` (see
+        // `apply_task_env`); one that names HOME or TMPDIR keeps its value
+        // over the private strict-sandbox directories, as it always has.
+        for key in ["HOME", "TMPDIR"] {
+            if task.env.contains_key(key)
+                && let Some(value) = environment.get(key)
+            {
+                cmd.env(key, value);
+            }
         }
         cmd.env_remove("CUENV_HOOK_SESSION");
 
