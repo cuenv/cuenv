@@ -1,6 +1,7 @@
 //! SQLite state-store implementation shared by the SQL transports.
 
 use std::future::Future;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -1083,13 +1084,50 @@ impl<T: SqlTransport> SqlStateStore<T> {
         tenant: &TenantKey,
         lock: &StateLock,
     ) -> Result<bool> {
-        self.execute(Statement::new(
+        self.delete_lock(Statement::new(
             "DELETE FROM cuenv_infrastructure_locks \
              WHERE module_path = ? AND project = ? AND environment = ? AND lock_identifier = ?",
             lock_arguments(tenant, lock),
         ))
         .await
-        .map(|deleted| deleted.affected_row_count > 0)
+    }
+
+    /// Run a DELETE of one lock row: whether it removed the row.
+    ///
+    /// An attempt that fails in transit may still have committed. A retry
+    /// of it then deletes nothing, and "nothing to delete" would claim the
+    /// lock was already gone when this call removed it. So a DELETE that
+    /// removes nothing after a transient failure is an error, never
+    /// `Ok(false)`. A busy database ran nothing, so retries after
+    /// [`FailureKind::Busy`] keep their answer. Checked by
+    /// `specs/quint/sql_state_store.qnt` (`unlockReportsTruth`).
+    async fn delete_lock(&self, statement: Statement) -> Result<bool> {
+        let failed_in_transit = AtomicBool::new(false);
+        let statements = [statement];
+        let (failed_in_transit, statements) = (&failed_in_transit, &statements);
+        let deleted = self
+            .retrying(|| async move {
+                let outcome = self.transport.execute_once(statements).await;
+                if matches!(&outcome, Err(failure) if failure.kind == FailureKind::Transient) {
+                    failed_in_transit.store(true, Ordering::Relaxed);
+                }
+                outcome
+            })
+            .await
+            .map_err(|failure| self.error(&failure))?;
+        let removed = deleted
+            .first()
+            .ok_or_else(|| InfrastructureError::state(format!("{} returned no result", T::NAME)))?
+            .affected_row_count
+            > 0;
+        if !removed && failed_in_transit.load(Ordering::Relaxed) {
+            return Err(InfrastructureError::state(format!(
+                "the {} lock release could not be confirmed: an attempt failed in transit and \
+                 may have released the lock before a retry found it gone",
+                T::NAME
+            )));
+        }
+        Ok(removed)
     }
 
     pub(in crate::state) async fn current_lock(
@@ -1198,15 +1236,13 @@ impl<T: SqlTransport> SqlStateStore<T> {
         }
         let mut arguments = tenant_arguments(tenant);
         arguments.push(SqlValue::text(lock_identifier));
-        let released = self
-            .execute(Statement::new(
-                "DELETE FROM cuenv_infrastructure_locks \
-                 WHERE module_path = ? AND project = ? AND environment = ? \
-                 AND lock_identifier = ?",
-                arguments,
-            ))
-            .await?;
-        Ok(released.affected_row_count > 0)
+        self.delete_lock(Statement::new(
+            "DELETE FROM cuenv_infrastructure_locks \
+             WHERE module_path = ? AND project = ? AND environment = ? \
+             AND lock_identifier = ?",
+            arguments,
+        ))
+        .await
     }
 
     pub(in crate::state) async fn last_writer(

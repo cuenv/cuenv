@@ -1187,6 +1187,7 @@ async fn fresh_database_reads_and_newer_schema_against_a_server() {
     );
 
     crate::state::sql::tests::stale_first_migrator(&store.inner).await;
+    crate::state::sql::tests::lost_lock_release_response(&store.inner).await;
     let lock = store.lock(&tenant(), "test").await.unwrap();
     store.unlock(&tenant(), &lock).await.unwrap();
 

@@ -9,6 +9,7 @@ every reachable state of each model's finite instance.
 | `object_state_cas.qnt` | object-store state backend: lock, conditional PUTs, retries (`crates/infrastructure/src/state/object/store/object_state_store.rs`), and the CLI's release retry (`crates/cuenv/src/commands/infrastructure/lock.rs`) | `safety`, `unlockReportsTruth` |
 | `infrastructure_changes.qnt` | provider changes the state may not learn: in-flight markers, unrecorded-change files and `state recover` (`crates/infrastructure/src/engine/infrastructure_engine.rs`, `crates/infrastructure/src/unrecorded.rs`, `crates/infrastructure/src/in_flight.rs`) | `safety` |
 | `state_migration.qnt` | `state migrate` forward, rollback and copy-back: source fence, target commit receipt, rollback lock and tombstone, manifest (`crates/cuenv/src/commands/infrastructure/migrate.rs`, `crates/infrastructure/src/state/object/store/legacy_migration.rs`) | `safety` |
+| `sql_state_store.qnt` | SQL state backends (Turso, D1): lock row, writes fenced by the lock and serial, retried statements (`crates/infrastructure/src/state/sql/implementation.rs`), and the CLI's release retry | `safety`, `unlockReportsTruth` |
 | `task_cache.qnt` | layered task cache: local and remote CAS and action cache (`crates/cas`, `crates/cas-remote`, `crates/task-exec/src/cache.rs`) | `safety`, `fixes` |
 
 Run what CI runs (the `cuenv-quint-specs` flake check, about a minute):
@@ -40,6 +41,9 @@ and recovery that clears another run's marker each fail `safety`.
 In `state_migration.qnt`, a rollback that ignores writes made since the
 commit, one that does not tombstone the target, and a forward that reads the
 source before fencing it each fail `safety`.
+In `sql_state_store.qnt`, writes without the lock guard or without the
+expected serial fail `safety`, and treating a retried lock DELETE that
+removes nothing as "already gone" fails `unlockReportsTruth`.
 In `task_cache.qnt`, each switch turns off one integrity mechanism of the
 cache and fails `safety` or `fixes`.
 

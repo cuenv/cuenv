@@ -132,6 +132,9 @@ failures:
 - `state_migration.qnt`: `state migrate` forward, rollback and copy-back
   (`crates/cuenv/src/commands/infrastructure/migrate.rs`,
   `crates/infrastructure/src/state/object/store/legacy_migration.rs`).
+- `sql_state_store.qnt`: the SQL state backends (Turso, D1): lock row,
+  fenced writes, retried statements and the CLI's release retry
+  (`crates/infrastructure/src/state/sql/implementation.rs`).
 - `task_cache.qnt`: the layered task cache, local and remote CAS and action
   cache (`crates/cas`, `crates/cas-remote`, `crates/task-exec/src/cache.rs`).
 
