@@ -1,5 +1,7 @@
 /// Build container images defined in CUE configuration.
 pub mod build;
+/// Cache diagnostics and maintenance commands.
+pub mod cache;
 /// Interactive changeset picker for selecting changes to include.
 pub mod changeset_picker;
 /// CI pipeline integration and generation commands.

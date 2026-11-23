@@ -802,6 +802,26 @@ fn action_environment_includes_declared_passthrough() {
 }
 
 #[test]
+fn withheld_credentials_are_absent_from_passthrough_and_action_keys() {
+    let key = "CUENV_TEST_WITHHELD_CACHE_TOKEN".to_string();
+    temp_env::with_var(&key, Some("test-credential"), || {
+        let mut environment = Environment::new();
+        environment.set_secret(key.clone(), "declared-credential".to_string());
+        environment.withhold([key.clone()]);
+        let passthrough = std::slice::from_ref(&key);
+
+        assert!(!ready(&environment, passthrough, None).contains_key(&key));
+        assert!(
+            !environment
+                .execution_environment(passthrough)
+                .contains_key(&key)
+        );
+        assert!(!environment.merge_with_system().contains_key(&key));
+        assert!(!environment.secret_names().contains(&key));
+    });
+}
+
+#[test]
 fn action_environment_skips_passthrough_names_unset_on_the_host() {
     let env = Environment::new();
 

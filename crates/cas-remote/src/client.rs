@@ -2,16 +2,19 @@
 
 use crate::config::{Credentials, RemoteConfig};
 use crate::error::{Error, Result};
+use crate::retry::{CircuitBreaker, RetryRunner};
 use bazel_remote_apis::build::bazel::remote::execution::v2 as pb;
 use bazel_remote_apis::build::bazel::remote::execution::v2::capabilities_client::CapabilitiesClient;
+use std::sync::Arc;
 use tonic::metadata::{MetadataKey, MetadataValue};
-use tonic::transport::{Channel, ClientTlsConfig};
+use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity};
 
 /// A connected REAPI channel plus the settings every request needs.
 #[derive(Clone, Debug)]
 pub struct RemoteClient {
     channel: Channel,
     config: RemoteConfig,
+    circuit_breaker: Arc<CircuitBreaker>,
 }
 
 impl RemoteClient {
@@ -22,18 +25,36 @@ impl RemoteClient {
     /// Returns an error if the endpoint is malformed or the connection
     /// cannot be established.
     pub async fn connect(config: RemoteConfig) -> Result<Self> {
+        config.tls.validate()?;
         let uri = config.uri()?;
         let mut endpoint = Channel::builder(uri).timeout(config.timeout);
         if config.is_tls()? {
+            let mut tls = ClientTlsConfig::new().with_enabled_roots();
+            if let Some(ca_pem) = &config.tls.ca_cert_pem {
+                tls = tls.ca_certificate(Certificate::from_pem(ca_pem));
+            }
+            if let (Some(cert_pem), Some(key_pem)) =
+                (&config.tls.client_cert_pem, &config.tls.client_key_pem)
+            {
+                tls = tls.identity(Identity::from_pem(cert_pem, key_pem));
+            }
             endpoint = endpoint
-                .tls_config(ClientTlsConfig::new().with_enabled_roots())
+                .tls_config(tls)
                 .map_err(|e| Error::connect(&config.endpoint, e.to_string()))?;
+        } else if !config.tls.is_empty() {
+            return Err(Error::config(
+                "TLS certificates configured for a non-TLS remote cache endpoint; use grpcs:// or https://",
+            ));
         }
         let channel = endpoint
             .connect()
             .await
             .map_err(|e| Error::connect(&config.endpoint, e.to_string()))?;
-        Ok(Self { channel, config })
+        Ok(Self {
+            channel,
+            config,
+            circuit_breaker: Arc::new(CircuitBreaker::default()),
+        })
     }
 
     /// Build a client around an already-connected channel.
@@ -42,7 +63,11 @@ impl RemoteClient {
     /// manage the channel themselves.
     #[must_use]
     pub fn from_channel(channel: Channel, config: RemoteConfig) -> Self {
-        Self { channel, config }
+        Self {
+            channel,
+            config,
+            circuit_breaker: Arc::new(CircuitBreaker::default()),
+        }
     }
 
     /// The underlying channel.
@@ -55,6 +80,15 @@ impl RemoteClient {
     #[must_use]
     pub fn config(&self) -> &RemoteConfig {
         &self.config
+    }
+
+    /// Retry runner backed by this client's retry policy and circuit breaker.
+    #[must_use]
+    pub fn retry_runner(&self) -> RetryRunner<'_> {
+        RetryRunner {
+            policy: self.config.retry,
+            breaker: &self.circuit_breaker,
+        }
     }
 
     /// The REAPI instance name to put on every request.
@@ -89,36 +123,113 @@ impl RemoteClient {
     /// ASCII, which gRPC metadata requires.
     pub fn request<T>(&self, message: T) -> Result<tonic::Request<T>> {
         let mut request = tonic::Request::new(message);
-        let (name, value) = match &self.config.credentials {
+        match &self.config.credentials {
             Credentials::None => return Ok(request),
-            Credentials::Bearer(token) => ("authorization", format!("Bearer {token}")),
-            Credentials::Header { name, value } => (name.as_str(), value.clone()),
-        };
-
-        let key: MetadataKey<tonic::metadata::Ascii> = name
-            .parse()
-            .map_err(|_| Error::config(format!("invalid credential header name '{name}'")))?;
-
-        // tonic will happily put non-ASCII bytes on the wire — HTTP/2 permits
-        // them — and the server then rejects the request with an opaque
-        // authentication failure. Catching it here names the real problem.
-        // The value is a secret, so no error message quotes it.
-        if !is_valid_header_value(&value) {
-            return Err(Error::config(format!(
-                "credential value for header '{name}' contains characters that are not \
-                 printable ASCII; check for a stray newline or a smart quote in the token"
-            )));
+            Credentials::Bearer(token) => {
+                insert_grpc_header(&mut request, "authorization", &format!("Bearer {token}"))?;
+            }
+            Credentials::Header { name, value } => {
+                insert_grpc_header(&mut request, name, value)?;
+            }
+            Credentials::Headers(headers) => {
+                for (name, value) in headers {
+                    insert_grpc_header(&mut request, name, value)?;
+                }
+            }
+            Credentials::Dynamic(provider) => {
+                for (name, value) in provider.headers()? {
+                    insert_grpc_header(&mut request, &name, &value)?;
+                }
+            }
         }
-
-        let value: MetadataValue<tonic::metadata::Ascii> = value.parse().map_err(|_| {
-            Error::config(format!(
-                "credential value for header '{name}' is not a valid header value"
-            ))
-        })?;
-        request.metadata_mut().insert(key, value);
         Ok(request)
     }
+}
 
+fn insert_grpc_header<T>(request: &mut tonic::Request<T>, name: &str, value: &str) -> Result<()> {
+    // HTTP/2 and gRPC metadata keys must be lowercase ASCII; credential
+    // helpers frequently return capitalized names like `Authorization`.
+    let normalized = name.to_ascii_lowercase();
+    let key: MetadataKey<tonic::metadata::Ascii> = normalized
+        .parse()
+        .map_err(|_| Error::config(format!("invalid credential header name '{name}'")))?;
+
+    // tonic will happily put non-ASCII bytes on the wire — HTTP/2 permits
+    // them — and the server then rejects the request with an opaque
+    // authentication failure. Catching it here names the real problem.
+    // The value is a secret, so no error message quotes it.
+    if !is_valid_header_value(value) {
+        return Err(Error::config(format!(
+            "credential value for header '{name}' contains characters that are not \
+             printable ASCII; check for a stray newline or a smart quote in the token"
+        )));
+    }
+
+    let value: MetadataValue<tonic::metadata::Ascii> = value.parse().map_err(|_| {
+        Error::config(format!(
+            "credential value for header '{name}' is not a valid header value"
+        ))
+    })?;
+    request.metadata_mut().append(key, value);
+    Ok(())
+}
+
+/// Compression algorithms supported by cuenv's REAPI v2.1 client.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Compressor {
+    /// Uncompressed payloads (`IDENTITY`).
+    Identity,
+    /// Zstandard compression (`ZSTD`).
+    Zstd,
+}
+
+/// Capabilities negotiated from the REAPI server's `GetCapabilities` response.
+///
+/// ByteStream, `BatchUpdateBlobs`, and `BatchReadBlobs` compression support are
+/// tracked separately because REAPI v2.1 servers frequently advertise different
+/// subsets for streaming vs batched RPCs.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ServerCapabilities {
+    /// Maximum total bytes in a single `BatchUpdateBlobs`/`BatchReadBlobs` RPC.
+    pub max_batch_total_size_bytes: Option<i64>,
+    /// Compressors accepted by `ByteStream.Read` and `ByteStream.Write`.
+    pub bytestream_compressors: Vec<Compressor>,
+    /// Compressors accepted by `ContentAddressableStorage.BatchUpdateBlobs`.
+    pub batch_update_compressors: Vec<Compressor>,
+    /// Compressors accepted by `ContentAddressableStorage.BatchReadBlobs`.
+    pub batch_read_compressors: Vec<Compressor>,
+}
+
+impl ServerCapabilities {
+    /// Whether the server advertises Zstandard for `ByteStream` transfers.
+    #[must_use]
+    pub fn supports_bytestream_zstd(&self) -> bool {
+        self.bytestream_compressors.contains(&Compressor::Zstd)
+    }
+
+    /// Whether the server advertises Zstandard for `BatchUpdateBlobs`.
+    #[must_use]
+    pub fn supports_batch_update_zstd(&self) -> bool {
+        self.batch_update_compressors.contains(&Compressor::Zstd)
+    }
+
+    /// Whether the server advertises Zstandard for `BatchReadBlobs`.
+    #[must_use]
+    pub fn supports_batch_read_zstd(&self) -> bool {
+        self.batch_read_compressors.contains(&Compressor::Zstd)
+    }
+}
+
+fn parse_compressors(raw: &[i32]) -> Vec<Compressor> {
+    let zstd = i32::from(pb::compressor::Value::Zstd);
+    let mut result = vec![Compressor::Identity];
+    if raw.contains(&zstd) {
+        result.push(Compressor::Zstd);
+    }
+    result
+}
+
+impl RemoteClient {
     /// Ask the server what it supports, and refuse it if cuenv cannot use it.
     ///
     /// cuenv digests with SHA-256 and nothing else, so a server that does not
@@ -126,13 +237,10 @@ impl RemoteClient {
     /// handshake makes that a configuration error instead of a permanent
     /// mystery miss.
     ///
-    /// Returns the server's maximum batch payload size, or `None` when it
-    /// does not advertise one.
-    ///
     /// # Errors
     ///
     /// Returns an error if the RPC fails or the server is incompatible.
-    pub async fn check_capabilities(&self) -> Result<Option<i64>> {
+    pub async fn capabilities(&self) -> Result<ServerCapabilities> {
         let mut client = CapabilitiesClient::new(self.channel());
         let request = self.request(pb::GetCapabilitiesRequest {
             instance_name: self.instance_name(),
@@ -158,7 +266,29 @@ impl RemoteClient {
             )));
         }
 
-        Ok(Some(cache.max_batch_total_size_bytes).filter(|size| *size > 0))
+        let bytestream_compressors = parse_compressors(&cache.supported_compressors);
+        let batch_update_compressors = parse_compressors(&cache.supported_batch_update_compressors);
+        // REAPI v2.1 uses `supported_compressors` for both ByteStream and
+        // `BatchReadBlobs.acceptable_compressors`.
+        let batch_read_compressors = parse_compressors(&cache.supported_compressors);
+
+        Ok(ServerCapabilities {
+            max_batch_total_size_bytes: Some(cache.max_batch_total_size_bytes)
+                .filter(|size| *size > 0),
+            bytestream_compressors,
+            batch_update_compressors,
+            batch_read_compressors,
+        })
+    }
+
+    /// Ask the server what it supports, returning its maximum batch payload
+    /// size, or `None` when it does not advertise one.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the RPC fails or the server is incompatible.
+    pub async fn check_capabilities(&self) -> Result<Option<i64>> {
+        Ok(self.capabilities().await?.max_batch_total_size_bytes)
     }
 }
 
@@ -166,7 +296,7 @@ impl RemoteClient {
 ///
 /// Horizontal tab is permitted by the HTTP grammar but has no business in a
 /// credential, so it is excluded too.
-fn is_valid_header_value(value: &str) -> bool {
+pub(crate) fn is_valid_header_value(value: &str) -> bool {
     !value.is_empty() && value.bytes().all(|byte| (0x20..=0x7e).contains(&byte))
 }
 
@@ -203,6 +333,25 @@ mod tests {
         ));
         let request = client.request(()).unwrap();
         assert_eq!(request.metadata().get("x-api-key").unwrap(), "tok");
+    }
+
+    #[tokio::test]
+    async fn multi_header_credentials_normalize_names_and_send_all_headers() {
+        let client = client(RemoteConfig::new("grpc://x:1").with_credentials(
+            Credentials::Headers(vec![
+                ("Authorization".into(), "Bearer nsc-tok".into()),
+                ("x-nsc-ingress-auth".into(), "Bearer nsc-tok".into()),
+            ]),
+        ));
+        let request = client.request(()).unwrap();
+        assert_eq!(
+            request.metadata().get("authorization").unwrap(),
+            "Bearer nsc-tok"
+        );
+        assert_eq!(
+            request.metadata().get("x-nsc-ingress-auth").unwrap(),
+            "Bearer nsc-tok"
+        );
     }
 
     #[tokio::test]

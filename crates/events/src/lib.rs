@@ -58,7 +58,7 @@ pub use bus::{
 };
 pub use console::{eprint_redacted, eprintln_redacted, print_redacted, println_redacted};
 pub use event::{
-    CacheSkipReason, CiEvent, CommandEvent, CuenvEvent, EventCategory, EventSource,
+    CacheEvent, CacheSkipReason, CiEvent, CommandEvent, CuenvEvent, EventCategory, EventSource,
     InteractiveEvent, OutputEvent, RestartReason, ServiceEvent, SkipReason, Stream, SystemEvent,
     TaskEvent, TaskKind,
 };

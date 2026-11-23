@@ -120,7 +120,52 @@ impl CliRenderer {
                 Self::render_interactive(interactive_event);
             }
             EventCategory::System(system_event) => self.render_system(system_event),
+            EventCategory::Cache(cache_event) => self.render_cache(cache_event),
             EventCategory::Output(output_event) => Self::render_output(output_event),
+        }
+    }
+
+    fn render_cache(&self, event: &crate::event::CacheEvent) {
+        match event {
+            crate::event::CacheEvent::RemoteConnected {
+                endpoint,
+                protocol,
+                upload_enabled,
+                ..
+            } => {
+                if self.config.verbose {
+                    let mode = if *upload_enabled {
+                        "read-write"
+                    } else {
+                        "read-only"
+                    };
+                    stderr_line(format_args!(
+                        "Remote cache connected: {endpoint} ({protocol}, {mode})"
+                    ));
+                }
+            }
+            crate::event::CacheEvent::RemoteDegraded { endpoint, reason } => {
+                stderr_line(format_args!(
+                    "Remote cache degraded ({endpoint}): {reason}; continuing locally"
+                ));
+            }
+            crate::event::CacheEvent::RemoteUploadSkipped { task, reason } => {
+                if self.config.verbose {
+                    stderr_line(format_args!(
+                        "Remote cache upload skipped for {task}: {reason}"
+                    ));
+                }
+            }
+            crate::event::CacheEvent::RemoteUploaded { task, digest } => {
+                if self.config.verbose {
+                    stderr_line(format_args!("Remote cache uploaded {task} ({digest})"));
+                }
+            }
+            crate::event::CacheEvent::RemoteUploadFailed { task, error } => {
+                stderr_line(format_args!(
+                    "Remote cache upload failed for {task}: {error}"
+                ));
+            }
         }
     }
 }

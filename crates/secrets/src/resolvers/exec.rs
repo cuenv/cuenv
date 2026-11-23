@@ -1,10 +1,10 @@
 //! Command execution secret resolver
 
-use crate::{SecretError, SecretResolver, SecretSpec};
+use crate::{ResolveSecret, SecretError, SecretResolver, SecretSpec};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use tokio::process::Command;
 
 /// Configuration for exec-based secret resolution
@@ -38,13 +38,15 @@ impl ExecSecretResolver {
 
     /// Execute a command and return its output
     async fn execute_command(
-        &self,
-        name: &str,
-        command: &str,
-        args: &[String],
+        request: ResolveSecret<'_>,
+        config: &ExecSecretConfig,
     ) -> Result<String, SecretError> {
-        let output = Command::new(command)
-            .args(args)
+        let name = request.name;
+        let command = &config.command;
+        let mut process = Command::new(command);
+        process.args(&config.args);
+        request.withhold_from(&mut process);
+        let output = process
             .output()
             .await
             .map_err(|e| SecretError::ResolutionFailed {
@@ -83,16 +85,27 @@ impl SecretResolver for ExecSecretResolver {
     }
 
     async fn resolve(&self, name: &str, spec: &SecretSpec) -> Result<String, SecretError> {
-        // Try to parse source as JSON ExecSecretConfig
-        if let Ok(config) = serde_json::from_str::<ExecSecretConfig>(&spec.source) {
-            return self
-                .execute_command(name, &config.command, &config.args)
-                .await;
-        }
+        self.resolve_with_options(ResolveSecret {
+            name,
+            spec,
+            withheld_env: &BTreeSet::new(),
+        })
+        .await
+    }
 
-        // Fallback: treat source as a simple command (shell expansion)
-        self.execute_command(name, "sh", &["-c".to_string(), spec.source.clone()])
-            .await
+    async fn resolve_with_options(
+        &self,
+        request: ResolveSecret<'_>,
+    ) -> Result<String, SecretError> {
+        let config = serde_json::from_str(&request.spec.source).unwrap_or_else(|_| {
+            // A plain source string is a command interpreted by the shell.
+            ExecSecretConfig {
+                command: "sh".to_owned(),
+                args: vec!["-c".to_owned(), request.spec.source.clone()],
+                extra: HashMap::new(),
+            }
+        });
+        Self::execute_command(request, &config).await
     }
 }
 

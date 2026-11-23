@@ -1,5 +1,7 @@
 use super::graph_walk::WalkOutcome;
 
+pub use cuenv_cas::CacheSource;
+
 /// Task execution result
 #[derive(Debug, Clone)]
 pub struct TaskResult {
@@ -13,6 +15,10 @@ pub struct TaskResult {
     pub stderr: String,
     /// Whether the task completed successfully
     pub success: bool,
+    /// Whether this result was restored from the action cache instead of running
+    pub from_cache: bool,
+    /// Cache tier that supplied the result when `from_cache` is `true`
+    pub cache_source: Option<CacheSource>,
 }
 
 impl WalkOutcome for TaskResult {

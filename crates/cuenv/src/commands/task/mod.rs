@@ -1,13 +1,13 @@
 //! Task execution command implementation
 
 mod arguments;
-mod cache;
+pub(crate) use cuenv_task_exec::cache_setup as cache;
 mod dag_export;
 mod discovery;
 mod execution;
 pub mod list_builder;
 pub(crate) mod projects;
-mod remote_cache;
+pub(crate) use cuenv_task_exec::remote_cache;
 mod rendering;
 mod runner;
 mod types;

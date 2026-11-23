@@ -121,6 +121,10 @@ pub enum Command {
         continue_on_error: bool,
         /// Dry run mode: export DAG without executing.
         dry_run: DryRun,
+        /// Only run tasks affected by changed files.
+        affected: bool,
+        /// Base git ref for affected-task comparison (implies --affected).
+        from: Option<String>,
         /// Additional arguments to pass to the task.
         task_args: Vec<String>,
     },
@@ -386,5 +390,74 @@ pub enum Command {
         path: String,
         /// What to do.
         action: infrastructure::ProviderAction,
+    },
+    /// Show local and remote cache status.
+    CacheStatus {
+        /// Path to the CUE module or project directory.
+        path: String,
+        /// CUE package name to evaluate.
+        package: String,
+        /// Output format (`text` or `json`).
+        format: String,
+    },
+    /// Show local cache entry counts and disk usage.
+    CacheStats {
+        /// Path to the CUE module or project directory.
+        path: String,
+        /// Output format (`text` or `json`).
+        format: String,
+    },
+    /// Verify integrity of the local cache, optionally repairing corrupt entries.
+    CacheVerify {
+        /// Path to the CUE module or project directory.
+        path: String,
+        /// Remove corrupt blobs and invalid/dangling action entries.
+        repair: bool,
+        /// Output format (`text` or `json`).
+        format: String,
+    },
+    /// Garbage-collect aged or excess local cache entries and unreferenced blobs.
+    CacheGc {
+        /// Path to the CUE module or project directory.
+        path: String,
+        /// CUE package containing the cache configuration.
+        package: String,
+        /// Optional target maximum cache size string (e.g. `2G`).
+        max_size: Option<String>,
+        /// Optional maximum entry age string (e.g. `7d`).
+        max_age: Option<String>,
+        /// Preview deletions without removing files.
+        dry_run: bool,
+        /// Output format (`text` or `json`).
+        format: String,
+    },
+    /// Remove unreferenced CAS blobs and stale temp directories.
+    CachePrune {
+        /// Path to the CUE module or project directory.
+        path: String,
+        /// Preview deletions without removing files.
+        dry_run: bool,
+        /// Output format (`text` or `json`).
+        format: String,
+    },
+    /// Inspect a cached action's command, environment, platform, and input tree.
+    CacheInspect {
+        /// Action digest (`<sha256>` or `<sha256>/<size>`).
+        digest: String,
+        /// Path to the CUE module or project directory.
+        path: String,
+        /// Output format (`text` or `json`).
+        format: String,
+    },
+    /// Diff two cached action digests to explain cache misses.
+    CacheDiff {
+        /// Baseline action digest (`<sha256>` or `<sha256>/<size>`).
+        left: String,
+        /// Target action digest (`<sha256>` or `<sha256>/<size>`).
+        right: String,
+        /// Path to the CUE module or project directory.
+        path: String,
+        /// Output format (`text` or `json`).
+        format: String,
     },
 }

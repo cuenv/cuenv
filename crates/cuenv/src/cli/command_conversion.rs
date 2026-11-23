@@ -1,6 +1,6 @@
 use super::{
-    ChangesetCommands, Commands, EnvCommands, InfrastructureCommands, OciCommands, ReleaseCommands,
-    RuntimeCommands, SecretsCommands, ShellCommands, SyncCommands, ToolsCommands,
+    CacheCommands, ChangesetCommands, Commands, EnvCommands, InfrastructureCommands, OciCommands,
+    ReleaseCommands, RuntimeCommands, SecretsCommands, ShellCommands, SyncCommands, ToolsCommands,
 };
 use crate::commands::Command;
 use crate::commands::sync::{FormatMode, SyncMode, SyncScope};
@@ -30,7 +30,8 @@ impl Commands {
             | Self::Secrets { .. }
             | Self::Infrastructure { .. }
             | Self::Runtime { .. }
-            | Self::Tools { .. }) => command.into_nested_command(environment),
+            | Self::Tools { .. }
+            | Self::Cache { .. }) => command.into_nested_command(environment),
             command @ (Self::Build { .. }
             | Self::Up { .. }
             | Self::Down { .. }
@@ -123,6 +124,8 @@ impl Commands {
                 skip_dependencies,
                 continue_on_error,
                 dry_run,
+                affected,
+                from,
                 task_args,
             } => Command::Task {
                 path,
@@ -141,6 +144,8 @@ impl Commands {
                 } else {
                     cuenv_core::DryRun::No
                 },
+                affected,
+                from,
                 task_args,
             },
             _ => unreachable!("task command conversion called for another command family"),
@@ -178,6 +183,77 @@ impl Commands {
             Self::Infrastructure { subcommand } => infrastructure_command(subcommand, environment),
             Self::Runtime { subcommand } => runtime_command(subcommand),
             Self::Tools { subcommand } => tools_command(&subcommand),
+            Self::Cache { subcommand } => match subcommand {
+                CacheCommands::Status {
+                    path,
+                    package,
+                    output_format,
+                } => Command::CacheStatus {
+                    path,
+                    package,
+                    format: output_format.to_string(),
+                },
+                CacheCommands::Stats {
+                    path,
+                    output_format,
+                } => Command::CacheStats {
+                    path,
+                    format: output_format.to_string(),
+                },
+                CacheCommands::Verify {
+                    path,
+                    repair,
+                    output_format,
+                } => Command::CacheVerify {
+                    path,
+                    repair,
+                    format: output_format.to_string(),
+                },
+                CacheCommands::Gc {
+                    path,
+                    package,
+                    max_size,
+                    max_age,
+                    dry_run,
+                    output_format,
+                } => Command::CacheGc {
+                    path,
+                    package,
+                    max_size,
+                    max_age,
+                    dry_run,
+                    format: output_format.to_string(),
+                },
+                CacheCommands::Prune {
+                    path,
+                    dry_run,
+                    output_format,
+                } => Command::CachePrune {
+                    path,
+                    dry_run,
+                    format: output_format.to_string(),
+                },
+                CacheCommands::Inspect {
+                    digest,
+                    path,
+                    output_format,
+                } => Command::CacheInspect {
+                    digest,
+                    path,
+                    format: output_format.to_string(),
+                },
+                CacheCommands::Diff {
+                    left,
+                    right,
+                    path,
+                    output_format,
+                } => Command::CacheDiff {
+                    left,
+                    right,
+                    path,
+                    format: output_format.to_string(),
+                },
+            },
             _ => unreachable!("nested command conversion called for another command family"),
         }
     }

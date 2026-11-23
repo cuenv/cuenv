@@ -10,8 +10,8 @@
 use std::borrow::Cow;
 
 use crate::event::{
-    CacheSkipReason, CiEvent, CommandEvent, EventCategory, InteractiveEvent, OutputEvent,
-    ServiceEvent, SkipReason, SystemEvent, TaskEvent,
+    CacheEvent, CacheSkipReason, CiEvent, CommandEvent, EventCategory, InteractiveEvent,
+    OutputEvent, ServiceEvent, SkipReason, SystemEvent, TaskEvent,
 };
 use crate::redaction;
 
@@ -44,7 +44,41 @@ impl EventCategory {
             Self::Command(event) => event.redact_in_place(),
             Self::Interactive(event) => event.redact_in_place(),
             Self::System(event) => event.redact_in_place(),
+            Self::Cache(event) => event.redact_in_place(),
             Self::Output(event) => event.redact_in_place(),
+        }
+    }
+}
+
+impl CacheEvent {
+    fn redact_in_place(&mut self) {
+        match self {
+            Self::RemoteConnected {
+                endpoint,
+                protocol,
+                instance,
+                ..
+            } => {
+                scrub(endpoint);
+                scrub(protocol);
+                scrub(instance);
+            }
+            Self::RemoteDegraded { endpoint, reason } => {
+                scrub(endpoint);
+                scrub(reason);
+            }
+            Self::RemoteUploadSkipped { task, reason } => {
+                scrub(task);
+                scrub(reason);
+            }
+            Self::RemoteUploaded { task, digest } => {
+                scrub(task);
+                scrub(digest);
+            }
+            Self::RemoteUploadFailed { task, error } => {
+                scrub(task);
+                scrub(error);
+            }
         }
     }
 }

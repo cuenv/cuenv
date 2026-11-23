@@ -5,8 +5,7 @@
 //! infrastructure schema must keep rejecting mistakes (misspelled fields,
 //! undeclared references, an invalid state URL) when a project embeds
 //! `schema.#Project` at file level (the common way to write `env.cue`).
-//! The semantic checks use `error()`, which needs CUE language v0.14 in the
-//! module that holds the schema; the copy of `cue.mod` made here has it.
+//! Copied schemas use the repository's CUE module language version.
 //!
 //! Each test copies the CUE files it needs into a temporary module instead
 //! of evaluating the checkout in place. The checkout's `target/` directory

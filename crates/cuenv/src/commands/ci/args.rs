@@ -55,6 +55,10 @@ pub struct CiArgs {
     /// Name of the CUE package to evaluate.
     #[arg(long, default_value = "cuenv", value_name = "PACKAGE")]
     pub package: String,
+
+    /// Deterministic task shard in `<INDEX>/<TOTAL>` format (1-indexed, e.g. `1/4`).
+    #[arg(long, value_name = "INDEX/TOTAL", conflicts_with = "export")]
+    pub shard: Option<cuenv_ci::executor::ShardSpec>,
 }
 
 impl CiArgs {
@@ -154,6 +158,7 @@ mod tests {
             environment: None,
             path: ".".to_string(),
             package: "cuenv".to_string(),
+            shard: None,
         };
         assert_eq!(args.pipeline_name(), "default");
     }
@@ -171,6 +176,7 @@ mod tests {
             environment: None,
             path: ".".to_string(),
             package: "cuenv".to_string(),
+            shard: None,
         };
         assert_eq!(args.pipeline_name(), "release");
     }
@@ -188,6 +194,7 @@ mod tests {
             environment: None,
             path: ".".to_string(),
             package: "cuenv".to_string(),
+            shard: None,
         };
         // Should return num_cpus, which is at least 1
         assert!(args.effective_jobs() >= 1);
@@ -206,6 +213,7 @@ mod tests {
             environment: None,
             path: ".".to_string(),
             package: "cuenv".to_string(),
+            shard: None,
         };
         assert_eq!(args.effective_jobs(), 8);
     }

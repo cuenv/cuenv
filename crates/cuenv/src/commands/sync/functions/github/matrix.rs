@@ -37,7 +37,6 @@ pub(super) fn emit_matrix_workflow(
     pipeline_name: &str,
     ctx: &PipelineContext,
 ) -> Result<Vec<(String, String)>> {
-    use cuenv_github::workflow::GitHubActionsEmitter;
     use cuenv_github::workflow::schema::{Concurrency, Workflow};
 
     let workflow_name = match &ctx.project_name {
@@ -46,7 +45,7 @@ pub(super) fn emit_matrix_workflow(
     };
 
     let ir = ctx.to_ir(pipeline_name);
-    let emitter = GitHubActionsEmitter::from_config(&ctx.github_config).with_nix();
+    let emitter = ctx.github_emitter();
     let cuenv_setup = implementation::pipeline_cuenv_setup(ctx, &emitter, &ir);
 
     let explicit_task_names: HashSet<String> = ctx
@@ -166,6 +165,7 @@ fn build_pipeline_jobs(request: &PipelineJobsRequest<'_>) -> BuiltPipelineJobs {
                             .github_permissions
                             .clone_from(&original.github_permissions);
                         synthetic_task.deployment = original.deployment;
+                        synthetic_task.manual_approval = original.manual_approval;
                         synthetic_task.outputs.clone_from(&original.outputs);
                     }
                     let job = request.emitter.build_artifact_aggregation_job(

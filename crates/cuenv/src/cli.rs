@@ -13,9 +13,10 @@ pub use error::{
 };
 pub use output::{ErrorEnvelope, OkEnvelope, OutputFormat};
 pub use subcommands::{
-    ChangesetCommands, EnvCommands, InfrastructureCommands, InfrastructureProviderCommands,
-    InfrastructureStateCommands, OciCommands, ReleaseCommands, RuntimeCommands, SecretsCommands,
-    SecretsProvider, ShellCommands, ShellType, StatusFormat, SyncCommands, ToolsCommands,
+    CacheCommands, ChangesetCommands, EnvCommands, InfrastructureCommands,
+    InfrastructureProviderCommands, InfrastructureStateCommands, OciCommands, ReleaseCommands,
+    RuntimeCommands, SecretsCommands, SecretsProvider, ShellCommands, ShellType, StatusFormat,
+    SyncCommands, ToolsCommands,
 };
 
 pub use application::{Cli, generate_completions, parse, try_complete};

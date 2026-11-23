@@ -1,6 +1,6 @@
 //! Task execution orchestration.
 
-use super::super::cache::TaskCacheContext;
+use super::super::cache::{CacheRemote, TaskCacheContext};
 use super::super::{dag_export, projects};
 
 use super::super::runner::StrategyInput;
@@ -18,7 +18,7 @@ use cuenv_task_exec::{
     ExecutorConfig, ProjectExecution, TaskEnvironments, TaskExecutor, TaskGraph, TaskScope,
 };
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -98,7 +98,14 @@ pub(in crate::commands::task) async fn execute_task_impl(
     if let Some(output) = help::maybe_render_task_help(&input, &context)? {
         return Ok(output);
     }
-    let resolution = selection::resolve_task_selection(&input, &context, &normalized_labels)?;
+    let Some(resolution) =
+        selection::resolve_task_selection(&input, &context, &normalized_labels).await?
+    else {
+        if input.dry_run.is_dry_run() {
+            return export_task_graph(&TaskGraph::new());
+        }
+        return Ok("No affected tasks to run".to_string());
+    };
 
     let task_graph = build_execution_graph(&input, &resolution)?;
 
@@ -160,17 +167,36 @@ async fn prepare_task_runtime(
     resolution: &TaskResolution,
 ) -> Result<PreparedTaskRuntime> {
     let requested = resolution.display_name.as_str();
+    let withheld_env: BTreeSet<String> = std::iter::once(&context.manifest)
+        .chain(
+            resolution
+                .scope
+                .external_projects()
+                .map(|(_, project)| project.manifest.as_ref()),
+        )
+        .flat_map(|project| {
+            super::super::remote_cache::credential_variables(project.cache.as_ref())
+        })
+        .map(str::to_owned)
+        .collect();
+    cuenv_events::register_secrets(
+        withheld_env
+            .iter()
+            .filter_map(|name| std::env::var(name).ok()),
+    );
     let own = ProjectTaskEnvironments::prepare(ProjectEnvironmentSpec {
         manifest: &context.manifest,
         project_root: &context.project_root,
         environment: input.environment,
+        withheld_env: &withheld_env,
     })
     .await?;
     let requested_env = match &resolution.node {
         TaskNode::Task(task) => own.task_env(requested, task)?,
         _ => own.group_env(requested)?,
     };
-    let env = own.environment(requested_env.as_ref()).await?;
+    let mut env = own.environment(requested_env.as_ref()).await?;
+    env.withhold(withheld_env.iter().cloned());
 
     let environments = RunTaskEnvironments::new(RunEnvironments {
         own,
@@ -212,7 +238,7 @@ async fn task_cache_for_context(context: &TaskExecutionContext) -> Option<TaskCa
             hasher_root: &hasher_root,
             runtime_identity,
         },
-        context.manifest.cache.as_ref(),
+        CacheRemote::Configured(context.manifest.cache.as_ref()),
     )
     .await
 }
@@ -226,7 +252,7 @@ fn external_project_executions(
     scope
         .external_projects()
         .map(|(key, project)| {
-            let cache = cache.map(|cache| {
+            let cache = cache.and_then(|cache| {
                 let identity = super::super::cache::resolve_runtime_cache_identity(
                     &project.module_root,
                     &project.root,
@@ -235,7 +261,7 @@ fn external_project_executions(
                 if let Some(reason) = &identity.cache_disabled_reason {
                     tracing::warn!(project = key, reason, "task cache disabled for a project");
                 }
-                super::super::cache::with_runtime_identity(cache, identity)
+                super::super::cache::local_dependency_cache(cache, identity)
             });
             (
                 key.to_string(),
@@ -243,6 +269,7 @@ fn external_project_executions(
                     project_root: project.root.clone(),
                     cue_module_root: Some(project.module_root.clone()),
                     cache,
+                    cache_policy: cuenv_task_exec::ExternalCachePolicy::LocalOnly,
                 },
             )
         })

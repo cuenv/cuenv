@@ -1,6 +1,6 @@
 //! Task environment precedence helpers for CI execution.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Apply task-level environment variables to the merged task environment.
 ///
@@ -10,16 +10,21 @@ use std::collections::BTreeMap;
 pub(super) fn apply_task_env(
     env: &mut BTreeMap<String, String>,
     task_env: &BTreeMap<String, String>,
+    withheld_env: &BTreeSet<String>,
 ) {
     for (key, value) in task_env {
         if let Some(host_var) = cuenv_core::tasks::output_refs::parse_passthrough(value) {
-            match std::env::var(host_var) {
-                Ok(host_value) => {
-                    env.insert(key.clone(), host_value);
-                }
-                Err(_) => {
-                    env.remove(key);
-                }
+            let withheld = if cfg!(windows) {
+                withheld_env
+                    .iter()
+                    .any(|name| name.eq_ignore_ascii_case(host_var))
+            } else {
+                withheld_env.contains(host_var)
+            };
+            if !withheld && let Ok(host_value) = std::env::var(host_var) {
+                env.insert(key.clone(), host_value);
+            } else {
+                env.remove(key);
             }
         } else if !value.starts_with("cuenv:ref:") {
             env.insert(key.clone(), value.clone());
@@ -48,7 +53,7 @@ pub(super) fn resolve_environment(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
 
     #[test]
     fn task_env_passthrough_reads_host_environment() {
@@ -59,7 +64,7 @@ mod tests {
                 "cuenv:passthrough:CUENV_TEST_GITHUB_ACTOR".to_string(),
             )]);
 
-            super::apply_task_env(&mut env, &task_env);
+            super::apply_task_env(&mut env, &task_env, &BTreeSet::new());
 
             assert_eq!(env.get("GITHUB_ACTOR"), Some(&"octocat".to_string()));
         });
@@ -74,7 +79,7 @@ mod tests {
                 "cuenv:passthrough:CUENV_TEST_MISSING_ACTOR".to_string(),
             )]);
 
-            super::apply_task_env(&mut env, &task_env);
+            super::apply_task_env(&mut env, &task_env, &BTreeSet::new());
 
             assert!(!env.contains_key("GITHUB_ACTOR"));
         });
@@ -85,7 +90,7 @@ mod tests {
         let mut env = BTreeMap::from([("GITHUB_REF_NAME".to_string(), "main".to_string())]);
         let task_env = BTreeMap::from([("GITHUB_REF_NAME".to_string(), "release".to_string())]);
 
-        super::apply_task_env(&mut env, &task_env);
+        super::apply_task_env(&mut env, &task_env, &BTreeSet::new());
 
         assert_eq!(env.get("GITHUB_REF_NAME"), Some(&"release".to_string()));
     }

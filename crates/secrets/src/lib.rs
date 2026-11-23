@@ -56,4 +56,4 @@ pub use resolvers::{EnvSecretResolver, ExecSecretResolver};
 
 mod resolver;
 
-pub use resolver::{SecretError, SecretResolver, SecretSpec};
+pub use resolver::{ResolveSecret, SecretError, SecretResolver, SecretSpec, is_withheld_env};

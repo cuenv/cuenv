@@ -18,16 +18,15 @@ Schema project/base regression tests should build temporary local modules from t
 
 Plain `cue export` must work on every project, example and accept fixture. A regular field of the schema never holds a constraint or any other non-concrete value: express a match as data (see `#When` and `#TaskFilter` in `schema/context.cue`) or put what is not data in a definition or hidden field. Never relax `ci.schema-compat` to accept something `cue export` rejects.
 
-The supported floor is CUE v0.18 and language `v0.18.0` (`AGENTS.md`). Do not add workarounds, fixtures or compat-matrix entries for anything older. The rules below that exist only for older releases stay until the compat matrix, the bridge and the module language version are migrated; remove them with that migration.
+Use CUE v0.18 or later with module language `v0.18.0` or later. The compatibility check evaluates examples and fixtures with stock CUE v0.18 at language `v0.18.0`.
 
-Schema authoring rules, enforced by `cuenv task ci.schema-compat` across CUE v0.15.1 (the Nix dev shell), v0.16.1, v0.17.1 and v0.18.0-rc.1:
-
-- Do not wrap definitions in `close({...})`. Definitions are already closed, and `close()` with an embedded definition breaks file-level embedding on CUE v0.17+.
-- Reference a definition from `#Base`/`#Project` fields inside a struct literal (`config?: {#Config}`), and wrap each definition in a disjunction the same way. A bare reference is left open when a consumer embeds `schema.#Project` at file level before language `v0.18.0`.
-- Exception: keep `tasks`, `services` and `images` entries as direct references (`#Task`, `#Service`, `#ContainerImage`). The CUE fork shares typed `dependsOn` references only for directly referenced definitions; wrapping them makes deep dependency chains exponential (`deep_depends_on_chain_evaluates_in_linear_time` in `schema_project_base_tests.rs` catches it). Examples should write entries as `schema.#Task & {...}`.
-- Use `{...}` instead of `_` for free-form object fields; CUE v0.17 closes `_` under file-level embedding.
-- Add a `tests/schema-compat/testdata/reject/<name>/env.cue` fixture when a change adds a closedness guarantee.
-- For behaviour that spans directories (bases, imports between projects, file references), add a whole consumer module under `tests/schema-compat/testdata/modules/<name>/` (or `modules-reject/<name>/`, with `// want:` in the directory that must fail). Each module fixture has its own `cue.mod/module.cue` (`module: "example.com/consumer"`), so its imports are never packages of the cuenv module: without it, a release's `cue mod publish` fails as untidy, which `ci.schema-compat` checks. Module fixtures run at language `v0.18.0` only, import each other as `example.com/consumer/<dir>:cuenv`, and write a base as `schema.#Base...`: an embedded `schema.#Base` closes the package at v0.18.0 and rejects every child's `name`.
+- Keep `schema.#Project` and `rules.#DirectoryRules` closed when embedding them in a file. When upgrading old projects, review the explicit-opening rewrites from `cue mod upgrade` so they do not open these definitions.
+- Write a shared base as `schema.#Base...` so descendant projects can declare their own fields. In schema definitions, use a spread when a definition adds fields to an embedded definition.
+- Use postfix aliases for fields and patterns, for example `tasks~(ProjectTasks):` and `[string]~(label,_):`.
+- Keep `tasks`, `services` and `images` entries as direct references. The CUE fork uses them to share typed references in `dependsOn` and pipeline task lists.
+- Use `{...}` for arbitrary objects where extra fields are part of the contract.
+- Add a `tests/schema-compat/testdata/reject/<name>/env.cue` fixture when a change adds a validation guarantee.
+- For behavior spanning directories, add a consumer module under `tests/schema-compat/testdata/modules/<name>/` or `modules-reject/<name>/`. Give each module its own `cue.mod/module.cue` using `module: "example.com/consumer"` so its imports do not become part of the published cuenv module. In a rejected directory, include a `// want:` line naming the diagnostic.
 
 Use `cuenv task ci.schema-docs-check` after changing schema, docs, examples, prompts, or skills.
 

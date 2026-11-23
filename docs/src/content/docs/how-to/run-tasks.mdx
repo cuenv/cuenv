@@ -203,6 +203,25 @@ cuenv task -l ci
 cuenv task -l test -l unit
 ```
 
+### Affected-task runs with `--affected` and `--from`
+
+Run only the tasks whose declared `inputs` (or transitive dependencies, or CUE configuration) are affected by changed files — using the same fail-closed engine as `cuenv ci`:
+
+```bash
+# Run all tasks affected by uncommitted changes vs HEAD
+cuenv task --affected
+
+# Run all tasks affected since a git ref (merge-base with HEAD + uncommitted changes)
+cuenv task --from origin/main
+
+# Combine with labels, a specific task, or --dry-run
+cuenv task -l test --affected --from origin/main
+cuenv task build --affected
+cuenv task --affected --dry-run
+```
+
+Tasks without declared `inputs` are always treated as affected so nothing is silently skipped.
+
 ### Resilient runs with `--continue-on-error`
 
 By default, the first failure aborts the run. `--continue-on-error` keeps unrelated siblings going and marks anything downstream of the failure as skipped:
@@ -325,7 +344,7 @@ and materialized results.
 A path in `inputs` starts from one of three places, and the input says which:
 
 ```cue
-// app/env.cue — any language version
+// app/env.cue
 package cuenv
 
 import (
@@ -445,10 +464,8 @@ Re-labelling another project's task (`tasks: articles: content.tasks.articles`)
 conflicts on the stamp; put reusable task bodies in a definition of a package
 that is not a project.
 
-At language version `v0.18.0` a base is written `schema.#Base...`: embedding
-`schema.#Base` there closes the package and rejects every child's `name`. Below
-`v0.18.0` that spelling does not parse and plain `schema.#Base` works as
-before; a base that embeds no schema works at every version.
+Write a shared base as `schema.#Base...` so child projects can declare their
+own fields, including `name`.
 
 ### Tasks of another project
 

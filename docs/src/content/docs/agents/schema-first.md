@@ -19,6 +19,8 @@ allowances.
 
 ## Do not generate stale examples
 
+- Use CUE v0.18 or later and set the module language to `v0.18.0` or later. Embed `schema.#Project` for projects and `schema.#Base...` for shared bases.
+
 - Use `schema.#ExecSecret` for custom command secrets, not `schema.#Secret & { command: ... }`.
 - Use `schema.#AwsSecret` for AWS Secrets Manager and `schema.#GcpSecret` for Google Cloud Secret Manager. Use `schema.#VaultSecret` only with a status note that its runtime resolver is not registered by default.
 - Use `cuenv env print --output json`, not `--output-format`.
