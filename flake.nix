@@ -629,6 +629,8 @@
             --invariants safety
           quint verify state_migration.qnt --backend=tlc --tlc-config=tlc.json \
             --invariants safety
+          quint verify sql_state_store.qnt --backend=tlc --tlc-config=tlc.json \
+            --invariants safety unlockReportsTruth
           touch $out
         '';
 
