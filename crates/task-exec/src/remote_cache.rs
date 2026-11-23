@@ -360,9 +360,24 @@ impl CredentialProvider for CachingCredentialHelperProvider {
     }
 }
 
+/// Normalize a remote cache endpoint URI for Bazel credential helpers.
+///
+/// Bazel rewrites gRPC schemes to their underlying HTTP/2 transport schemes
+/// (`grpcs://` -> `https://`, `grpc://` -> `http://`) before sending `uri` to
+/// a credential helper; helpers such as `bazel-credential-nsc` strictly require
+/// `https://`.
+fn normalize_credential_helper_uri(endpoint: &str) -> String {
+    let trimmed = endpoint.trim();
+    match trimmed.split_once("://") {
+        Some((scheme, rest)) if scheme.eq_ignore_ascii_case("grpcs") => format!("https://{rest}"),
+        Some((scheme, rest)) if scheme.eq_ignore_ascii_case("grpc") => format!("http://{rest}"),
+        _ => trimmed.to_string(),
+    }
+}
+
 /// Invoke a Bazel-compatible credential helper (`<helper> get`) with
-/// `{"uri": "<endpoint>"}` on stdin and parse `{"headers": {...}, "expires"?: "..."}`
-/// from stdout.
+/// `{"uri": "<normalized-endpoint>"}` on stdin and parse
+/// `{"headers": {...}, "expires"?: "..."}` from stdout.
 fn invoke_credential_helper(
     helper: &str,
     endpoint: &str,
@@ -372,7 +387,8 @@ fn invoke_credential_helper(
         return Err("credential helper path is empty".to_string());
     }
 
-    let request = serde_json::to_vec(&serde_json::json!({ "uri": endpoint.trim() }))
+    let uri = normalize_credential_helper_uri(endpoint);
+    let request = serde_json::to_vec(&serde_json::json!({ "uri": uri }))
         .map_err(|error| format!("serialize credential helper request: {error}"))?;
 
     let mut child = Command::new(helper)
@@ -1029,6 +1045,34 @@ mod tests {
         );
     }
 
+    #[test]
+    fn credential_helper_uri_normalizes_grpc_schemes_to_http_schemes() {
+        assert_eq!(
+            normalize_credential_helper_uri("grpcs://cache.namespace.so:443"),
+            "https://cache.namespace.so:443"
+        );
+        assert_eq!(
+            normalize_credential_helper_uri("grpc://localhost:8980"),
+            "http://localhost:8980"
+        );
+        assert_eq!(
+            normalize_credential_helper_uri("  GRPCS://cache.namespaced.app:443/prefix  "),
+            "https://cache.namespaced.app:443/prefix"
+        );
+        assert_eq!(
+            normalize_credential_helper_uri("GRPC://cache.internal:8980"),
+            "http://cache.internal:8980"
+        );
+        assert_eq!(
+            normalize_credential_helper_uri("https://cache.example.com/bazel"),
+            "https://cache.example.com/bazel"
+        );
+        assert_eq!(
+            normalize_credential_helper_uri("http://localhost:8080/bazel"),
+            "http://localhost:8080/bazel"
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn credential_helper_invokes_get_and_parses_multi_header_json() {
@@ -1042,7 +1086,7 @@ mod tests {
              if [ \"$1\" != \"get\" ]; then exit 2; fi\n\
              input=$(cat)\n\
              case \"$input\" in\n\
-               *'\"uri\":\"grpcs://cache.namespace.so:443\"'*) ;;\n\
+               *'\"uri\":\"https://cache.namespace.so:443\"'*) ;;\n\
                *) echo \"unexpected stdin: $input\" >&2; exit 3 ;;\n\
              esac\n\
              printf '{\"headers\":{\"Authorization\":[\"Bearer nsc-tok\"],\"x-nsc-ingress-auth\":[\"Bearer nsc-tok\"]}}\\n'\n",

@@ -479,16 +479,31 @@ fn path_to_cstring(path: &Path) -> Result<CString> {
     })
 }
 
+#[derive(Clone, Copy)]
+enum RootSwitch {
+    PivotWithChrootFallback,
+    #[cfg(test)]
+    ChrootOnly,
+}
+
 /// Async-signal-safe child-side namespace entry.
 ///
 /// Performs zero heap allocations, zero mutex acquisitions, and zero logging.
+fn enter_linux_sandbox(
+    plan: &LinuxSandboxPlan,
+    launcher_parent: libc::pid_t,
+) -> std::io::Result<()> {
+    enter_linux_sandbox_with_root_switch(plan, launcher_parent, RootSwitch::PivotWithChrootFallback)
+}
+
 #[expect(
     unsafe_code,
     reason = "Required for async-signal-safe Linux namespace setup"
 )]
-fn enter_linux_sandbox(
+fn enter_linux_sandbox_with_root_switch(
     plan: &LinuxSandboxPlan,
     launcher_parent: libc::pid_t,
+    root_switch: RootSwitch,
 ) -> std::io::Result<()> {
     // SAFETY: The child uses live plan-owned C strings and only Linux syscalls.
     unsafe {
@@ -537,21 +552,14 @@ fn enter_linux_sandbox(
             }
         }
 
-        if libc::syscall(
-            libc::SYS_pivot_root,
-            plan.new_root.as_ptr(),
-            plan.put_old.as_ptr(),
-        ) != 0
-        {
-            return Err(std::io::Error::last_os_error());
-        }
-
-        if libc::chdir(c"/".as_ptr()) != 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-
-        if libc::umount2(c"/.old_root".as_ptr(), libc::MNT_DETACH) != 0 {
-            return Err(std::io::Error::last_os_error());
+        match root_switch {
+            RootSwitch::PivotWithChrootFallback => {
+                switch_root(plan.new_root.as_ptr(), plan.put_old.as_ptr())?;
+            }
+            #[cfg(test)]
+            RootSwitch::ChrootOnly => {
+                switch_root_chroot(plan.new_root.as_ptr())?;
+            }
         }
 
         if libc::chdir(plan.workdir.as_ptr()) != 0 {
@@ -561,6 +569,68 @@ fn enter_linux_sandbox(
         supervisor::drop_setup_privileges()?;
         supervisor::run()
     }
+}
+
+#[expect(
+    unsafe_code,
+    reason = "Required to switch the sandbox root filesystem inside the mount namespace"
+)]
+unsafe fn switch_root(
+    new_root: *const libc::c_char,
+    put_old: *const libc::c_char,
+) -> std::io::Result<()> {
+    // SAFETY: Both C paths are NUL-terminated and live for the syscall.
+    // Runs in a single-threaded fork child after entering private user and
+    // mount namespaces and establishing all bind mounts under `new_root`.
+    unsafe {
+        if libc::syscall(libc::SYS_pivot_root, new_root, put_old) == 0 {
+            if libc::chdir(c"/".as_ptr()) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if libc::umount2(c"/.old_root".as_ptr(), libc::MNT_DETACH) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            return Ok(());
+        }
+
+        let pivot_err = std::io::Error::last_os_error();
+        if !matches!(
+            pivot_err.raw_os_error(),
+            Some(libc::EPERM | libc::ENOSYS | libc::EINVAL)
+        ) {
+            return Err(pivot_err);
+        }
+
+        switch_root_chroot(new_root)
+    }
+}
+
+/// Container-compatible root switch used when a container seccomp filter blocks
+/// `pivot_root` (`EPERM`/`ENOSYS`) or `/` is a non-pivotable initramfs (`EINVAL`).
+///
+/// Deliberately uses plain `chroot(new_root)` + `chdir("/")` without `MS_MOVE`:
+/// overmounting `/` would make `fs->root` equal the mount-namespace root, causing
+/// Linux's `current_chrooted()` check in `create_user_ns()` to return `false` and
+/// allowing a confined task to `unshare(CLONE_NEWUSER)` to regain `CAP_SYS_CHROOT`
+/// and escape into the overmounted host root. Keeping `fs->root != ns_root`
+/// ensures the kernel blocks nested `CLONE_NEWUSER` with `EPERM`, while
+/// `supervisor::drop_setup_privileges()` zeroes all capabilities, locks
+/// `SECBIT_NOROOT_LOCKED`, and sets `PR_SET_NO_NEW_PRIVS` and `PR_SET_DUMPABLE = 0`.
+#[expect(
+    unsafe_code,
+    reason = "Required to chroot into the prepared sandbox root when pivot_root is blocked"
+)]
+unsafe fn switch_root_chroot(new_root: *const libc::c_char) -> std::io::Result<()> {
+    // SAFETY: `new_root` is a NUL-terminated C string live for the syscall.
+    unsafe {
+        if libc::chroot(new_root) != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        if libc::chdir(c"/".as_ptr()) != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+    }
+    Ok(())
 }
 
 #[expect(
@@ -707,4 +777,230 @@ unsafe fn write_proc_file(path: *const libc::c_char, data: &[u8]) -> std::io::Re
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct TestSandboxDirs {
+        root: PathBuf,
+        work: PathBuf,
+        ro_source: PathBuf,
+        private_tmp: PathBuf,
+    }
+
+    fn test_plan(dirs: &TestSandboxDirs) -> std::io::Result<LinuxSandboxPlan> {
+        let sandbox_root = dirs.root.join("sandbox-root");
+        let put_old = sandbox_root.join(".old_root");
+        let ro_target = sandbox_root.join("ro");
+        let tmp_target = sandbox_root.join("tmp");
+        let workspace_target = sandbox_root.join("workspace");
+        for dir in [
+            &sandbox_root,
+            &put_old,
+            &ro_target,
+            &tmp_target,
+            &workspace_target,
+        ] {
+            std::fs::create_dir_all(dir)?;
+        }
+        let (uid_map, gid_map) = namespace_mappings();
+        let to_c = |path: &Path| {
+            CString::new(path.as_os_str().as_bytes())
+                .map_err(|_| std::io::Error::other("path contains interior NUL"))
+        };
+        Ok(LinuxSandboxPlan {
+            unshare_flags: libc::CLONE_NEWUSER
+                | libc::CLONE_NEWPID
+                | libc::CLONE_NEWNS
+                | libc::CLONE_NEWIPC
+                | libc::CLONE_NEWUTS
+                | libc::CLONE_NEWNET,
+            uid_map,
+            gid_map,
+            new_root: to_c(&sandbox_root)?,
+            put_old: to_c(&put_old)?,
+            workdir: CString::new("/workspace")
+                .map_err(|_| std::io::Error::other("invalid workdir"))?,
+            mounts: vec![
+                BindMount {
+                    source: to_c(&dirs.ro_source)?,
+                    target: to_c(&ro_target)?,
+                    read_only: true,
+                    image_identity: None,
+                },
+                BindMount {
+                    source: to_c(&dirs.private_tmp)?,
+                    target: to_c(&tmp_target)?,
+                    read_only: false,
+                    image_identity: None,
+                },
+                BindMount {
+                    source: to_c(&dirs.work)?,
+                    target: to_c(&workspace_target)?,
+                    read_only: false,
+                    image_identity: None,
+                },
+            ],
+        })
+    }
+
+    #[expect(
+        unsafe_code,
+        reason = "Verifies Linux chroot fallback confinement invariants inside a forked child"
+    )]
+    #[test]
+    fn chroot_fallback_confines_filesystem_and_blocks_nested_userns() -> std::io::Result<()> {
+        let tree = tempfile::tempdir()?;
+        let root = tree.path().canonicalize()?;
+        let dirs = TestSandboxDirs {
+            work: root.join("work"),
+            ro_source: root.join("ro-source"),
+            private_tmp: root.join("private-tmp"),
+            root,
+        };
+        let host_sentinel = dirs.root.join("host-sentinel.txt");
+        for dir in [&dirs.work, &dirs.ro_source, &dirs.private_tmp] {
+            std::fs::create_dir_all(dir)?;
+        }
+        std::fs::write(dirs.ro_source.join("readonly.txt"), b"immutable")?;
+        std::fs::write(&host_sentinel, b"host-secret")?;
+
+        let plan = test_plan(&dirs)?;
+        if let Err(reason) = probe_plan(&plan) {
+            if std::env::var_os("CUENV_REQUIRE_STRICT_TEST").is_some() {
+                return Err(std::io::Error::other(reason));
+            }
+            return Ok(());
+        }
+
+        let sentinel_c = CString::new(host_sentinel.as_os_str().as_bytes())
+            .map_err(|_| std::io::Error::other("sentinel path contains NUL"))?;
+        let launcher_parent = rustix::process::getpid().as_raw_pid();
+
+        // SAFETY: The child executes only async-signal-safe syscalls and exits
+        // with a status code identifying any failed confinement invariant.
+        let pid = unsafe { libc::fork() };
+        if pid < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        if pid == 0 {
+            // SAFETY: Single-threaded fork child using pre-allocated CStrings and stack state.
+            unsafe {
+                if enter_linux_sandbox_with_root_switch(
+                    &plan,
+                    launcher_parent,
+                    RootSwitch::ChrootOnly,
+                )
+                .is_err()
+                {
+                    libc::_exit(10);
+                }
+
+                // 1. Host sentinel outside the sandbox must not be visible.
+                let host_fd = libc::open(sentinel_c.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC);
+                if host_fd >= 0 {
+                    libc::close(host_fd);
+                    libc::_exit(11);
+                }
+                if std::io::Error::last_os_error().raw_os_error() != Some(libc::ENOENT) {
+                    libc::_exit(12);
+                }
+
+                // 2. `/` and `/..` must resolve to the same root directory.
+                let mut root_stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+                let mut parent_stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+                if libc::stat(c"/".as_ptr(), root_stat.as_mut_ptr()) != 0
+                    || libc::stat(c"/..".as_ptr(), parent_stat.as_mut_ptr()) != 0
+                {
+                    libc::_exit(13);
+                }
+                let root_stat = root_stat.assume_init();
+                let parent_stat = parent_stat.assume_init();
+                if root_stat.st_dev != parent_stat.st_dev || root_stat.st_ino != parent_stat.st_ino
+                {
+                    libc::_exit(14);
+                }
+
+                // 3. `current_chrooted()` must block nested CLONE_NEWUSER with EPERM.
+                if libc::unshare(libc::CLONE_NEWUSER) == 0
+                    || std::io::Error::last_os_error().raw_os_error() != Some(libc::EPERM)
+                {
+                    libc::_exit(15);
+                }
+
+                // 4. Dropped capabilities must block chroot() with EPERM.
+                if libc::chroot(c".".as_ptr()) == 0
+                    || std::io::Error::last_os_error().raw_os_error() != Some(libc::EPERM)
+                {
+                    libc::_exit(16);
+                }
+
+                // 5. Read-only bind mount must be readable and reject writes.
+                let ro_read = libc::open(
+                    c"/ro/readonly.txt".as_ptr(),
+                    libc::O_RDONLY | libc::O_CLOEXEC,
+                );
+                if ro_read < 0 {
+                    libc::_exit(17);
+                }
+                libc::close(ro_read);
+
+                let ro_write = libc::open(
+                    c"/ro/readonly.txt".as_ptr(),
+                    libc::O_WRONLY | libc::O_CLOEXEC,
+                );
+                if ro_write >= 0 {
+                    libc::close(ro_write);
+                    libc::_exit(18);
+                }
+                if !matches!(
+                    std::io::Error::last_os_error().raw_os_error(),
+                    Some(libc::EROFS | libc::EACCES)
+                ) {
+                    libc::_exit(19);
+                }
+
+                // 6. Workdir (`/workspace`) and `/tmp` must be writable.
+                let ws_fd = libc::open(
+                    c"ok.txt".as_ptr(),
+                    libc::O_CREAT | libc::O_WRONLY | libc::O_TRUNC | libc::O_CLOEXEC,
+                    0o600,
+                );
+                if ws_fd < 0 {
+                    libc::_exit(20);
+                }
+                libc::close(ws_fd);
+
+                let tmp_fd = libc::open(
+                    c"/tmp/ok.txt".as_ptr(),
+                    libc::O_CREAT | libc::O_WRONLY | libc::O_TRUNC | libc::O_CLOEXEC,
+                    0o600,
+                );
+                if tmp_fd < 0 {
+                    libc::_exit(21);
+                }
+                libc::close(tmp_fd);
+
+                libc::_exit(0);
+            }
+        }
+
+        let mut status: libc::c_int = 0;
+        // SAFETY: Waiting on the specific child PID just forked above.
+        let waited = unsafe { libc::waitpid(pid, &raw mut status, 0) };
+        if waited < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        assert!(
+            libc::WIFEXITED(status),
+            "chroot fallback child terminated abnormally (status={status})"
+        );
+        let code = libc::WEXITSTATUS(status);
+        assert_eq!(code, 0, "chroot fallback invariant failed with code {code}");
+        assert!(dirs.work.join("ok.txt").is_file());
+        assert!(dirs.private_tmp.join("ok.txt").is_file());
+        Ok(())
+    }
 }

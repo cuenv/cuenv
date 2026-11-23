@@ -80,8 +80,13 @@ cache hits and remote publication:
 Commands resolve using the task’s path inside the mounted runtime. Linux strict
 runs backed by neither a runtime image nor a verified Nix closure fall back to
 the host runtime with invocation-scoped cache keys. Linux runners must permit
-unprivileged namespaces and mounting the runtime in the sandbox. If the
-capability check fails, `sandbox: "strict"` rejects the task and `sandbox: "auto"`
+unprivileged namespaces and mounting the runtime in the sandbox; when a
+container seccomp filter blocks `pivot_root` (as on Namespace Linux runners),
+cuenv falls back to `chroot` inside the private mount namespace (keeping
+`current_chrooted()` active so nested user namespaces are blocked and dropping
+all setup capabilities) while preserving remote publication eligibility and
+action keys for verified Nix closures and runtime images. If confinement still
+cannot be established, `sandbox: "strict"` rejects the task and `sandbox: "auto"`
 falls back to a directory sandbox.
 
 ## HTTP/REST protocol
@@ -185,10 +190,13 @@ cache: remote: {
 }
 ```
 
-cuenv invokes `<helper> get` with `{"uri": "<endpoint>"}` on stdin and attaches
-all headers returned in `{"headers": {...}}` (for example both `authorization`
-and `x-nsc-ingress-auth`) on every gRPC and HTTP request, registering every
-value for secret redaction.
+cuenv invokes `<helper> get` with `{"uri": "<endpoint>"}` on stdin —
+normalizing `grpcs://` to `https://` and `grpc://` to `http://` to match
+Bazel’s credential-helper convention (so helpers such as `bazel-credential-nsc`
+accept `/etc/bazel.bazelrc` `grpcs://` endpoints directly) — and attaches all
+headers returned in `{"headers": {...}}` (for example both `authorization` and
+`x-nsc-ingress-auth`) on every gRPC and HTTP request, registering every value
+for secret redaction.
 
 In `ci.authMode: "ambient"`:
 
@@ -199,7 +207,13 @@ In `ci.authMode: "ambient"`:
 - `cuenv sync ci` still gates `CUENV_REMOTE_CACHE_UPLOAD` to `"true"` only on
   protected triggers (`false` on pull requests, schedules, and manual runs) and
   still isolates `CUENV_CACHE_DIR` per trust level when `isolatedCacheDir` is
-  enabled.
+  enabled. On GitHub Actions workflows that combine protected push/tag/release
+  triggers with `manual: true` (`workflow_dispatch`) or `scheduled` triggers
+  (without `pullRequest: true`), `cuenv sync ci` emits a dynamic GitHub Actions
+  expression (such as
+  `github.event_name == 'push' && github.ref == 'refs/heads/main'`) so
+  protected `push`/`release` runs can upload while manual and scheduled runs
+  stay read-only in `untrusted`.
 - Pipelines that already declare a GitHub Actions `environment` (for example
   `environment: "production"`) retain their environment without conflicting with
   `writeEnvironment`.

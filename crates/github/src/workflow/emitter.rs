@@ -192,9 +192,13 @@ impl GitHubActionsEmitter {
         });
 
         let protected_trigger = ir.pipeline.trigger.as_ref().is_some_and(|trigger| {
+            let has_manual = trigger
+                .manual
+                .as_ref()
+                .is_some_and(|manual| manual.enabled || !manual.inputs.is_empty());
             trigger.pull_request != Some(true)
                 && trigger.scheduled.is_empty()
-                && trigger.manual.as_ref().is_none_or(|manual| !manual.enabled)
+                && !has_manual
                 && (!trigger.branches.is_empty()
                     || !trigger.tags.is_empty()
                     || !trigger.release.is_empty())
@@ -202,15 +206,42 @@ impl GitHubActionsEmitter {
 
         if ci.is_some_and(|ci| ci.auth_mode == cuenv_core::manifest::RemoteCacheCiAuthMode::Ambient)
         {
-            let can_upload = remote.upload && protected_trigger;
-            step.env
-                .insert("CUENV_REMOTE_CACHE_UPLOAD".into(), can_upload.to_string());
-            if ci.is_none_or(|ci| ci.isolated_cache_dir) {
-                let cache_dir = if can_upload { "trusted" } else { "untrusted" };
-                step.env.insert(
-                    "CUENV_CACHE_DIR".into(),
-                    format!("${{{{ runner.temp }}}}/cuenv-cache/{cache_dir}"),
-                );
+            let isolated = ci.is_none_or(|ci| ci.isolated_cache_dir);
+            match ambient_upload_policy(remote, ir.pipeline.trigger.as_ref()) {
+                AmbientUploadPolicy::Disabled => {
+                    step.env
+                        .insert("CUENV_REMOTE_CACHE_UPLOAD".into(), "false".into());
+                    if isolated {
+                        step.env.insert(
+                            "CUENV_CACHE_DIR".into(),
+                            "${{ runner.temp }}/cuenv-cache/untrusted".into(),
+                        );
+                    }
+                }
+                AmbientUploadPolicy::Always => {
+                    step.env
+                        .insert("CUENV_REMOTE_CACHE_UPLOAD".into(), "true".into());
+                    if isolated {
+                        step.env.insert(
+                            "CUENV_CACHE_DIR".into(),
+                            "${{ runner.temp }}/cuenv-cache/trusted".into(),
+                        );
+                    }
+                }
+                AmbientUploadPolicy::Dynamic(expr) => {
+                    step.env.insert(
+                        "CUENV_REMOTE_CACHE_UPLOAD".into(),
+                        format!("${{{{ {expr} }}}}"),
+                    );
+                    if isolated {
+                        step.env.insert(
+                            "CUENV_CACHE_DIR".into(),
+                            format!(
+                                "${{{{ runner.temp }}}}/cuenv-cache/${{{{ ({expr}) && 'trusted' || 'untrusted' }}}}"
+                            ),
+                        );
+                    }
+                }
             }
             return None;
         }
@@ -1019,6 +1050,118 @@ impl Emitter for GitHubActionsEmitter {
 
         Ok(())
     }
+}
+
+enum AmbientUploadPolicy {
+    Disabled,
+    Always,
+    Dynamic(String),
+}
+
+fn ambient_upload_policy(
+    remote: &cuenv_core::manifest::RemoteCache,
+    trigger: Option<&TriggerCondition>,
+) -> AmbientUploadPolicy {
+    if !remote.upload {
+        return AmbientUploadPolicy::Disabled;
+    }
+    let Some(trigger) = trigger else {
+        return AmbientUploadPolicy::Disabled;
+    };
+    if trigger.pull_request == Some(true) {
+        return AmbientUploadPolicy::Disabled;
+    }
+    let has_protected =
+        !trigger.branches.is_empty() || !trigger.tags.is_empty() || !trigger.release.is_empty();
+    if !has_protected {
+        return AmbientUploadPolicy::Disabled;
+    }
+
+    let has_manual = trigger
+        .manual
+        .as_ref()
+        .is_some_and(|manual| manual.enabled || !manual.inputs.is_empty());
+    if trigger.scheduled.is_empty() && !has_manual {
+        return AmbientUploadPolicy::Always;
+    }
+
+    protected_trigger_expression(trigger)
+        .map_or(AmbientUploadPolicy::Disabled, AmbientUploadPolicy::Dynamic)
+}
+
+fn protected_trigger_expression(trigger: &TriggerCondition) -> Option<String> {
+    let mut push_refs = Vec::new();
+    for (patterns, prefix, ref_type) in [
+        (&trigger.branches, "refs/heads/", "branch"),
+        (&trigger.tags, "refs/tags/", "tag"),
+    ] {
+        match push_ref_clause(patterns, prefix, ref_type) {
+            PushRefClause::Empty => {}
+            PushRefClause::Invalid => return None,
+            PushRefClause::Match(clause) => push_refs.push(clause),
+        }
+    }
+
+    let mut clauses = Vec::new();
+    if !push_refs.is_empty() {
+        let joined = push_refs.join(" || ");
+        let needs_parens = push_refs.len() > 1 || joined.contains(" || ");
+        let push_expr = if needs_parens {
+            format!("github.event_name == 'push' && ({joined})")
+        } else {
+            format!("github.event_name == 'push' && {joined}")
+        };
+        clauses.push(push_expr);
+    }
+    if !trigger.release.is_empty() {
+        clauses.push("github.event_name == 'release'".to_string());
+    }
+
+    match clauses.as_slice() {
+        [] => None,
+        [single] => Some(single.clone()),
+        many => Some(
+            many.iter()
+                .map(|clause| {
+                    if clause.contains(" && ") {
+                        format!("({clause})")
+                    } else {
+                        clause.clone()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" || "),
+        ),
+    }
+}
+
+enum PushRefClause {
+    Empty,
+    Invalid,
+    Match(String),
+}
+
+fn push_ref_clause(patterns: &[String], ref_prefix: &str, ref_type: &str) -> PushRefClause {
+    if patterns.is_empty() {
+        return PushRefClause::Empty;
+    }
+    if patterns
+        .iter()
+        .any(|p| p.is_empty() || p.contains('\'') || p.chars().any(char::is_control))
+    {
+        return PushRefClause::Invalid;
+    }
+    let has_glob = patterns
+        .iter()
+        .any(|p| p.contains(['*', '?', '[', ']', '!', '+']));
+    if has_glob {
+        return PushRefClause::Match(format!("github.ref_type == '{ref_type}'"));
+    }
+    let checks: Vec<String> = patterns
+        .iter()
+        .map(|p| format!("github.ref == '{ref_prefix}{p}'"))
+        .collect();
+    PushRefClause::Match(checks.join(" || "))
 }
 
 /// Sanitize a string for use as a workflow filename
