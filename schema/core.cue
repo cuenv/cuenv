@@ -1,28 +1,13 @@
 package schema
 
-// Closedness. Consumers embed `schema.#Project` (or `schema.#Base`) at file
-// level. Before CUE language v0.18 that leaves the file's own struct open,
-// and a field typed with a bare definition reference (`config?: #Config`)
-// is left open with it. Referencing the definition inside a struct literal
-// (`config?: {#Config}`) keeps it closed under every CUE release and
-// language version, so a misspelled nested field is an error. Definitions
-// are already closed, so the schema never wraps them in close(): on CUE
-// v0.17+ close() around an embedded definition rejects the definition's own
-// fields under file-level embedding. The inline passthrough arm of
-// #InfrastructureStateToken is the exception: it is not a definition, and an
-// open arm would accept extra fields. scripts/check-schema-compat.sh checks
-// both properties.
+// Project files embed `schema.#Project` as a closed definition so CUE rejects
+// unknown fields. A shared base embeds `schema.#Base...` because the projects
+// inheriting that base declare their own fields.
 //
-// Exception: the `tasks`, `services` and `images` maps reference #Task,
-// #TaskGroup, #Service and #ContainerImage directly. `dependsOn` and pipeline
-// task lists are typed references to these entries, and cuenv's CUE fork
-// shares such a reference only when the entry was constrained by a direct
-// definition reference; inside a struct literal the sharing is lost and
-// evaluation becomes exponential in the depth of the dependency graph (see
-// docs/design/specs/cue-recursive-sharing.md). The cost is that, before
-// language v0.18, a misspelled top-level field of an entry written without
-// `schema.#Task &` (or `schema.#Service &`, `schema.#ContainerImage &`) is
-// ignored. Nested fields are still checked.
+// The task, service and image maps reference definitions directly so cuenv's
+// CUE fork can share typed references to entries in `dependsOn` and pipeline
+// task lists. Wrapping those references in a struct literal loses that
+// sharing (see docs/design/specs/cue-recursive-sharing.md).
 #Base: {
 	config?: {#Config}
 	env?: {#Env}
@@ -40,7 +25,7 @@ package schema
 #VcsDependencyName: string & =~"^[a-zA-Z0-9_-][a-zA-Z0-9._-]*$" & !~"\\.\\."
 
 #Project: {
-	#Base
+	#Base...
 	name!: #ProjectName
 	// Files of this project, chosen by whoever imports it:
 	// `<pkg>.#Files & {paths: ["articles/**"]}`. Paths are relative to this
@@ -57,7 +42,7 @@ package schema
 	// Every task, group, service and image is stamped with the project it
 	// belongs to, so a reference to one from another project carries where it
 	// came from in its value.
-	tasks?: [taskName=string]: ((#Task | #TaskGroup) & {
+	tasks?: [string]~(taskName,_): ((#Task | #TaskGroup) & {
 		_cuenvPrefix:  ""
 		_cuenvSelf:    taskName
 		_cuenvProject: name
@@ -65,7 +50,7 @@ package schema
 	// Services live in their own field but share the project DAG.
 	// Services may depend on tasks (build → run); tasks may depend on
 	// services (db ready → seed task). Cycles forbidden as with tasks.
-	services?: [svcName=string]: #Service & {
+	services?: [string]~(svcName,_): #Service & {
 		_cuenvPrefix:  ""
 		_cuenvSelf:    svcName
 		_cuenvProject: name
@@ -73,7 +58,7 @@ package schema
 	// Container image builds — declarative image definitions that
 	// participate in the task DAG and produce output references
 	// (ref, digest) consumable by tasks and other images.
-	images?: [imageName=string]: #ContainerImage & {
+	images?: [string]~(imageName,_): #ContainerImage & {
 		_cuenvPrefix:  ""
 		_cuenvSelf:    imageName
 		_cuenvProject: name

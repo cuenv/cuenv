@@ -209,6 +209,7 @@ tasks: check: {
   // `schema.#ModuleFiles & {paths: ["package.json"]}`, spelled out: the
   // fixture has no schema.
   inputs: [{cuenvFiles: "module", paths: ["package.json"]}]
+  outputs: ["checked"]
   hermetic: sandbox: "dir"
 }
 "#,

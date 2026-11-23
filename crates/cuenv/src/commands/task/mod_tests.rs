@@ -40,6 +40,8 @@ fn test_format_task_results_variants() {
         stdout: "hello".into(),
         stderr: String::new(),
         success: true,
+        from_cache: false,
+        cache_source: None,
     };
     let r_fail = cuenv_task_exec::TaskResult {
         name: "t".into(),
@@ -47,6 +49,8 @@ fn test_format_task_results_variants() {
         stdout: String::new(),
         stderr: "boom".into(),
         success: false,
+        from_cache: false,
+        cache_source: None,
     };
 
     // capture on: show status and fields

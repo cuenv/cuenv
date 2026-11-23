@@ -103,25 +103,39 @@ package schema
 
 	// Filesystem isolation tier. Defaults to "dir".
 	//
-	//   "dir"  — the task runs in a per-action directory populated from its
-	//            declared `inputs`, and only declared `outputs` are projected
-	//            back. This isolates relative workspace reads and writes, but
-	//            is not an OS security boundary: absolute host paths remain
-	//            reachable. A symlinked input is followed and staged as a
-	//            regular file; output symlinks are rejected.
-	//   "none" — the task runs in the project directory and can read and
-	//            write anything on the machine. Incomplete `inputs` produce
-	//            stale cache hits, so entries recorded here are only ever as
-	//            trustworthy as the declaration.
+	//   "dir"    — the task runs in a per-action directory populated from its
+	//              declared `inputs`, and only declared `outputs` are projected
+	//              back. This isolates relative workspace reads and writes, but
+	//              is not an OS security boundary: absolute host paths remain
+	//              reachable. A symlinked input is followed and staged as a
+	//              regular file; output symlinks are rejected.
+	//   "auto"   — uses OS-level strict confinement when the host supports it,
+	//              otherwise degrades to "dir" and keys the action under the
+	//              tier actually enforced.
+	//   "strict" — requires OS-level confinement (Linux unprivileged namespaces
+	//              with explicit read-only runtime roots and optional network
+	//              isolation; macOS Seatbelt prototype). Fails closed if the
+	//              host cannot enforce strict confinement, even when caching
+	//              is disabled.
+	//   "none"   — the task runs in the project directory and can read and
+	//              write anything on the machine. Incomplete `inputs` produce
+	//              stale cache hits, so entries recorded here are only ever as
+	//              trustworthy as the declaration.
 	//
 	// Directory isolation is the default. Reach for "none" when a task must
-	// touch the live checkout.
+	// touch the live checkout, or "strict" / "auto" for OS-level confinement.
 	sandbox?: #Sandbox
+
+	// Whether the task is allowed network access under strict OS confinement.
+	// Defaults to false (network disabled when strict confinement is enforced).
+	// Has no effect under "dir" or "none", which cannot enforce network
+	// isolation; cuenv only records network isolation in the cache key when
+	// it is actually enforced.
+	network?: bool | *false
 }
 
-// Workspace filesystem isolation tiers. Strict OS-level confinement is not
-// listed until it is implemented.
-#Sandbox: "dir" | "none"
+// Workspace filesystem and OS-level isolation tiers.
+#Sandbox: "dir" | "auto" | "strict" | "none"
 
 // Working directory base for object-shaped task dir values.
 #TaskDirBase: "definition" | "caller" | "module"
@@ -294,11 +308,12 @@ package schema
 	let _childrenByType = {
 		group: {
 			// `cuenvRef` is reserved for what cuenv writes on a group.
-			{[childName= !~"^(type|dependsOn|maxConcurrency|description|cuenvRef)$"]: ((#Task | #TaskGroup) & {
-				_cuenvPrefix:  _name + "."
-				_cuenvSelf:    childName
-				_cuenvProject: _groupProject
-			}) | (#TaskSequence & [...({_cuenvProject: _groupProject, ...} | [...])])
+			{
+				[!~"^(type|dependsOn|maxConcurrency|description|cuenvRef)$"]~(childName,_): ((#Task | #TaskGroup) & {
+					_cuenvPrefix:  _name + "."
+					_cuenvSelf:    childName
+					_cuenvProject: _groupProject
+				}) | (#TaskSequence & [...({_cuenvProject: _groupProject, ...} | [...])])
 			}
 		}
 	}

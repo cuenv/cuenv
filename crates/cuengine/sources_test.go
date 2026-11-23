@@ -133,7 +133,7 @@ func TestInstanceSourcesListTransitiveImportsOnce(t *testing.T) {
 		"cue.mod/module.cue": "module: \"example.com/refs@v0\"\nlanguage: version: \"v0.14.1\"\n",
 		"content/env.cue":    "package cuenv\n\nname: \"content\"\n",
 		"shared/shared.cue":  "package shared\n\nimport content \"example.com/refs/content:cuenv\"\n\nfiles: content.name\n",
-		"app/env.cue":        "package cuenv\n\nimport \"example.com/refs/shared\"\n\nname: \"app\"\nuses: shared.files\n",
+		"app/env.cue":        "package cuenv\n\nimport \"example.com/refs/shared:shared\"\n\nname: \"app\"\nuses: shared.files\n",
 	})
 
 	sources := importsOf(t, moduleRoot, "app", `{"fields":["name"]}`)
@@ -142,8 +142,37 @@ func TestInstanceSourcesListTransitiveImportsOnce(t *testing.T) {
 		t.Fatalf("imports: %+v", sources.Imports)
 	}
 	content := importNamed(t, sources, "example.com/refs/content:cuenv")
-	if content.ImportedBy != "example.com/refs/shared" || fieldText(content.Fields, "name") != `"content"` {
+	if content.ImportedBy != "example.com/refs/shared:shared" || fieldText(content.Fields, "name") != `"content"` {
 		t.Fatalf("a transitive import names its importer: %+v", content)
+	}
+}
+
+func TestInstanceSourcesDistinguishPackageIdentityFromImportSpelling(t *testing.T) {
+	moduleRoot := writeCueModule(t, map[string]string{
+		"cue.mod/module.cue": "module: \"example.test/refs@v0\"\nlanguage: version: \"v0.18.0\"\n",
+		"data/default.cue":   "package data\nname: \"default\"\n",
+		"data/extra.cue":     "package extra\nname: \"extra\"\n",
+		"app/env.cue":        "package cuenv\nimport \"example.test/refs/data\"\nprimary: data.name\n",
+		"app/extra.cue": `package cuenv
+import (
+	qualified "example.test/refs/data@v0:data"
+	alternate "example.test/refs/data@v0:extra"
+)
+same: qualified.name
+other: alternate.name
+`,
+	})
+	sources := importsOf(t, moduleRoot, "app", `{"fields":["name"]}`)
+	if len(sources.Imports) != 2 {
+		t.Fatalf("imports = %+v", sources.Imports)
+	}
+	for path, want := range map[string]string{
+		"example.test/refs/data":          `"default"`,
+		"example.test/refs/data@v0:extra": `"extra"`,
+	} {
+		if got := fieldText(importNamed(t, sources, path).Fields, "name"); got != want {
+			t.Fatalf("%s name = %s, want %s", path, got, want)
+		}
 	}
 }
 

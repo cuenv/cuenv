@@ -41,9 +41,6 @@ ignore = [
     # extism currently requires wasmtime/wasi-common/wiggle ^41; patched versions are outside this range.
     # A local lift to wasmtime 44 is not source-compatible with extism 1.21.0.
     # TODO: Remove when extism releases a version with patched wasmtime.
-    "RUSTSEC-2026-0006",
-    "RUSTSEC-2026-0020",
-    "RUSTSEC-2026-0021",
     "RUSTSEC-2026-0085",
     "RUSTSEC-2026-0086",
     "RUSTSEC-2026-0087",

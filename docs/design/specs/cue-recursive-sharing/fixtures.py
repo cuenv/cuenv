@@ -10,7 +10,7 @@ for order in ['ascending', 'reverse']:
             root = out / order / f'{kind}-{depth}'
             shutil.copytree(repo / 'schema', root / 'schema', dirs_exist_ok=True)
             (root / 'cue.mod').mkdir(exist_ok=True)
-            (root / 'cue.mod/module.cue').write_text('module: "github.com/cuenv/cuenv"\nlanguage: version: "v0.14.1"\n')
+            shutil.copyfile(repo / 'cue.mod/module.cue', root / 'cue.mod/module.cue')
             nodes = []
             for i in range(depth + 1):
                 deps = '' if i == 0 else f', dependsOn: [n{i-1}]'

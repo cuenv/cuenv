@@ -137,7 +137,7 @@ fn prepare_directory() -> TestResult<tempfile::TempDir> {
     fs::create_dir_all(directory.path().join("cue.mod"))?;
     fs::write(
         directory.path().join("cue.mod/module.cue"),
-        format!("module: \"{MODULE}\"\nlanguage: version: \"v0.14.1\"\n"),
+        format!("module: \"{MODULE}\"\nlanguage: version: \"v0.18.0\"\n"),
     )?;
     Ok(directory)
 }
@@ -2376,7 +2376,7 @@ async fn every_way_of_reaching_an_output_is_ordered_and_filled() -> TestResult {
         ),
         (
             "value-alias",
-            format!("_s: W={{z: {PRODUCER_ID}, y: W.z}}\n"),
+            format!("_s: {{let W = self, z: {PRODUCER_ID}, y: W.z}}\n"),
             "_s.y".to_string(),
         ),
         (

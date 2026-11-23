@@ -1,14 +1,16 @@
-use cuenv_secrets::SecretError;
+use cuenv_secrets::{ResolveSecret, SecretError};
+use std::collections::{BTreeSet, HashMap};
 use tokio::process::Command;
 use tokio::sync::Mutex;
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(super) struct CliResolver {
-    auth_state: Mutex<CliAuthState>,
+    auth_state: Mutex<HashMap<BTreeSet<String>, CliAuthState>>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 enum CliAuthState {
+    #[default]
     Unknown,
     Authenticated,
     Failed(String),
@@ -27,20 +29,17 @@ enum CliCommandError {
     Other(std::io::Error),
 }
 
-impl Default for CliResolver {
-    fn default() -> Self {
-        Self {
-            auth_state: Mutex::new(CliAuthState::Unknown),
-        }
-    }
-}
-
 impl CliResolver {
     /// Resolve a single reference through the `op` CLI.
-    pub(super) async fn resolve(&self, name: &str, reference: &str) -> Result<String, SecretError> {
+    pub(super) async fn resolve(
+        &self,
+        request: ResolveSecret<'_>,
+        reference: &str,
+    ) -> Result<String, SecretError> {
+        let name = request.name;
         tracing::debug!(name = name, reference = reference, "1Password CLI read");
 
-        match Self::read_reference(reference).await {
+        match Self::read_reference(request, reference).await {
             Ok(secret) => Ok(secret),
             Err(CliCommandError::NotFound) => {
                 Err(SecretError::resolution_failed(name, missing_op_message()))
@@ -56,17 +55,19 @@ impl CliResolver {
         }
     }
 
-    /// Ensure CLI auth is valid once per resolver instance.
+    /// Ensure CLI auth is valid for the caller's environment policy.
     ///
     /// Returns `Some(secret_value)` when auth bootstrap consumed the current
     /// secret read, allowing caller to skip a second `op read` call.
     pub(super) async fn ensure_authenticated(
         &self,
-        name: &str,
+        request: ResolveSecret<'_>,
         reference: &str,
     ) -> Result<Option<String>, SecretError> {
-        let mut state = self.auth_state.lock().await;
-        match &*state {
+        let name = request.name;
+        let mut states = self.auth_state.lock().await;
+        let state = states.entry(request.withheld_env.clone()).or_default();
+        match state {
             CliAuthState::Authenticated => return Ok(None),
             CliAuthState::Failed(message) => {
                 return Err(SecretError::resolution_failed(name, message.clone()));
@@ -74,27 +75,26 @@ impl CliResolver {
             CliAuthState::Unknown => {}
         }
 
-        match Self::check_auth().await {
+        match Self::check_auth(request).await {
             Ok(AuthCheck::Authenticated) => {
                 *state = CliAuthState::Authenticated;
                 Ok(None)
             }
             Ok(AuthCheck::SignedOut) => {
-                self.bootstrap_signed_out_session(name, reference, &mut state)
-                    .await
+                Self::bootstrap_signed_out_session(request, reference, state).await
             }
             Ok(AuthCheck::Failed(details)) | Err(CliCommandError::Failed(details)) => fail_auth(
                 name,
-                &mut state,
+                state,
                 format!(
                     "1Password CLI authentication check failed (`op whoami`). \
                     Run `op signin` and retry. Details: {details}"
                 ),
             ),
-            Err(CliCommandError::NotFound) => fail_auth(name, &mut state, missing_op_message()),
+            Err(CliCommandError::NotFound) => fail_auth(name, state, missing_op_message()),
             Err(CliCommandError::Other(e)) => fail_auth(
                 name,
-                &mut state,
+                state,
                 format!(
                     "Failed to execute 1Password CLI authentication check (`op whoami`): {e}. \
                     Run `op signin` and retry."
@@ -103,8 +103,8 @@ impl CliResolver {
         }
     }
 
-    async fn check_auth() -> Result<AuthCheck, CliCommandError> {
-        let output = command_output(Command::new("op").arg("whoami")).await?;
+    async fn check_auth(request: ResolveSecret<'_>) -> Result<AuthCheck, CliCommandError> {
+        let output = command_output(Command::new("op").arg("whoami"), request).await?;
 
         if output.status.success() {
             return Ok(AuthCheck::Authenticated);
@@ -123,12 +123,12 @@ impl CliResolver {
     }
 
     async fn bootstrap_signed_out_session(
-        &self,
-        name: &str,
+        request: ResolveSecret<'_>,
         reference: &str,
         state: &mut CliAuthState,
     ) -> Result<Option<String>, SecretError> {
-        match Self::read_reference(reference).await {
+        let name = request.name;
+        match Self::read_reference(request, reference).await {
             Ok(secret) => {
                 *state = CliAuthState::Authenticated;
                 Ok(Some(secret))
@@ -154,8 +154,11 @@ impl CliResolver {
         }
     }
 
-    async fn read_reference(reference: &str) -> Result<String, CliCommandError> {
-        let output = command_output(Command::new("op").args(["read", reference])).await?;
+    async fn read_reference(
+        request: ResolveSecret<'_>,
+        reference: &str,
+    ) -> Result<String, CliCommandError> {
+        let output = command_output(Command::new("op").args(["read", reference]), request).await?;
 
         if output.status.success() {
             return Ok(String::from_utf8_lossy(&output.stdout).trim().to_string());
@@ -165,7 +168,11 @@ impl CliResolver {
     }
 }
 
-async fn command_output(command: &mut Command) -> Result<std::process::Output, CliCommandError> {
+async fn command_output(
+    command: &mut Command,
+    request: ResolveSecret<'_>,
+) -> Result<std::process::Output, CliCommandError> {
+    request.withhold_from(command);
     command.output().await.map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
             CliCommandError::NotFound

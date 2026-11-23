@@ -1,6 +1,6 @@
 use super::{CommandExecutor, convert_engine_error, env_file, schema_compat};
-use crate::commands::module_utils::EvaluationMetadataBuilder;
 use cuengine::{InstanceFailures, ModuleEvalOptions};
+use cuenv_ci::discovery::EvaluationMetadataBuilder;
 
 use cuenv_core::module::TASK_FIELD;
 use cuenv_core::{ModuleEvaluation, ModuleEvaluationInput, Result};

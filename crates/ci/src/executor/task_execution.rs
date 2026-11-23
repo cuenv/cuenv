@@ -14,15 +14,21 @@ use crate::report::{PipelineStatus, TaskReport, TaskStatus};
 use cuenv_core::context::{TaskEnv, TaskSelection, TaskSelectionOptions, TaskSubject};
 use cuenv_core::environment::Environment;
 use cuenv_core::manifest::Project;
-use cuenv_core::tasks::{Input, Task};
+use cuenv_core::tasks::{Hermetic, Input, Sandbox, Task, TaskCacheMode};
 
+use cuenv_task_exec::cache::TaskCacheConfig;
+use cuenv_task_exec::cache_setup::{
+    CacheRemote, TaskCacheContext, build_task_cache, resolve_runtime_cache_identity,
+};
 use cuenv_task_exec::graph_walk::{WalkCallbacks, WalkPolicy};
 use cuenv_task_exec::{
-    ExecutorConfig, ProjectExecution, RootProject, ScopeProject, TaskExecutor, TaskIndex, TaskScope,
+    ExecutorConfig, ExternalCachePolicy, ProjectExecution, RootProject, ScopeProject, TaskExecutor,
+    TaskIndex, TaskScope,
 };
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use tokio::sync::OnceCell;
 
 #[derive(Clone, Copy)]
 pub(super) struct PipelineTasksRequest<'request> {
@@ -35,6 +41,7 @@ pub(super) struct PipelineTasksRequest<'request> {
     pub(super) task_index: &'request TaskIndex,
     pub(super) cache_policy_override: Option<CachePolicy>,
     pub(super) hook_env: &'request HookEnvironment,
+    pub(super) withheld_env: &'request BTreeSet<String>,
     pub(super) continue_on_error: bool,
     pub(super) max_parallel: usize,
     /// The project's tasks and the tasks of the projects they depend on.
@@ -125,14 +132,32 @@ struct PipelineTaskOutcome {
     error: Option<cuenv_core::Error>,
 }
 
+type ProjectCache = OnceCell<Option<TaskCacheConfig>>;
+
+struct PipelineCaches {
+    own: ProjectCache,
+    dependencies: HashMap<String, ProjectCache>,
+    withheld_env: BTreeSet<String>,
+}
+
 pub(super) async fn execute_pipeline_tasks(
     request: PipelineTasksRequest<'_>,
 ) -> PipelineTaskResults {
+    let caches = Arc::new(PipelineCaches {
+        withheld_env: request.withheld_env.clone(),
+        own: OnceCell::new(),
+        dependencies: request
+            .scope
+            .external_projects()
+            .map(|(key, _)| (key.to_string(), OnceCell::new()))
+            .collect(),
+    });
     let mut results = PipelineTaskResults::new();
     for task_name in request.task_names {
         let outcome = execute_pipeline_task(PipelineTaskRequest {
             task_name,
             pipeline: request,
+            caches: &caches,
         })
         .await;
         results.record(request.project_display, task_name, outcome);
@@ -144,12 +169,14 @@ pub(super) async fn execute_pipeline_tasks(
 struct PipelineTaskRequest<'request> {
     task_name: &'request str,
     pipeline: PipelineTasksRequest<'request>,
+    caches: &'request Arc<PipelineCaches>,
 }
 
 async fn execute_pipeline_task(request: PipelineTaskRequest<'_>) -> PipelineTaskOutcome {
     let PipelineTaskRequest {
         task_name,
         pipeline,
+        ..
     } = request;
     // Changed files are relative to the root of the checkout, so the project
     // is placed there before its inputs are compared with them.
@@ -311,6 +338,7 @@ async fn execute_task_with_deps(
     let PipelineTaskRequest {
         task_name,
         pipeline,
+        caches,
     } = request;
     let compilation = |error: cuenv_core::Error| ExecutorError::Compilation(error.to_string());
 
@@ -345,6 +373,7 @@ async fn execute_task_with_deps(
         project_root: pipeline.project_path.to_path_buf(),
         hook_env: Arc::clone(pipeline.hook_env),
         scope: Arc::clone(pipeline.scope),
+        caches: Arc::clone(caches),
         projects: Arc::clone(pipeline.projects),
         project_configs: Arc::clone(pipeline.project_configs),
         cache_policy_override: pipeline.cache_policy_override,
@@ -394,6 +423,7 @@ struct PipelineRun {
     /// The environment that project's hooks provide.
     hook_env: HookEnvironment,
     scope: Arc<TaskScope>,
+    caches: Arc<PipelineCaches>,
     projects: Arc<CiProjects>,
     project_configs: Arc<HashMap<PathBuf, Project>>,
     cache_policy_override: Option<CachePolicy>,
@@ -425,10 +455,19 @@ impl PipelineRun {
                         root: &owner.project.root,
                         config: &owner.project.manifest,
                         ancestor_configs: &self.project_configs,
+                        withheld_env: &self.caches.withheld_env,
                     })
                     .await
                     .map_err(|error| ExecutorError::Compilation(error.to_string()))?,
             ),
+        };
+        let cache = match owner.key {
+            None => &self.caches.own,
+            Some(key) => self.caches.dependencies.get(key).ok_or_else(|| {
+                ExecutorError::Compilation(format!(
+                    "CI dependency project '{key}' has no cache slot"
+                ))
+            })?,
         };
         compile_and_execute_ir(IrExecutionRequest {
             config: &owner.project.manifest,
@@ -444,6 +483,8 @@ impl PipelineRun {
                 module_root: &owner.project.module_root,
                 workspace_root: self.projects.workspace_root(),
                 project_key: owner.key,
+                cache,
+                withheld_env: &self.caches.withheld_env,
             },
         })
         .await
@@ -558,6 +599,8 @@ struct Staging<'staging> {
     /// What the task's project is qualified with; `None` for the project
     /// the pipeline belongs to.
     project_key: Option<&'staging str>,
+    cache: &'staging ProjectCache,
+    withheld_env: &'staging BTreeSet<String>,
 }
 
 struct IrExecutionRequest<'request> {
@@ -603,10 +646,13 @@ async fn compile_and_execute_ir(
 
     let env_name = selected_environment(environment);
 
-    let runtime_env =
-        cuenv_core::runtime::resolve_runtime_environment(project_root, config.runtime.as_ref())
-            .await
-            .map_err(|e| ExecutorError::Compilation(e.to_string()))?;
+    let runtime_env = cuenv_core::runtime::resolve_runtime_environment_withheld(
+        project_root,
+        config.runtime.as_ref(),
+        staging.withheld_env,
+    )
+    .await
+    .map_err(|e| ExecutorError::Compilation(e.to_string()))?;
     if !runtime_env.is_empty() {
         tracing::info!(
             vars = runtime_env.len(),
@@ -614,7 +660,7 @@ async fn compile_and_execute_ir(
         );
     }
 
-    tools::ensure_tools_downloaded(project_root).await?;
+    tools::ensure_tools_downloaded(project_root, staging.withheld_env).await?;
     let activation_steps = tools::resolve_tool_activation_steps(project_root)?;
     if !activation_steps.is_empty() {
         tracing::debug!(
@@ -645,49 +691,64 @@ async fn compile_and_execute_ir(
         })
         .map_err(|e| ExecutorError::Compilation(e.to_string()))?;
     let variables = task_env.as_ref().map_or_default(TaskEnv::variables);
-    let (resolved, secrets) =
-        cuenv_core::environment::Environment::resolve_all_with_secrets(&variables)
-            .await
-            .map_err(|e| ExecutorError::Compilation(format!("Secret resolution failed: {e}")))?;
+    let (resolved, secrets) = Environment::resolve_all_withheld(&variables, staging.withheld_env)
+        .await
+        .map_err(|e| ExecutorError::Compilation(format!("Secret resolution failed: {e}")))?;
     cuenv_events::register_secrets(secrets);
+
+    // Preserve secret provenance so cached CI tasks fingerprint project
+    // credentials instead of persisting raw secret values in Command blobs.
+    let secret_var_names: BTreeSet<String> = variables
+        .iter()
+        .filter(|(_, value)| value.is_secret())
+        .map(|(name, _)| name.clone())
+        .collect();
 
     let mut env: BTreeMap<String, String> = hook_env.clone();
     env.extend(runtime_env);
     env.extend(resolved);
-    // The IR keeps only a task's string variables. Its secrets, numbers and
-    // booleans are resolved from the project task, as `cuenv task` does, so
-    // a task-level secret reaches the task in CI too.
-    let (resolved, secrets) = cuenv_task_exec::env::resolve_task_env(subject, &task.env)
-        .await
-        .map_err(|e| ExecutorError::Compilation(format!("Secret resolution failed: {e}")))?;
-    cuenv_events::register_secrets(secrets);
-    env.extend(resolved);
-    task_env::apply_task_env(&mut env, &ir_task.env);
+    let task_cache_mode = effective_ci_cache_mode(task, cache_policy_override);
+    let explicit_sandbox = matches!(&task.hermetic, Hermetic::Options(options)
+        if options.sandbox.is_some_and(Sandbox::uses_exec_root));
+    let needs_task_executor = relocates_an_input(task)
+        || explicit_sandbox
+        || task_cache_mode.allows_read()
+        || task_cache_mode.allows_write();
 
-    tools::apply_tool_activation_steps(&mut env, &activation_steps);
-    ensure_home_env(&mut env);
-
-    let mut task_to_run = ir_task;
-    if let Some(policy) = cache_policy_override {
-        task_to_run.cache_policy = policy;
-    }
-
-    // A mapped input is read where the mapping puts it, and only an
-    // execution root can put it there. Every other task runs in the
-    // checkout, where an output is already where its task wrote it.
-    let output = if relocates_an_input(task) {
+    let output = if needs_task_executor {
+        tools::apply_tool_activation_steps(&mut env, &activation_steps);
         execute_staged(StagedTask {
             task_name,
             task,
             env,
+            secret_var_names,
+            cache_mode: task_cache_mode,
+            config,
             staging,
         })
         .await?
     } else {
+        // TaskExecutor resolves its own task overlay. Resolve it here only for the IR runner.
+        let (resolved, secrets) = cuenv_task_exec::env::resolve_task_env_withheld(
+            subject,
+            &task.env,
+            staging.withheld_env,
+        )
+        .await
+        .map_err(|e| ExecutorError::Compilation(format!("Secret resolution failed: {e}")))?;
+        cuenv_events::register_secrets(secrets);
+        env.extend(resolved);
+        let mut task_to_run = ir_task;
+        if let Some(policy) = cache_policy_override {
+            task_to_run.cache_policy = policy;
+        }
+        task_env::apply_task_env(&mut env, &task_to_run.env, staging.withheld_env);
+        tools::apply_tool_activation_steps(&mut env, &activation_steps);
         IRTaskRunner::new(
             project_root.to_path_buf(),
             cuenv_core::OutputCapture::Capture,
         )
+        .with_withheld_env(staging.withheld_env.clone())
         .execute(&task_to_run, env)
         .await?
     };
@@ -701,10 +762,37 @@ async fn compile_and_execute_ir(
         stdout: output.stdout,
         stderr: output.stderr,
         success: output.success,
-        from_cache: false,
+        from_cache: output.from_cache,
         duration_ms,
         captures: HashMap::new(),
     })
+}
+
+fn ir_cache_policy_to_task_mode(policy: CachePolicy) -> TaskCacheMode {
+    match policy {
+        CachePolicy::Disabled => TaskCacheMode::Never,
+        CachePolicy::Readonly => TaskCacheMode::Read,
+        CachePolicy::Writeonly => TaskCacheMode::Write,
+        CachePolicy::Normal => TaskCacheMode::ReadWrite,
+    }
+}
+
+fn effective_ci_cache_mode(task: &Task, override_policy: Option<CachePolicy>) -> TaskCacheMode {
+    let mode = task.cache_policy().mode;
+    override_policy.map_or(mode, |policy| {
+        intersect_cache_modes(mode, ir_cache_policy_to_task_mode(policy))
+    })
+}
+
+fn intersect_cache_modes(left: TaskCacheMode, right: TaskCacheMode) -> TaskCacheMode {
+    let reads = left.allows_read() && right.allows_read();
+    let writes = left.allows_write() && right.allows_write();
+    match (reads, writes) {
+        (true, true) => TaskCacheMode::ReadWrite,
+        (true, false) => TaskCacheMode::Read,
+        (false, true) => TaskCacheMode::Write,
+        (false, false) => TaskCacheMode::Never,
+    }
 }
 
 /// Whether a task reads a file somewhere other than where it was produced.
@@ -721,38 +809,75 @@ struct StagedTask<'staged> {
     task: &'staged Task,
     /// The environment the task would run with in the checkout.
     env: BTreeMap<String, String>,
+    /// Variable names whose values came from secret resolution.
+    secret_var_names: BTreeSet<String>,
+    /// Cache permissions after applying the CI policy.
+    cache_mode: TaskCacheMode,
+    config: &'staged Project,
     staging: Staging<'staged>,
 }
 
-/// Run a task that maps inputs as `cuenv task` runs it: in an execution root
-/// holding its declared inputs, each mapped file at its `to` path, with its
-/// declared outputs copied back into the project.
-///
-/// A task that opted out of the directory sandbox has nowhere to stage a
-/// mapping, and is refused with that explanation.
+/// Run a task through [`TaskExecutor`] with full sandbox, caching, and secret
+/// provenance parity with `cuenv task`.
 async fn execute_staged(staged: StagedTask<'_>) -> std::result::Result<TaskOutput, ExecutorError> {
     let StagedTask {
         task_name,
         task,
         env,
+        secret_var_names,
+        cache_mode,
+        config,
         staging,
     } = staged;
     let mut environment = Environment::new();
     for (name, value) in env {
-        environment.set(name, value);
+        if secret_var_names.contains(&name) {
+            environment.set_secret(name, value);
+        } else {
+            environment.set(name, value);
+        }
     }
-    // A task in the checkout finds its programs on the host's `PATH` when
-    // nothing declares one. So does this one.
-    if environment.get("PATH").is_none()
-        && let Ok(path) = std::env::var("PATH")
-    {
-        environment.set("PATH".to_string(), path);
-    }
+    environment.withhold(staging.withheld_env.iter().cloned());
 
+    let mut cache = if matches!(cache_mode, TaskCacheMode::Never) {
+        None
+    } else {
+        staging
+            .cache
+            .get_or_init(|| async {
+                let remote = if staging.project_key.is_some() {
+                    CacheRemote::LocalOnly
+                } else {
+                    CacheRemote::Configured(config.cache.as_ref())
+                };
+                build_task_cache(
+                    TaskCacheContext {
+                        project_root: staging.project_root,
+                        hasher_root: staging.workspace_root,
+                        runtime_identity: resolve_runtime_cache_identity(
+                            staging.module_root,
+                            staging.project_root,
+                            config.runtime.as_ref(),
+                        ),
+                    },
+                    remote,
+                )
+                .await
+            })
+            .await
+            .clone()
+    };
+    if let Some(cache) = &mut cache {
+        cache.mode_override = Some(intersect_cache_modes(
+            cache_mode,
+            cache.mode_override.unwrap_or(TaskCacheMode::ReadWrite),
+        ));
+    }
     let execution = ProjectExecution {
         project_root: staging.project_root.to_path_buf(),
         cue_module_root: Some(staging.module_root.to_path_buf()),
-        cache: None,
+        cache: cache.clone(),
+        cache_policy: ExternalCachePolicy::LocalOnly,
     };
     let executor = TaskExecutor::new(ExecutorConfig {
         capture_output: cuenv_core::OutputCapture::Capture,
@@ -763,7 +888,7 @@ async fn execute_staged(staged: StagedTask<'_>) -> std::result::Result<TaskOutpu
         working_dir: None,
         project_root: execution.project_root.clone(),
         cue_module_root: execution.cue_module_root.clone(),
-        cache: None,
+        cache,
         sandbox_hasher_root: Some(staging.workspace_root.to_path_buf()),
         external_projects: staging
             .project_key
@@ -782,18 +907,10 @@ async fn execute_staged(staged: StagedTask<'_>) -> std::result::Result<TaskOutpu
         stdout: result.stdout,
         stderr: result.stderr,
         success: result.success,
-        from_cache: false,
+        from_cache: result.from_cache,
         duration_ms: 0,
         captures: HashMap::new(),
     })
-}
-
-fn ensure_home_env(env: &mut BTreeMap<String, String>) {
-    if !env.contains_key("HOME")
-        && let Ok(home) = std::env::var("HOME")
-    {
-        env.insert("HOME".to_string(), home);
-    }
 }
 
 #[cfg(test)]
@@ -821,9 +938,197 @@ mod tests {
                 module_root: directory,
                 workspace_root: directory,
                 project_key: None,
+                cache: &OnceCell::new(),
+                withheld_env: &BTreeSet::new(),
             },
         })
         .await
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn ci_restores_an_action_from_the_configured_remote_cache()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let project_dir = tempfile::tempdir()?;
+        let cache_dir = tempfile::tempdir()?;
+        let artifact = b"restored from remote";
+        let seeded = cache_child(project_dir.path(), cache_dir.path())?
+            .env("CUENV_TEST_CI_CACHE_SEED", "1")
+            .env("CUENV_CACHE", "write")
+            .env("CUENV_REMOTE_CACHE", "")
+            .output()
+            .await?;
+        assert!(
+            seeded.status.success(),
+            "{}",
+            String::from_utf8_lossy(&seeded.stdout)
+        );
+        let bucket = only_entry(&cache_dir.path().join("ac/sha256"))?;
+        let entry = only_entry(&bucket.path())?;
+        let action_hash = format!(
+            "{}{}",
+            bucket.file_name().to_string_lossy(),
+            entry.file_name().to_string_lossy()
+        );
+        let action = std::fs::read(entry.path())?;
+        // Keep the cache-root path stable, since it can also host the fallback HOME.
+        std::fs::remove_dir_all(cache_dir.path())?;
+        std::fs::create_dir(cache_dir.path())?;
+        std::fs::remove_file(project_dir.path().join("out"))?;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let endpoint = format!("http://{}", listener.local_addr()?);
+        let (capture, mut requests) = tokio::sync::mpsc::unbounded_channel();
+        let server = tokio::spawn(serve_action(
+            listener,
+            (action_hash.clone(), action, capture),
+            artifact,
+        ));
+        let output = cache_child(project_dir.path(), cache_dir.path())?
+            .env("CUENV_CACHE", "read")
+            .env("CUENV_REMOTE_CACHE", endpoint)
+            .env("CUENV_REMOTE_CACHE_PROTOCOL", "http")
+            .env("CUENV_REMOTE_CACHE_INSTANCE", "ci-regression")
+            .env("CUENV_REMOTE_CACHE_UPLOAD", "false")
+            .output()
+            .await?;
+        server.abort();
+        let requests: Vec<_> = std::iter::from_fn(|| requests.try_recv().ok()).collect();
+        assert!(
+            output.status.success(),
+            "expected action {action_hash}, requests {requests:?}\n{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        assert_eq!(std::fs::read(project_dir.path().join("out"))?, artifact);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    fn cache_child(project: &Path, cache: &Path) -> std::io::Result<tokio::process::Command> {
+        let mut child = tokio::process::Command::new(std::env::current_exe()?);
+        child
+            .args([
+                "--exact",
+                "executor::task_execution::tests::ci_remote_cache_subprocess",
+            ])
+            .env("CUENV_TEST_CI_CACHE_PROJECT", project)
+            .env_remove("CUENV_TEST_CI_CACHE_SEED")
+            .env("CUENV_CACHE_DIR", cache);
+        Ok(child)
+    }
+
+    #[cfg(unix)]
+    fn only_entry(dir: &Path) -> std::io::Result<std::fs::DirEntry> {
+        let mut entries = std::fs::read_dir(dir)?;
+        let entry = entries
+            .next()
+            .ok_or_else(|| std::io::Error::other("missing cache entry"))??;
+        assert!(
+            entries.next().is_none(),
+            "expected only one action cache entry"
+        );
+        Ok(entry)
+    }
+
+    #[cfg(unix)]
+    async fn serve_action(
+        listener: tokio::net::TcpListener,
+        action: (String, Vec<u8>, tokio::sync::mpsc::UnboundedSender<String>),
+        artifact: &[u8],
+    ) -> std::io::Result<()> {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+        let ac_request = format!("GET /ci-regression/ac/{} ", action.0);
+        let cas_path = format!(
+            "/ci-regression/cas/{}",
+            cuenv_cas::Digest::of_bytes(artifact).hash
+        );
+        let empty_path = format!(
+            "/ci-regression/cas/{}",
+            cuenv_cas::Digest::of_bytes(b"").hash
+        );
+        while let Ok((mut stream, _)) = listener.accept().await {
+            let request = {
+                let mut reader = BufReader::new(&mut stream);
+                let mut request = String::new();
+                reader.read_line(&mut request).await?;
+                loop {
+                    let mut header = String::new();
+                    if reader.read_line(&mut header).await? == 0 || header == "\r\n" {
+                        break;
+                    }
+                }
+                request
+            };
+            let _ = action.2.send(request.trim().to_string());
+            let body = if request.starts_with(&ac_request) {
+                Some(action.1.as_slice())
+            } else if request.starts_with(&format!("GET {cas_path} ")) {
+                Some(artifact)
+            } else if request.starts_with(&format!("HEAD {cas_path} "))
+                || request.starts_with(&format!("HEAD {empty_path} "))
+                || request.starts_with(&format!("GET {empty_path} "))
+            {
+                Some(&[][..])
+            } else {
+                None
+            };
+            let (status, body) = body.map_or(("404 Not Found", &[][..]), |bytes| ("200 OK", bytes));
+            let header = format!(
+                "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(header.as_bytes()).await?;
+            stream.write_all(body).await?;
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn ci_remote_cache_subprocess() -> Result<(), Box<dyn std::error::Error>> {
+        let Some(directory) = std::env::var_os("CUENV_TEST_CI_CACHE_PROJECT") else {
+            return Ok(());
+        };
+        let directory = PathBuf::from(directory);
+        std::fs::write(directory.join("in"), "input")?;
+        let project = project_with_task(
+            "build",
+            serde_json::json!({
+                "command": "sh",
+                "args": ["-c", "printf 'restored from remote' > out"],
+                "inputs": ["in"],
+                "outputs": ["out"],
+                "cache": {"mode": "read-write"}
+            }),
+        );
+        if std::env::var_os("CUENV_TEST_CI_CACHE_SEED").is_some() {
+            let cache = build_task_cache(
+                TaskCacheContext {
+                    project_root: &directory,
+                    hasher_root: &directory,
+                    runtime_identity: cuenv_task_exec::cache_setup::RuntimeCacheIdentity::default(),
+                },
+                CacheRemote::LocalOnly,
+            )
+            .await
+            .ok_or_else(|| std::io::Error::other("failed to create seed cache"))?;
+            let executor = TaskExecutor::new(ExecutorConfig {
+                project_root: directory.clone(),
+                cue_module_root: Some(directory),
+                cache: Some(cache),
+                ..ExecutorConfig::default()
+            });
+            let task = project.tasks["build"].as_task().expect("a task");
+            let result = executor.execute_task("build", task).await?;
+            assert!(result.success && !result.from_cache, "{result:?}");
+            return Ok(());
+        }
+        let result = run_in_project(&project, &directory, "build").await?;
+        assert!(
+            result.success && result.from_cache,
+            "expected remote hit: {result:?}"
+        );
+        Ok(())
     }
 
     fn project_with_task(name: &str, task: serde_json::Value) -> Project {
@@ -834,6 +1139,27 @@ mod tests {
             cuenv_core::tasks::TaskNode::Task(Box::new(task)),
         );
         project
+    }
+
+    #[tokio::test]
+    async fn explicit_directory_sandbox_is_used_with_cache_disabled()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        std::fs::write(directory.path().join("undeclared"), "workspace only")?;
+        let project = project_with_task(
+            "build",
+            serde_json::json!({
+                "command": "sh",
+                "args": ["-c", "test ! -e undeclared && printf isolated > out"],
+                "outputs": ["out"],
+                "cache": {"mode": "never"},
+                "hermetic": {"sandbox": "dir"}
+            }),
+        );
+        let result = run_in_project(&project, directory.path(), "build").await?;
+        assert!(result.success, "{result:?}");
+        assert_eq!(std::fs::read(directory.path().join("out"))?, b"isolated");
+        Ok(())
     }
 
     #[tokio::test]
@@ -869,7 +1195,7 @@ mod tests {
             "consume",
             serde_json::json!({
                 "command": "sh",
-                "args": ["-c", "cp vendor/one.md seen.md"],
+                "args": ["-c", r#"IFS= read -r line < vendor/one.md && printf '%s\n' "$line" > seen.md"#],
                 "outputs": ["seen.md"],
             }),
         );
@@ -955,6 +1281,8 @@ mod tests {
                 module_root: directory.path(),
                 workspace_root: directory.path(),
                 project_key: None,
+                cache: &OnceCell::new(),
+                withheld_env: &BTreeSet::new(),
             },
         })
         .await

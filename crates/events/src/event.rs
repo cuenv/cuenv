@@ -114,6 +114,8 @@ pub enum EventCategory {
     Interactive(InteractiveEvent),
     /// System/supervisor events.
     System(SystemEvent),
+    /// Remote and local cache lifecycle events.
+    Cache(CacheEvent),
     /// Generic output events (for migration and compatibility).
     Output(OutputEvent),
 }
@@ -640,6 +642,52 @@ pub enum OutputEvent {
     Stderr {
         /// Content to output.
         content: String,
+    },
+}
+
+/// Remote and local cache lifecycle events.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "event", content = "data")]
+#[non_exhaustive]
+pub enum CacheEvent {
+    /// Successfully connected to a remote cache server.
+    RemoteConnected {
+        /// Configured endpoint URL (never contains credentials).
+        endpoint: String,
+        /// Transport protocol (`"grpc"` or `"http"`).
+        protocol: String,
+        /// REAPI instance name (empty when unset).
+        instance: String,
+        /// Whether remote uploads are permitted for eligible tasks.
+        upload_enabled: bool,
+    },
+    /// Remote cache was unreachable or incompatible; continuing with local cache only.
+    RemoteDegraded {
+        /// Configured endpoint URL.
+        endpoint: String,
+        /// Human-readable reason for degradation.
+        reason: String,
+    },
+    /// Remote upload was skipped for a task even though upload was configured.
+    RemoteUploadSkipped {
+        /// Task name whose result remained local-only.
+        task: String,
+        /// Reason the result was not published remotely.
+        reason: String,
+    },
+    /// Verified task result was published to the remote cache.
+    RemoteUploaded {
+        /// Task name whose result was published.
+        task: String,
+        /// Published action digest (`<sha256>/<size>`).
+        digest: String,
+    },
+    /// Remote cache publication failed after local recording succeeded.
+    RemoteUploadFailed {
+        /// Task name whose remote upload failed.
+        task: String,
+        /// Redacted error message.
+        error: String,
     },
 }
 

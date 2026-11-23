@@ -1,5 +1,6 @@
 //! Task selection and execution.
 
+mod affected;
 mod context;
 mod environments;
 mod help;

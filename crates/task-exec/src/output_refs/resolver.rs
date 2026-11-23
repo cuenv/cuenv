@@ -112,6 +112,8 @@ mod tests {
             stderr: output.stderr.to_string(),
             exit_code: Some(exit_code),
             success: exit_code == 0,
+            from_cache: false,
+            cache_source: None,
         }
     }
 

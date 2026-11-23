@@ -5,6 +5,7 @@ use cuenv_core::Result;
 use cuenv_tool_runtime::{
     FetchedTool, ResolvedTool, ToolOptions, ToolProvider, ToolResolveRequest, ToolSource,
 };
+use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::process::Stdio;
 use tokio::process::Command;
@@ -16,7 +17,8 @@ use tracing::{debug, info};
 /// Nix profiles is handled by the `profile` module during sync.
 pub struct NixToolProvider {
     /// Named flake references (e.g., "stable" -> "github:NixOS/nixpkgs/nixos-24.11").
-    flakes: std::collections::HashMap<String, String>,
+    flakes: HashMap<String, String>,
+    withheld_env: BTreeSet<String>,
 }
 
 impl Default for NixToolProvider {
@@ -30,14 +32,33 @@ impl NixToolProvider {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            flakes: std::collections::HashMap::new(),
+            flakes: HashMap::new(),
+            withheld_env: BTreeSet::new(),
         }
     }
 
     /// Create a Nix tool provider with named flake references.
     #[must_use]
-    pub fn with_flakes(flakes: std::collections::HashMap<String, String>) -> Self {
-        Self { flakes }
+    pub fn with_flakes(flakes: HashMap<String, String>) -> Self {
+        Self {
+            flakes,
+            withheld_env: BTreeSet::new(),
+        }
+    }
+
+    /// Remove the named environment variables from Nix subprocesses.
+    #[must_use]
+    pub fn with_withheld_env(mut self, names: &BTreeSet<String>) -> Self {
+        self.withheld_env.clone_from(names);
+        self
+    }
+
+    fn command(&self) -> Command {
+        let mut command = Command::new("nix");
+        for name in &self.withheld_env {
+            command.env_remove(name);
+        }
+        command
     }
 
     /// Resolve a flake name to its full reference.
@@ -46,8 +67,8 @@ impl NixToolProvider {
     }
 
     /// Check if nix is available.
-    async fn check_nix_available() -> bool {
-        Command::new("nix")
+    async fn check_nix_available(&self) -> bool {
+        self.command()
             .arg("--version")
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -92,7 +113,7 @@ impl ToolProvider for NixToolProvider {
         info!(%tool_name, %flake_name, %package, %version, %platform, "Resolving Nix package");
 
         // Check if nix is available
-        if !Self::check_nix_available().await {
+        if !self.check_nix_available().await {
             return Err(cuenv_core::Error::tool_resolution(
                 "Nix is not installed or not in PATH".to_string(),
             ));
@@ -133,7 +154,8 @@ impl ToolProvider for NixToolProvider {
         debug!(%flake_ref, "Validating Nix package exists");
 
         // Use nix eval to quickly check if the package exists (no build required)
-        let output = Command::new("nix")
+        let output = self
+            .command()
             .args(["eval", "--raw", &format!("{flake_ref}.name")])
             .output()
             .await
@@ -141,7 +163,8 @@ impl ToolProvider for NixToolProvider {
 
         if !output.status.success() {
             // Package might not have a .name attribute, try just evaluating the derivation
-            let output2 = Command::new("nix")
+            let output2 = self
+                .command()
                 .args(["eval", "--raw", &format!("{flake_ref}.type")])
                 .output()
                 .await
@@ -173,7 +196,8 @@ impl ToolProvider for NixToolProvider {
     }
 
     async fn check_prerequisites(&self) -> Result<()> {
-        let output = Command::new("nix")
+        let output = self
+            .command()
             .arg("--version")
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -198,6 +222,20 @@ impl ToolProvider for NixToolProvider {
 mod tests {
     use super::*;
     use cuenv_tool_runtime::{Arch, Os, Platform};
+
+    #[test]
+    fn command_excludes_configured_credentials() {
+        let name = "CUENV_TEST_TOOL_CACHE_CREDENTIAL";
+        let provider = NixToolProvider::new().with_withheld_env(&BTreeSet::from([name.into()]));
+        let command = provider.command();
+
+        assert!(
+            command
+                .as_std()
+                .get_envs()
+                .any(|(key, value)| key == name && value.is_none())
+        );
+    }
 
     #[test]
     fn test_provider_name() {

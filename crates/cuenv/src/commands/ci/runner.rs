@@ -39,6 +39,7 @@ pub async fn execute_runner(args: &CiArgs) -> Result<()> {
         environment: args.environment.clone(),
         path_filter: effective_path,
         max_parallel: args.effective_jobs(),
+        shard: args.shard,
     })
     .await
 }

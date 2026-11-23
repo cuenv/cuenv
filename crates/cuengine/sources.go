@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"cuelang.org/go/cue"
@@ -20,6 +21,7 @@ import (
 	"cuelang.org/go/cue/literal"
 	"cuelang.org/go/cue/load"
 	"cuelang.org/go/mod/modconfig"
+	"cuelang.org/go/mod/module"
 )
 
 // instanceSources is the payload of cue_instance_sources.
@@ -215,26 +217,53 @@ func (r *fieldReader) importedInstances(root *build.Instance) []importedInstance
 	r.ctx = cuecontext.New()
 	type pending struct {
 		inst     *build.Instance
+		path     string
 		importer string
 	}
-	seen := map[string]struct{}{}
-	queue := []pending{}
-	for _, imported := range root.Imports {
-		queue = append(queue, pending{inst: imported})
+	type packageKey struct {
+		module    module.Version
+		directory string
+		name      string
 	}
+	seen := map[packageKey]struct{}{}
+	queue := []pending{}
+	enqueue := func(parent *build.Instance, parentPath string) {
+		// The loader canonicalizes the resolved paths. Read the written
+		// spellings from the syntax and look up the resolved packages.
+		paths := make(map[*build.Instance]string, len(parent.Imports))
+		for _, file := range parent.Files {
+			for spec := range file.ImportSpecs() {
+				path, err := strconv.Unquote(spec.Path.Value)
+				if err != nil {
+					continue
+				}
+				imported := parent.LookupImport(path)
+				if previous := paths[imported]; imported != nil && (previous == "" || path < previous) {
+					paths[imported] = path
+				}
+			}
+		}
+		for _, imported := range parent.Imports {
+			path := paths[imported]
+			if path == "" {
+				path = imported.ImportPath
+			}
+			queue = append(queue, pending{inst: imported, path: path, importer: parentPath})
+		}
+	}
+	enqueue(root, "")
 	// Never nil: an instance that imports nothing lists no records.
 	records := []importedInstance{}
 	for len(queue) > 0 {
 		next := queue[0]
 		queue = queue[1:]
-		if _, done := seen[next.inst.ImportPath]; done {
+		id := packageKey{module: next.inst.ModuleVersion, directory: next.inst.Dir, name: next.inst.PkgName}
+		if _, done := seen[id]; done {
 			continue
 		}
-		seen[next.inst.ImportPath] = struct{}{}
-		records = append(records, r.record(next.inst, next.importer))
-		for _, imported := range next.inst.Imports {
-			queue = append(queue, pending{inst: imported, importer: next.inst.ImportPath})
-		}
+		seen[id] = struct{}{}
+		records = append(records, r.record(next.inst, next.path, next.importer))
+		enqueue(next.inst, next.path)
 	}
 	sort.Slice(records, func(left, right int) bool {
 		return records[left].ImportPath < records[right].ImportPath
@@ -244,13 +273,13 @@ func (r *fieldReader) importedInstances(root *build.Instance) []importedInstance
 
 // record describes one imported package. The package is built on its own to
 // look its fields up; a root in error still yields the fields that are not.
-func (r *fieldReader) record(inst *build.Instance, importer string) importedInstance {
+func (r *fieldReader) record(inst *build.Instance, importPath, importer string) importedInstance {
 	directory := inst.Dir
 	if relative, inside := moduleRelative(r.moduleRoot, inst.Dir); inside {
 		directory = relative
 	}
 	return importedInstance{
-		ImportPath: inst.ImportPath,
+		ImportPath: importPath,
 		ImportedBy: importer,
 		Directory:  directory,
 		Package:    inst.PkgName,

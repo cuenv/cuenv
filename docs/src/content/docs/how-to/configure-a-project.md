@@ -40,47 +40,18 @@ change the schema dependency.
 
 ### CUE Releases and Language Versions
 
-The schema evaluates the same way under CUE v0.15.1 (the release in the Nix
-dev shell), v0.16, v0.17 and v0.18, and under every module language version
-from `v0.9.0` to `v0.18.0`. CI checks this by publishing the schema to a test
-registry and evaluating every example as a consumer module under each
-combination
-([`scripts/check-schema-compat.sh`](https://github.com/cuenv/cuenv/blob/main/scripts/check-schema-compat.sh)).
+Use CUE v0.18 or later with `language.version` set to `v0.18.0` or later.
+The compatibility check publishes the working schema to a test registry and
+evaluates each example as a consumer module.
+[Schema compatibility check](https://github.com/cuenv/cuenv/blob/main/scripts/check-schema-compat.sh)
 
-How strictly your project is checked depends on your module's
-`language.version`:
-
-- Before `v0.18.0`, embedding `schema.#Project` at file level leaves the top
-  level of the file open. A misspelled top-level field such as `nmae:` is
-  accepted and ignored. The same is true of a `.rules.cue` file that embeds
-  `rules.#DirectoryRules` at file level, as `examples/env-basic/.rules.cue`
-  does. Every field the schema declares (`env`, `config`, `ci`, `hooks`,
-  `runtime`, and the rest) is still checked, so `config: outputFormatt:` is
-  an error. Entries of `tasks`, `services` and `images` are checked in full
-  only when you write them as `schema.#Task & {...}` (or `schema.#Service`,
-  `schema.#ContainerImage`); a bare `build: {comand: "x"}` has its top-level
-  typo ignored. The compatibility check requires these typos to stay accepted
-  before `v0.18.0` and to be rejected from `v0.18.0`.
-- From `v0.18.0`, CUE's strict embedding also closes the top level, so `nmae:`
-  is an error too.
-
-When you move a module to language `v0.18.0`, keep the embedding as
-`schema.#Project`. `cue fix --exp=explicitopen` rewrites it to
-`schema.#Project...`, which opens the whole project and switches off schema
-validation, including the checks that tell secret references apart from
-passthrough variables. Revert that one rewrite and keep the rest of the fix,
-such as the `aliasv2` alias syntax:
-
-```cue
-package cuenv
-
-import "github.com/cuenv/cuenv/schema"
-
-// Keep this. Do not accept `schema.#Project...`.
-schema.#Project
-
-name: "my-project"
-```
+CUE checks top-level fields in files that embed `schema.#Project` or
+`rules.#DirectoryRules`. It also checks entries in the `tasks`, `services`
+and `images` maps. For an existing module, run `cue mod upgrade v0.18.0` to
+migrate prefix aliases and review the rewritten embeddings. Keep
+`schema.#Project` and `rules.#DirectoryRules` as closed definitions to
+retain validation. A shared base uses `schema.#Base...` so that descendant
+projects can declare their own fields.
 
 ### Basic Structure
 

@@ -98,7 +98,7 @@ say which of its files the task reads; name files at the module root, such as a
 lockfile, from there:
 
 ```cue
-// services/web/env.cue — any language version
+// services/web/env.cue
 import (
   "github.com/cuenv/cuenv/schema"
   api "my-monorepo/services/api:cuenv"
