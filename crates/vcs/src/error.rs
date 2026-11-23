@@ -34,6 +34,17 @@ pub enum Error {
         /// Human-readable explanation.
         message: String,
     },
+
+    /// The git repository a workspace lies in could not be read.
+    #[error("cannot read the repository: {message}")]
+    #[diagnostic(
+        code(cuenv::vcs::repository),
+        help("Check that the repository's index and .gitignore files are readable")
+    )]
+    Repository {
+        /// Human-readable explanation.
+        message: String,
+    },
 }
 
 impl Error {
@@ -55,6 +66,16 @@ impl Error {
     #[must_use]
     pub fn pattern(message: impl Into<String>) -> Self {
         Self::Pattern {
+            message: message.into(),
+        }
+    }
+}
+
+impl Error {
+    /// Build a repository error.
+    #[must_use]
+    pub fn repository(message: impl Into<String>) -> Self {
+        Self::Repository {
             message: message.into(),
         }
     }

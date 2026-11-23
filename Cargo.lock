@@ -2258,8 +2258,10 @@ name = "cuenv-vcs"
 version = "0.77.1"
 dependencies = [
  "async-trait",
+ "gix",
  "globset",
  "hex",
+ "ignore",
  "miette",
  "serde",
  "sha2 0.11.1",
