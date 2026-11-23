@@ -11,9 +11,10 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 
 	"cuelang.org/go/cue"
@@ -22,15 +23,19 @@ import (
 	"cuelang.org/go/cue/cuecontext"
 	"cuelang.org/go/cue/load"
 	"cuelang.org/go/cue/parser"
+	"cuelang.org/go/cue/token"
 	"cuelang.org/go/mod/modconfig"
+	"cuelang.org/go/mod/module"
 )
 
 // Frozen instances contain syntax, not live evaluator state. Every operation
 // reconstructs its own build graph and context. There are no Go handles to leak,
 // no shared mutable CUE values, and no filesystem reads after freezing.
 type frozenFile struct {
-	Name   string `json:"name"`
-	Source string `json:"source"`
+	Name            string          `json:"name"`
+	Source          string          `json:"source"`
+	Location        *frozenLocation `json:"location,omitempty"`
+	LanguageVersion string          `json:"languageVersion,omitempty"`
 }
 
 type frozenNode struct {
@@ -39,12 +44,19 @@ type frozenNode struct {
 	ModuleFile                             json.RawMessage
 	Files                                  []frozenFile
 	Imports                                []int
+	CanonicalID                            string            `json:"canonicalID,omitempty"`
+	CanonicalImports                       map[string]string `json:"canonicalImports,omitempty"`
+	DisplayPath                            string            `json:"displayPath,omitempty"`
+	ModuleVersionPath                      string            `json:"moduleVersionPath,omitempty"`
+	ModuleVersion                          string            `json:"moduleVersion,omitempty"`
+	DirLocation                            *frozenLocation   `json:"dirLocation,omitempty"`
+	RootLocation                           *frozenLocation   `json:"rootLocation,omitempty"`
 }
 
 type frozenGraph struct {
 	Nodes []frozenNode `json:"nodes"`
-	// Embedded holds what @embed attributes read, by absolute path.
-	Embedded map[string][]byte `json:"embedded,omitempty"`
+	// Embedded holds what @embed attributes read in each loader filesystem.
+	Embedded map[string]frozenEmbedFS `json:"embedded,omitempty"`
 }
 
 type freezeOptions struct {
@@ -123,12 +135,16 @@ func freezeConsistentGraph(config load.Config) (*frozenGraph, string) {
 }
 
 func freezeLoadedGraph(config load.Config) (*frozenGraph, string) {
-	// Package filtering also reads the directory, so each load decides afresh.
-	overlay, matched, err := packageFilterOverlay(config.Dir, config.Package, false)
-	if err != nil || !matched {
-		return nil, frozenFailure(ErrorCodeLoadInstance, "CUE snapshot package could not be loaded")
+	// The CLI's OS loader needs to hide unrelated packages when they fail
+	// parsing. An explicit loader FS or overlay is already the source of
+	// truth and must not be replaced with a view of the host directory.
+	if config.FS == nil && config.Overlay == nil {
+		overlay, matched, err := packageFilterOverlay(config.Dir, config.Package, false)
+		if err != nil || !matched {
+			return nil, frozenFailure(ErrorCodeLoadInstance, "CUE snapshot package could not be loaded")
+		}
+		config.Overlay = overlay
 	}
-	config.Overlay = overlay
 	// Capture precisely the bytes parsed by the loader, not a subsequent disk
 	// read or a formatted AST. This preserves positions and prevents a source
 	// change between loading and snapshotting from changing the selected input.
@@ -141,14 +157,15 @@ func freezeLoadedGraph(config load.Config) (*frozenGraph, string) {
 		}
 	}
 	config.ParseFile = func(name string, source interface{}, parseConfig parser.Config) (*ast.File, error) {
-		data, err := frozenSourceBytes(name, source)
+		data, err := frozenSourceBytes(source)
 		if err != nil {
 			return nil, err
 		}
+		captured := string(data)
 		file, err := parse(name, data, parseConfig)
 		if err == nil {
 			sourceMutex.Lock()
-			sources[file] = string(data)
+			sources[file] = captured
 			sourceMutex.Unlock()
 		}
 		return file, err
@@ -164,10 +181,8 @@ func freezeLoadedGraph(config load.Config) (*frozenGraph, string) {
 	return graph, ""
 }
 
-func frozenSourceBytes(name string, source interface{}) ([]byte, error) {
+func frozenSourceBytes(source interface{}) ([]byte, error) {
 	switch source := source.(type) {
-	case nil:
-		return os.ReadFile(name)
 	case []byte:
 		return source, nil
 	case string:
@@ -182,6 +197,8 @@ func frozenSourceBytes(name string, source interface{}) ([]byte, error) {
 func freezeBuildGraph(root *build.Instance, sources map[*ast.File]string) (*frozenGraph, error) {
 	graph := &frozenGraph{}
 	seen := make(map[*build.Instance]int)
+	var instances []*build.Instance
+	var hasExtern bool
 	var visit func(*build.Instance) (int, error)
 	visit = func(instance *build.Instance) (int, error) {
 		if index, exists := seen[instance]; exists {
@@ -192,8 +209,15 @@ func freezeBuildGraph(root *build.Instance, sources map[*ast.File]string) (*froz
 		}
 		index := len(graph.Nodes)
 		seen[instance] = index
+		instances = append(instances, instance)
 		graph.Nodes = append(graph.Nodes, frozenNode{})
-		node := frozenNode{Dir: instance.Dir, Root: instance.Root, Module: instance.Module, ImportPath: instance.ImportPath, PkgName: instance.PkgName, User: instance.User}
+		node := frozenNode{
+			Dir: instance.Dir, Root: instance.Root, Module: instance.Module,
+			ImportPath: instance.ImportPath, PkgName: instance.PkgName, User: instance.User,
+			CanonicalID: instance.CanonicalID, DisplayPath: instance.DisplayPath,
+			ModuleVersionPath: instance.ModuleVersion.Path(), ModuleVersion: instance.ModuleVersion.Version(),
+			DirLocation: freezeLocation(instance.DirLoc), RootLocation: freezeLocation(instance.RootLoc),
+		}
 		var err error
 		node.ModuleFile, err = json.Marshal(instance.ModuleFile)
 		if err != nil {
@@ -204,7 +228,29 @@ func freezeBuildGraph(root *build.Instance, sources map[*ast.File]string) (*froz
 			if !captured {
 				return 0, errors.New("source was not captured by loader")
 			}
-			node.Files = append(node.Files, frozenFile{Name: file.Filename, Source: data})
+			hasExtern = hasExtern || strings.Contains(data, "@extern")
+			entry := frozenFile{Name: file.Filename, Source: data}
+			if len(file.Decls) != 0 {
+				if tokenFile := file.Pos().File(); tokenFile != nil {
+					entry.Location = freezeLocation(tokenFile.FSLoc())
+					entry.LanguageVersion = tokenFile.LanguageVersion()
+				}
+			}
+			node.Files = append(node.Files, entry)
+			if instance.CanonicalImportPath != nil {
+				for spec := range file.ImportSpecs() {
+					importPath, err := strconv.Unquote(spec.Path.Value)
+					if err != nil {
+						return 0, err
+					}
+					if canonical := instance.CanonicalImportPath(importPath); canonical != importPath {
+						if node.CanonicalImports == nil {
+							node.CanonicalImports = make(map[string]string)
+						}
+						node.CanonicalImports[importPath] = canonical
+					}
+				}
+			}
 		}
 		for _, imported := range instance.Imports {
 			child, err := visit(imported)
@@ -219,24 +265,15 @@ func freezeBuildGraph(root *build.Instance, sources map[*ast.File]string) (*froz
 	if _, err := visit(root); err != nil {
 		return graph, err
 	}
-	instances := make([]*build.Instance, 0, len(seen))
-	for instance := range seen {
-		instances = append(instances, instance)
+	if hasExtern {
+		graph.Embedded = captureEmbedded(root, instances)
 	}
-	files := make(map[string]bool)
-	for _, node := range graph.Nodes {
-		for _, file := range node.Files {
-			files[file.Source] = true
-		}
-	}
-	var err error
-	graph.Embedded, err = captureEmbedded(root, instances, files)
-	return graph, err
+	return graph, nil
 }
 
-// build evaluates the snapshot.
+// build evaluates the snapshot with complete reads of internal references.
 func (graph frozenGraph) build() (cue.Value, error) {
-	return graph.evaluate(cuecontext.New())
+	return graph.evaluate(cuecontext.New(cuecontext.CompleteInternalReferences()))
 }
 
 func (graph frozenGraph) evaluate(runtime *cue.Context) (cue.Value, error) {
@@ -268,13 +305,48 @@ func (graph frozenGraph) instance() (*build.Instance, error) {
 	instances := make([]*build.Instance, len(graph.Nodes))
 	for index, node := range graph.Nodes {
 		instance := context.NewInstance(node.Dir, nil)
-		instance.EmbedFS = graph.embedFS
 		instance.Root, instance.Module, instance.ImportPath, instance.PkgName, instance.User = node.Root, node.Module, node.ImportPath, node.PkgName, node.User
+		instance.CanonicalID, instance.DisplayPath = node.CanonicalID, node.DisplayPath
+		if node.ModuleVersionPath != "" {
+			var err error
+			instance.ModuleVersion, err = module.NewVersion(node.ModuleVersionPath, node.ModuleVersion)
+			if err != nil {
+				return nil, errors.New("invalid frozen module version")
+			}
+		}
+		instance.RootLoc = graph.restoreLocation(node.RootLocation, node.Root)
+		instance.DirLoc = graph.restoreLocation(node.DirLocation, node.Dir)
+		if node.CanonicalImports != nil {
+			instance.CanonicalImportPath = func(importPath string) string {
+				if canonical, ok := node.CanonicalImports[importPath]; ok {
+					return canonical
+				}
+				return importPath
+			}
+		}
 		if json.Unmarshal(node.ModuleFile, &instance.ModuleFile) != nil {
 			return nil, errors.New("invalid frozen module")
 		}
 		for _, file := range node.Files {
-			if instance.AddFile(file.Name, file.Source) != nil {
+			version := file.LanguageVersion
+			if version == "" {
+				version = instance.LanguageVersion()
+			}
+			parseConfig := parser.NewConfig(parser.ParseComments, parser.Version(version))
+			syntax, err := parser.ParseFile(file.Name, file.Source, parseConfig)
+			if err != nil {
+				return nil, errors.New("invalid frozen syntax")
+			}
+			if len(syntax.Decls) != 0 {
+				if tokenFile := syntax.Pos().File(); tokenFile != nil {
+					loc := graph.restoreLocation(file.Location, file.Name)
+					if loc.IsZero() {
+						loc = token.FSLoc{FS: frozenEmbedFS{}, Path: "."}
+					}
+					tokenFile.SetFSLoc(loc)
+				}
+			}
+			if instance.AddSyntax(syntax) != nil {
 				return nil, errors.New("invalid frozen syntax")
 			}
 		}

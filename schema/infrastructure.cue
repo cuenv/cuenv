@@ -70,14 +70,6 @@ import "strings"
 // Managed string arguments marked write-only by the provider can refine a secret
 // with #WriteOnly. Attribute names stay exactly as the provider declares them;
 // these values stay null in all states and require manual companion-version bumps.
-//
-// Closedness: every nested definition is referenced inside a struct literal
-// (`{#InfrastructureState}` rather than `#InfrastructureState`). A project
-// file usually embeds `schema.#Project` at file level, which opens the
-// project struct; the struct literals keep each nested definition closed
-// there too, so a misspelled field (`resource:`, `sourcee:`) is an error
-// instead of an ignored extra field.
-
 #Infrastructure: {
 	// Where managed resource state lives. One state backend serves the
 	// top-level configuration and every named environment; each has its own
@@ -124,7 +116,7 @@ import "strings"
 	workflows?: {#InfrastructureWorkflows}
 
 	// Top-level configuration, used when no `--env` is given.
-	#InfrastructureConfiguration
+	#InfrastructureConfiguration...
 }
 
 // CI workflows for infrastructure: `cuenv infrastructure plan` on pull

@@ -2,6 +2,7 @@
 
 use crate::digest::Digest;
 use crate::error::{Error, Result};
+use crate::maintenance::CacheUseGuard;
 use async_trait::async_trait;
 use sha2::{Digest as _, Sha256};
 use std::fs;
@@ -72,6 +73,7 @@ pub trait Cas: Send + Sync {
 #[derive(Debug, Clone)]
 pub struct LocalCas {
     root: PathBuf,
+    coordinated_reads: bool,
 }
 
 impl LocalCas {
@@ -86,7 +88,24 @@ impl LocalCas {
         let tmp_dir = root.join("tmp");
         fs::create_dir_all(&cas_dir).map_err(|e| Error::io(e, &cas_dir, "create_dir_all"))?;
         fs::create_dir_all(&tmp_dir).map_err(|e| Error::io(e, &tmp_dir, "create_dir_all"))?;
-        Ok(Self { root })
+        Ok(Self {
+            root,
+            coordinated_reads: true,
+        })
+    }
+
+    /// Read CAS data on behalf of maintenance, which coordinates its own locking.
+    pub(crate) fn for_inspection(root: &Path) -> Self {
+        Self {
+            root: root.to_path_buf(),
+            coordinated_reads: false,
+        }
+    }
+
+    fn lock_for_read(&self) -> Result<Option<CacheUseGuard>> {
+        self.coordinated_reads
+            .then(|| CacheUseGuard::acquire(&self.root))
+            .transpose()
     }
 
     /// Root directory of this store.
@@ -189,10 +208,12 @@ impl LocalCas {
 #[async_trait]
 impl Cas for LocalCas {
     async fn contains(&self, digest: &Digest) -> Result<bool> {
+        let _lock = self.lock_for_read()?;
         Self::contains_valid_blob(&self.blob_path(digest)?, digest)
     }
 
     async fn get(&self, digest: &Digest) -> Result<Vec<u8>> {
+        let _lock = self.lock_for_read()?;
         let path = self.blob_path(digest)?;
         match fs::read(&path) {
             Ok(bytes) => {
@@ -207,6 +228,7 @@ impl Cas for LocalCas {
     }
 
     async fn get_to_file(&self, digest: &Digest, destination: &Path) -> Result<()> {
+        let _lock = self.lock_for_read()?;
         let src = self.blob_path(digest)?;
         if !src.exists() {
             return Err(Error::not_found(digest.hash.clone()));
@@ -219,6 +241,7 @@ impl Cas for LocalCas {
     }
 
     async fn put_bytes(&self, bytes: &[u8]) -> Result<Digest> {
+        let _lock = CacheUseGuard::acquire(&self.root)?;
         let digest = Digest::of_bytes(bytes);
         let dst = self.blob_path(&digest)?;
         if Self::contains_valid_blob(&dst, &digest)? {
@@ -239,6 +262,7 @@ impl Cas for LocalCas {
     }
 
     async fn put_file(&self, source: &Path) -> Result<Digest> {
+        let _lock = CacheUseGuard::acquire(&self.root)?;
         // Hash the exact bytes copied into the temporary file. Hashing the
         // source and then copying it in a second pass permits a concurrent
         // writer to install different bytes under the first pass's digest.

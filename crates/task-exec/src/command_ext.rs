@@ -62,6 +62,21 @@ impl TaskCommandExt for Task {
     }
 }
 
+pub fn command_spec_in_sandbox(
+    task: &Task,
+    environment: &cuenv_core::environment::Environment,
+    sandbox: &crate::sandbox::EffectiveSandbox,
+) -> Result<TaskCommandSpec> {
+    task.command_spec(|command| {
+        if cfg!(target_os = "linux") && sandbox.strict_proof().is_some() {
+            // Resolve bare commands with the child's PATH inside the mounted runtime.
+            command.to_string()
+        } else {
+            environment.resolve_command(command)
+        }
+    })
+}
+
 fn effective_script_shell(task: &Task) -> EffectiveScriptShell {
     if let Some(script_shell) = task.script_shell {
         let (command, flag) = script_shell.command_and_flag();

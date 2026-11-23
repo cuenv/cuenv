@@ -50,6 +50,10 @@ pub struct CommandStep {
     #[serde(skip_serializing_if = "HashMap::is_empty")]
     pub env: HashMap<String, String>,
 
+    /// Buildkite secret keys by the job environment variable that receives them.
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    pub secrets: HashMap<String, String>,
+
     /// Agent targeting rules
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agents: Option<AgentRules>,

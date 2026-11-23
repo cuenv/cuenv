@@ -6,7 +6,7 @@ use cuenv_tool_runtime::{
     Platform, ResolvedTool, ResolvedToolActivationStep, ToolActivationResolveOptions, ToolOptions,
     ToolRegistry,
 };
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 
 /// Find the lockfile starting from a directory.
@@ -29,12 +29,13 @@ fn find_lockfile(start_dir: &Path) -> Option<PathBuf> {
 }
 
 /// Create a tool registry with all available providers.
-fn create_tool_registry() -> ToolRegistry {
+fn create_tool_registry(withheld_env: &BTreeSet<String>) -> ToolRegistry {
     let mut registry = ToolRegistry::new();
 
-    registry.register(cuenv_tools_nix::NixToolProvider::new());
+    registry.register(cuenv_tools_nix::NixToolProvider::new().with_withheld_env(withheld_env));
     registry.register(cuenv_tools_github::GitHubToolProvider::new());
-    registry.register(cuenv_tools_rustup::RustupToolProvider::new());
+    registry
+        .register(cuenv_tools_rustup::RustupToolProvider::new().with_withheld_env(withheld_env));
     registry.register(cuenv_tools_url::UrlToolProvider::new());
 
     registry
@@ -79,6 +80,7 @@ pub(super) fn apply_tool_activation_steps(
 /// Ensure all tools from the lockfile are downloaded for the current platform.
 pub(super) async fn ensure_tools_downloaded(
     project_root: &Path,
+    withheld_env: &BTreeSet<String>,
 ) -> std::result::Result<(), ExecutorError> {
     let Some(lockfile_path) = find_lockfile(project_root) else {
         tracing::debug!("No lockfile found - skipping tool download");
@@ -111,7 +113,7 @@ pub(super) async fn ensure_tools_downloaded(
     let platform = Platform::current();
     let platform_str = platform.to_string();
     let options = ToolOptions::default();
-    let registry = create_tool_registry();
+    let registry = create_tool_registry(withheld_env);
 
     let mut providers_used = HashSet::new();
     for tool in lockfile.tools.values() {

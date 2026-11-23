@@ -1,6 +1,6 @@
 //! Environment variable secret resolver
 
-use crate::{SecretError, SecretResolver, SecretSpec};
+use crate::{ResolveSecret, SecretError, SecretResolver, SecretSpec, is_withheld_env};
 use async_trait::async_trait;
 
 /// Resolves secrets from environment variables
@@ -28,6 +28,19 @@ impl SecretResolver for EnvSecretResolver {
             name: name.to_string(),
             secret_source: spec.source.clone(),
         })
+    }
+
+    async fn resolve_with_options(
+        &self,
+        request: ResolveSecret<'_>,
+    ) -> Result<String, SecretError> {
+        if is_withheld_env(request.withheld_env, &request.spec.source) {
+            return Err(SecretError::NotFound {
+                name: request.name.to_owned(),
+                secret_source: request.spec.source.clone(),
+            });
+        }
+        self.resolve(request.name, request.spec).await
     }
 }
 

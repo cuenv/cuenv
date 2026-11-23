@@ -27,7 +27,7 @@ type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
 /// The module is the schema's own, so the fixture imports the real schema
 /// copied into it.
-const MODULE: &str = "module: \"github.com/cuenv/cuenv\"\nlanguage: version: \"v0.14.1\"\n";
+const MODULE: &str = "module: \"github.com/cuenv/cuenv\"\nlanguage: version: \"v0.18.0\"\n";
 
 /// Tasks in the chain behind `build`. Before the fix one was enough to run
 /// out of memory; the chain makes an exponential regression unmistakable.

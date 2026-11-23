@@ -33,6 +33,8 @@ impl<'task_handler> TaskHandler<'task_handler> {
             skip_dependencies,
             continue_on_error,
             dry_run,
+            affected,
+            from,
             task_args,
         } = command
         else {
@@ -84,6 +86,9 @@ impl<'task_handler> TaskHandler<'task_handler> {
         }
         if dry_run.is_dry_run() {
             request = request.with_dry_run();
+        }
+        if affected || from.is_some() {
+            request = request.with_affected(from);
         }
 
         Ok(Self { request })

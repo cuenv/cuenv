@@ -52,7 +52,7 @@ fn create_nix_runtime_test_dir() -> TestResult<TempDir> {
     fs::create_dir_all(path.join("cue.mod"))?;
     fs::write(
         path.join("cue.mod/module.cue"),
-        "module: \"github.com/cuenv/cuenv\"\nlanguage: version: \"v0.14.1\"\n",
+        "module: \"github.com/cuenv/cuenv\"\nlanguage: version: \"v0.18.0\"\n",
     )?;
     let schema = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../schema");
     copy_schema(&schema, &path.join("schema"))?;

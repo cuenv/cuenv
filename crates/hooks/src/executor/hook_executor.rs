@@ -5,6 +5,7 @@ use crate::types::{
     ExecutionStatus, Hook, HookExecutionConfig, HookFailure, HookResult, HookSuccess, HookTimeout,
 };
 use crate::{Error, Result};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
@@ -396,7 +397,7 @@ impl HookExecutor {
         let timeout = self.config.default_timeout_seconds;
 
         // No validation - users approved this config with cuenv allow
-        execute_hook_with_timeout(hook, &timeout).await
+        execute_hook_with_timeout(hook, timeout, &BTreeSet::new()).await
     }
 }
 
@@ -408,6 +409,14 @@ pub struct HookRunState<'run> {
     pub state: &'run mut HookExecutionState,
     /// Exact reservation owned by this worker.
     pub identity: &'run crate::HookRunIdentity,
+}
+
+/// Execution inputs for a joined hook run.
+pub struct HookRunOptions<'run> {
+    /// State and reservation for the hook worker.
+    pub run: HookRunState<'run>,
+    /// Environment variables withheld from hook commands and source shells.
+    pub withheld_env: &'run BTreeSet<String>,
 }
 
 /// Execute a joined hook run sequentially.
@@ -423,11 +432,35 @@ pub async fn execute_hooks(
     config: &HookExecutionConfig,
     run: HookRunState<'_>,
 ) -> Result<()> {
+    execute_hooks_with_options(
+        hooks,
+        config,
+        HookRunOptions {
+            run,
+            withheld_env: &BTreeSet::new(),
+        },
+    )
+    .await
+}
+
+/// Execute a joined hook run with explicit child environment exclusions.
+///
+/// # Errors
+/// Returns an error if the reservation, child, or inputs cannot be handled safely.
+pub async fn execute_hooks_with_options(
+    hooks: Vec<Hook>,
+    config: &HookExecutionConfig,
+    options: HookRunOptions<'_>,
+) -> Result<()> {
+    let HookRunOptions { run, withheld_env } = options;
     let HookRunState {
         manager,
         state,
         identity,
     } = run;
+    state
+        .environment_vars
+        .retain(|name, _| !source_environment::is_withheld_environment_name(name, withheld_env));
     let hook_count = hooks.len();
     let mut failed = false;
     for (index, hook) in hooks.into_iter().enumerate() {
@@ -446,6 +479,7 @@ pub async fn execute_hooks(
             identity,
             timeout_seconds: config.default_timeout_seconds,
             environment: None,
+            withheld_env,
             shell: None,
             input: None,
         };
@@ -486,7 +520,11 @@ pub async fn execute_hooks(
             };
             match evaluate_reserved_environment(source, &base_context).await {
                 Ok(ReservedEnvironment::Captured(env_vars, removed_keys)) => {
-                    state.environment_vars.extend(env_vars);
+                    state
+                        .environment_vars
+                        .extend(env_vars.into_iter().filter(|(name, _)| {
+                            !source_environment::is_withheld_environment_name(name, withheld_env)
+                        }));
                     for key in removed_keys {
                         state.environment_vars.remove(&key);
                     }
@@ -617,6 +655,7 @@ struct ReservedHookContext<'run> {
     identity: &'run crate::HookRunIdentity,
     timeout_seconds: u64,
     environment: Option<&'run std::collections::HashMap<String, String>>,
+    withheld_env: &'run BTreeSet<String>,
     shell: Option<&'run str>,
     input: Option<&'run [u8]>,
 }
@@ -769,7 +808,7 @@ async fn execute_reserved_hook(
     if let Some(shell) = context.shell {
         command.env("SHELL", shell);
     }
-    command.env_remove("CUENV_HOOK_SESSION");
+    source_environment::remove_withheld_environment(&mut command, context.withheld_env);
     let mut child = match context
         .manager
         .spawn_run_child(context.identity, command)
@@ -954,50 +993,50 @@ async fn execute_reserved_hook(
 /// Execute a single hook with timeout
 pub(super) async fn execute_hook_with_timeout(
     hook: Hook,
-    timeout_seconds: &u64,
+    timeout_seconds: u64,
+    withheld_env: &BTreeSet<String>,
 ) -> Result<HookResult> {
     let start_time = Instant::now();
     debug!("Executing hook (source: {})", hook.source.unwrap_or(false));
 
     let mut command = Command::new(&hook.command);
     command.args(&hook.args);
-    command.env_remove("CUENV_HOOK_SESSION");
     if let Some(directory) = &hook.dir {
         command.current_dir(directory);
     }
     if hook.source.unwrap_or(false) {
-        command.env("SHELL", source_environment::detect_shell().await);
+        command.env(
+            "SHELL",
+            source_environment::detect_shell(withheld_env).await,
+        );
     }
+    source_environment::remove_withheld_environment(&mut command, withheld_env);
 
-    let output = match super::output::run_command(
-        command,
-        None,
-        Duration::from_secs(*timeout_seconds),
-    )
-    .await
-    {
-        Ok(Some(output)) => output,
-        Ok(None) => {
-            warn!("Hook timed out after {} seconds", timeout_seconds);
-            return Ok(HookResult::timeout(HookTimeout {
-                hook,
-                stdout: String::new(),
-                stderr: String::new(),
-                timeout_seconds: *timeout_seconds,
-            }));
-        }
-        Err(Error::ProcessStart) => {
-            return Ok(HookResult::failure(HookFailure {
-                hook,
-                exit_status: None,
-                stdout: String::new(),
-                stderr: String::new(),
-                duration_ms: duration_millis(start_time.elapsed()),
-                error: "Failed to execute command".to_string(),
-            }));
-        }
-        Err(error) => return Err(error),
-    };
+    let output =
+        match super::output::run_command(command, None, Duration::from_secs(timeout_seconds)).await
+        {
+            Ok(Some(output)) => output,
+            Ok(None) => {
+                warn!("Hook timed out after {} seconds", timeout_seconds);
+                return Ok(HookResult::timeout(HookTimeout {
+                    hook,
+                    stdout: String::new(),
+                    stderr: String::new(),
+                    timeout_seconds,
+                }));
+            }
+            Err(Error::ProcessStart) => {
+                return Ok(HookResult::failure(HookFailure {
+                    hook,
+                    exit_status: None,
+                    stdout: String::new(),
+                    stderr: String::new(),
+                    duration_ms: duration_millis(start_time.elapsed()),
+                    error: "Failed to execute command".to_string(),
+                }));
+            }
+            Err(error) => return Err(error),
+        };
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     let duration_ms = duration_millis(start_time.elapsed());

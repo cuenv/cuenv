@@ -159,7 +159,7 @@
           pname = "libcue-bridge";
           version = "0.0.0";
           src = cueBridgeSource;
-          vendorHash = "sha256-va6WxRq2nELlhOOPf1IzJl3LaCAu0ZaYSP9ik28kpaY=";
+          vendorHash = "sha256-5+p21QLVBuir1j5jxHOtE94kzyOBka5kVuXUFhDhOgk=";
           nativeBuildInputs = pkgs.lib.optionals (!pkgs.stdenv.hostPlatform.isDarwin) [ pkgs.binutils ];
         };
         buildGoModule126 = pkgs.buildGoModule.override { go = pkgs.go_1_26; };
@@ -569,7 +569,10 @@
         nextest-check = craneLib.cargoNextest (workspaceCheckArgs // ciBuildArgs // {
           cargoArtifacts = workspaceCiCargoArtifacts;
           cargoExtraArgs = workspaceAllFeaturesCargoExtraArgs;
-          nativeBuildInputs = commonArgs.nativeBuildInputs ++ [ pkgs.fish pkgs.zsh pkgs.powershell ];
+          nativeBuildInputs =
+            commonArgs.nativeBuildInputs
+            ++ [ pkgs.fish pkgs.zsh pkgs.powershell ]
+            ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.util-linux ];
           CUENV_TEST_PWSH = "${pkgs.powershell}/bin/pwsh";
           # Hook supervisor tests must exercise the CLI instead of passing when
           # an independently built binary is unavailable. They take the one
@@ -924,10 +927,22 @@
           meta.mainProgram = "cuenv";
         });
 
+        # The CLI must understand the language version in cue.mod/module.cue.
+        cue-cli = (pkgs.cue.override { buildGoModule = buildGoModule126; }).overrideAttrs (final: _: {
+          version = "0.18.0-rc.4";
+          src = pkgs.fetchFromGitHub {
+            owner = "cue-lang";
+            repo = "cue";
+            tag = "v${final.version}";
+            hash = "sha256-5bnrVCxfO0xqW/fXOtlpUPHgjJNaILu0VW8vtfnF+Q4=";
+          };
+          vendorHash = "sha256-5KTIGS0IrclWIQYjPSNW9Qd5gctPZPCd0htSRgIXBvc=";
+        });
+
         # Development tools configuration
         devTools = with pkgs; [
           go_1_26
-          cue
+          cue-cli
           antora
           cargo-nextest
           cargo-deny

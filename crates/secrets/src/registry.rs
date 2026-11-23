@@ -3,8 +3,8 @@
 //! Provides a registry for dynamically registering and looking up secret resolvers.
 //! This allows consumers to register providers at runtime without hardcoding them.
 
-use crate::{SecretError, SecretResolver, SecretSpec};
-use std::collections::HashMap;
+use crate::{ResolveSecret, SecretError, SecretResolver, SecretSpec};
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 /// Registry for secret resolvers
@@ -98,13 +98,33 @@ impl SecretRegistry {
         name: &str,
         spec: &SecretSpec,
     ) -> Result<String, SecretError> {
+        self.resolve_with_options(
+            provider,
+            ResolveSecret {
+                name,
+                spec,
+                withheld_env: &BTreeSet::new(),
+            },
+        )
+        .await
+    }
+
+    /// Resolve a secret with a caller-provided environment policy.
+    ///
+    /// # Errors
+    /// Returns an error when the resolver is missing or fails.
+    pub async fn resolve_with_options(
+        &self,
+        provider: &str,
+        request: ResolveSecret<'_>,
+    ) -> Result<String, SecretError> {
         let resolver = self
             .get(provider)
             .ok_or_else(|| SecretError::UnsupportedResolver {
                 resolver: provider.to_string(),
             })?;
 
-        resolver.resolve(name, spec).await
+        resolver.resolve_with_options(request).await
     }
 
     /// Let the resolver for `provider` prepare to resolve `specs`; see

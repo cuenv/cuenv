@@ -13,6 +13,7 @@ use cuenv_tool_runtime::{
     ToolSource,
 };
 use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use tokio::process::Command;
 use tracing::{debug, info};
@@ -21,7 +22,16 @@ use tracing::{debug, info};
 ///
 /// Uses the system's rustup installation to manage Rust toolchains,
 /// components, and cross-compilation targets.
-pub struct RustupToolProvider;
+pub struct RustupToolProvider {
+    withheld_env: BTreeSet<String>,
+}
+
+/// The default Rustup tool provider with the inherited environment.
+#[expect(
+    non_upper_case_globals,
+    reason = "Maintain the public value constructor of the Rustup tool provider"
+)]
+pub const RustupToolProvider: RustupToolProvider = RustupToolProvider::new();
 
 #[derive(Default)]
 struct ToolchainOptions<'options> {
@@ -39,8 +49,25 @@ impl Default for RustupToolProvider {
 impl RustupToolProvider {
     /// Create a new rustup tool provider.
     #[must_use]
-    pub fn new() -> Self {
-        Self
+    pub const fn new() -> Self {
+        Self {
+            withheld_env: BTreeSet::new(),
+        }
+    }
+
+    /// Remove the named environment variables from rustup subprocesses.
+    #[must_use]
+    pub fn with_withheld_env(mut self, names: &BTreeSet<String>) -> Self {
+        self.withheld_env.clone_from(names);
+        self
+    }
+
+    fn command(&self) -> Command {
+        let mut command = Command::new("rustup");
+        for name in &self.withheld_env {
+            command.env_remove(name);
+        }
+        command
     }
 
     /// Get the rustup home directory.
@@ -93,7 +120,7 @@ impl RustupToolProvider {
         let profile = options.profile;
         let components = options.components;
         let targets = options.targets;
-        let mut cmd = Command::new("rustup");
+        let mut cmd = self.command();
         cmd.arg("toolchain").arg("install").arg(toolchain);
 
         // Add profile if specified
@@ -170,7 +197,8 @@ impl ToolProvider for RustupToolProvider {
 
     async fn check_prerequisites(&self) -> Result<()> {
         // Check if rustup is available
-        let output = Command::new("rustup")
+        let output = self
+            .command()
             .arg("--version")
             .output()
             .await
@@ -323,6 +351,20 @@ impl ToolProvider for RustupToolProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn command_excludes_configured_credentials() {
+        let name = "CUENV_TEST_TOOL_CACHE_CREDENTIAL";
+        let provider = RustupToolProvider::new().with_withheld_env(&BTreeSet::from([name.into()]));
+        let command = provider.command();
+
+        assert!(
+            command
+                .as_std()
+                .get_envs()
+                .any(|(key, value)| key == name && value.is_none())
+        );
+    }
 
     #[test]
     fn test_provider_name() {

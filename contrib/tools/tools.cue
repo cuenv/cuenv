@@ -173,7 +173,7 @@ import "github.com/cuenv/cuenv/schema"
 // Usage:
 //
 //	runtime: schema.#ToolsRuntime & {
-//	    tools: cue: xTools.#Cue & {version: "0.15.3"}
+//	    tools: cue: xTools.#Cue & {version: "0.18.0-rc.4"}
 //	}
 #Cue: schema.#Tool & {
 	version!: string

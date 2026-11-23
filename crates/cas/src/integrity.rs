@@ -77,6 +77,89 @@ pub async fn missing_blobs(cas: &dyn Cas, result: &ActionResult) -> Result<Vec<D
     Ok(inventory.missing)
 }
 
+/// All CAS blob digests transitively referenced by `result`.
+///
+/// Includes `output_files`, `stdout_digest`, `stderr_digest`, each
+/// `output_directories[i].tree_digest`, and every leaf file digest inside each
+/// decoded `Tree`. Digests are returned in discovery order with duplicates
+/// removed.
+///
+/// # Errors
+///
+/// Returns an error if a referenced `Tree` blob cannot be read or decoded, if
+/// a directory entry name is invalid, or if an output tree nests deeper than
+/// [`MAX_TREE_DEPTH`].
+pub async fn referenced_blobs(cas: &dyn Cas, result: &ActionResult) -> Result<Vec<Digest>> {
+    let mut digests = OrderedDigests::default();
+
+    for file in &result.output_files {
+        digests.insert(&file.digest);
+    }
+    if let Some(stdout) = &result.stdout_digest {
+        digests.insert(stdout);
+    }
+    if let Some(stderr) = &result.stderr_digest {
+        digests.insert(stderr);
+    }
+
+    for directory in &result.output_directories {
+        digests.insert(&directory.tree_digest);
+        let tree =
+            crate::merkle::decode_tree(&cas.get(&directory.tree_digest).await?).map_err(|e| {
+                Error::serialization(format!("decode Tree {}: {e}", directory.tree_digest))
+            })?;
+        let mut children = HashMap::with_capacity(tree.children.len());
+        for child in tree.children {
+            children.insert(crate::merkle::directory_digest(&child)?, child);
+        }
+        digests.collect_tree_digests(&children, &tree.root, 0)?;
+    }
+
+    Ok(digests.ordered)
+}
+
+#[derive(Default)]
+struct OrderedDigests {
+    seen: HashSet<Digest>,
+    ordered: Vec<Digest>,
+}
+
+impl OrderedDigests {
+    fn insert(&mut self, digest: &Digest) {
+        if self.seen.insert(digest.clone()) {
+            self.ordered.push(digest.clone());
+        }
+    }
+
+    fn collect_tree_digests(
+        &mut self,
+        children: &HashMap<Digest, Directory>,
+        directory: &Directory,
+        depth: usize,
+    ) -> Result<()> {
+        if depth >= MAX_TREE_DEPTH {
+            return Err(Error::serialization(format!(
+                "output tree nests deeper than {MAX_TREE_DEPTH} levels"
+            )));
+        }
+        crate::merkle::validate_entry_names(directory)?;
+
+        for file in &directory.files {
+            self.insert(&file.digest);
+        }
+        for child in &directory.directories {
+            let child_directory = children.get(&child.digest).ok_or_else(|| {
+                Error::serialization(format!(
+                    "output Tree is missing child directory {} ({})",
+                    child.name, child.digest
+                ))
+            })?;
+            self.collect_tree_digests(children, child_directory, depth + 1)?;
+        }
+        Ok(())
+    }
+}
+
 #[derive(Default)]
 struct BlobInventory {
     seen: HashSet<Digest>,

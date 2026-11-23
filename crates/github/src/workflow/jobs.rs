@@ -1,7 +1,7 @@
 //! GitHub Actions job construction helpers.
 
 use crate::workflow::emitter::GitHubActionsEmitter;
-use crate::workflow::schema::{Job, RunsOn, Step};
+use crate::workflow::schema::{Environment, Job, RunsOn, Step};
 
 use cuenv_ci::ir::{BuildStage, IntermediateRepresentation, OutputType, Task};
 use indexmap::IndexMap;
@@ -363,6 +363,23 @@ impl GitHubActionsEmitter {
             .collect()
     }
 
+    fn task_job_environment(
+        &self,
+        task: &Task,
+        ir: &IntermediateRepresentation,
+        orchestrated_step: Option<&mut Step>,
+    ) -> Option<Environment> {
+        let approval = task
+            .manual_approval
+            .then_some(self.approval_environment.as_str());
+        let cache_environment =
+            orchestrated_step.and_then(|step| self.apply_remote_cache_step_env(step, ir, approval));
+        approval
+            .map(str::to_string)
+            .or(cache_environment)
+            .map(Environment::Name)
+    }
+
     /// Build a simple job from an IR task (no matrix expansion).
     ///
     /// This method creates a single job that:
@@ -444,6 +461,11 @@ impl GitHubActionsEmitter {
             );
         }
 
+        let environment = self.task_job_environment(
+            task,
+            ir,
+            (options.execution == TaskExecution::Orchestrated).then_some(&mut task_step),
+        );
         steps.push(task_step);
 
         let orchestrator_outputs: Vec<_> = task
@@ -485,7 +507,7 @@ impl GitHubActionsEmitter {
             needs: Vec::new(),
             if_condition: None,
             strategy: None,
-            environment: None,
+            environment,
             env: IndexMap::new(),
             concurrency: None,
             continue_on_error: None,
@@ -585,6 +607,7 @@ impl GitHubActionsEmitter {
             );
         }
 
+        let environment = self.task_job_environment(task, ir, Some(&mut task_step));
         steps.push(task_step);
 
         Job {
@@ -597,7 +620,7 @@ impl GitHubActionsEmitter {
             needs: options.previous_jobs.to_vec(),
             if_condition: None,
             strategy: None,
-            environment: None,
+            environment,
             env: IndexMap::new(),
             concurrency: None,
             continue_on_error: None,
@@ -698,6 +721,11 @@ impl GitHubActionsEmitter {
                 // architecture rather than its own passthrough reference.
                 task_step.env.insert("CUENV_ARCH".to_string(), arch.clone());
 
+                let environment = self.task_job_environment(
+                    task,
+                    ir,
+                    (options.execution == TaskExecution::Orchestrated).then_some(&mut task_step),
+                );
                 steps.push(task_step);
 
                 let artifact_path = if task.outputs.is_empty() {
@@ -740,7 +768,7 @@ impl GitHubActionsEmitter {
                         needs: options.previous_jobs.to_vec(),
                         if_condition: None,
                         strategy: None,
-                        environment: None,
+                        environment,
                         env: IndexMap::new(),
                         concurrency: None,
                         continue_on_error: None,

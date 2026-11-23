@@ -21,7 +21,7 @@ type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
 /// The module is the schema's own, so the fixture imports the real schema
 /// copied into it. The bridge loads this language version.
-const MODULE: &str = "module: \"github.com/cuenv/cuenv\"\nlanguage: version: \"v0.14.1\"\n";
+const MODULE: &str = "module: \"github.com/cuenv/cuenv\"\nlanguage: version: \"v0.18.0\"\n";
 
 /// `content`: holds articles it declares nothing about, and a task of its
 /// own called like one of `app`'s.
@@ -548,7 +548,7 @@ fn an_unrelated_directory_that_does_not_evaluate_does_not_fail_the_reader() -> T
 
 /// `content/drafts` holds no project of its own: it inherits `content`'s
 /// `name` from the directory above.
-const DRAFTS: &str = "package cuenv\n\ndrafts: true\n";
+const DRAFTS: &str = "package cuenv\n\nenv: DRAFTS: \"true\"\n";
 
 #[test]
 fn a_reference_through_a_directory_that_only_inherits_the_name_is_rejected() -> TestResult {

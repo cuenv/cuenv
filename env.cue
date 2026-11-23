@@ -345,8 +345,8 @@ schema.#Project & {
 			}
 
 			// Evaluates every example and tests/schema-compat fixture as a
-			// consumer module under each supported CUE release and language
-			// version. Installs the CUE releases with `go install`.
+			// consumer module at language v0.18.0. Installs configured
+			// CUE releases with `go install`.
 			"schema-compat": schema.#Task & {
 				command: "bash"
 				args: ["scripts/check-schema-compat.sh"]
@@ -551,7 +551,7 @@ schema.#Project & {
 					find "$audit_db" -name '*.md' -exec sed -E -i.bak '/^cvss = "CVSS:4\\.0\\//d' {} +
 					find "$audit_db" -name '*.bak' -delete
 
-					cargo audit --db "$audit_db" --no-fetch --deny warnings --ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2025-0134 --ignore RUSTSEC-2026-0006 --ignore RUSTSEC-2026-0020 --ignore RUSTSEC-2026-0021 --ignore RUSTSEC-2026-0037
+					cargo audit --db "$audit_db" --no-fetch --deny warnings --ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2025-0134 --ignore RUSTSEC-2026-0037
 					"""
 				inputs: list.Concat([_baseInputs, ["Cargo.lock"]])
 			}

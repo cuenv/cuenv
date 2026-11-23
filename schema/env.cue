@@ -39,7 +39,7 @@ package schema
 
 // #Env defines the structure for environment variable configuration
 #Env: {
-	#Environment
+	#Environment...
 
 	// Environment-specific overrides
 	environment?: [string]: #Environment
@@ -50,7 +50,7 @@ package schema
 	// its secret is never resolved, when no context that sets it is active.
 	// Two contexts that can be active together must not set the same variable.
 	context?: [string]: {
-		#Environment
+		#Environment...
 
 		// Environment-specific overrides within the context
 		environment?: [string]: #Environment
