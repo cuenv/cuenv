@@ -230,21 +230,28 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    /// Whether the fake server overwrites a blob it already indexes.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Replace {
+        Overwrite,
+        Ignore,
+    }
+
     /// A server whose index can say "present" for bytes that are wrong, and
     /// that skips `put_*` for any digest it indexes, like `FindMissingBlobs`
-    /// followed by an upload. `honour_replace` decides whether a forced
-    /// upload overwrites the stored bytes.
+    /// followed by an upload. `replace` decides whether a forced upload
+    /// overwrites the stored bytes.
     struct IndexedServer {
         blobs: Mutex<HashMap<Digest, Vec<u8>>>,
-        honour_replace: bool,
+        replace: Replace,
         uploads: AtomicUsize,
     }
 
     impl IndexedServer {
-        fn new(honour_replace: bool) -> Self {
+        fn new(replace: Replace) -> Self {
             Self {
                 blobs: Mutex::new(HashMap::new()),
-                honour_replace,
+                replace,
                 uploads: AtomicUsize::new(0),
             }
         }
@@ -256,10 +263,10 @@ mod tests {
                 .insert(digest.clone(), b"rotten".to_vec());
         }
 
-        fn store(&self, digest: Digest, bytes: &[u8], overwrite: bool) {
+        fn store(&self, digest: Digest, bytes: &[u8], replace: Replace) {
             self.uploads.fetch_add(1, Ordering::Relaxed);
             let mut blobs = self.blobs.lock().unwrap();
-            if overwrite || !blobs.contains_key(&digest) {
+            if replace == Replace::Overwrite || !blobs.contains_key(&digest) {
                 blobs.insert(digest, bytes.to_vec());
             }
         }
@@ -295,7 +302,7 @@ mod tests {
         async fn put_bytes(&self, bytes: &[u8]) -> Result<Digest> {
             let digest = Digest::of_bytes(bytes);
             if !self.blobs.lock().unwrap().contains_key(&digest) {
-                self.store(digest.clone(), bytes, false);
+                self.store(digest.clone(), bytes, Replace::Ignore);
             }
             Ok(digest)
         }
@@ -305,7 +312,7 @@ mod tests {
         }
         async fn replace_bytes(&self, bytes: &[u8]) -> Result<Digest> {
             let digest = Digest::of_bytes(bytes);
-            self.store(digest.clone(), bytes, self.honour_replace);
+            self.store(digest.clone(), bytes, self.replace);
             Ok(digest)
         }
         async fn replace_file(&self, source: &Path) -> Result<Digest> {
@@ -314,8 +321,8 @@ mod tests {
         }
     }
 
-    fn poisoned(honour_replace: bool) -> (Arc<IndexedServer>, CorruptionAwareCas, Digest) {
-        let server = Arc::new(IndexedServer::new(honour_replace));
+    fn poisoned(replace: Replace) -> (Arc<IndexedServer>, CorruptionAwareCas, Digest) {
+        let server = Arc::new(IndexedServer::new(replace));
         let digest = Digest::of_bytes(b"output");
         server.corrupt(&digest);
         let cas = CorruptionAwareCas::new(server.clone());
@@ -324,7 +331,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_corrupt_read_hides_the_blob_from_contains() {
-        let (_, cas, digest) = poisoned(true);
+        let (_, cas, digest) = poisoned(Replace::Overwrite);
         assert!(
             cas.contains(&digest).await.unwrap(),
             "the index says present"
@@ -339,7 +346,7 @@ mod tests {
 
     #[tokio::test]
     async fn uploading_a_known_corrupt_blob_replaces_it_and_clears_the_record() {
-        let (server, cas, digest) = poisoned(true);
+        let (server, cas, digest) = poisoned(Replace::Overwrite);
         let _ = cas.get(&digest).await;
         assert_eq!(cas.put_bytes(b"output").await.unwrap(), digest);
         assert_eq!(server.uploads.load(Ordering::Relaxed), 1);
@@ -350,7 +357,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_file_upload_of_a_known_corrupt_blob_replaces_it() {
-        let (server, cas, digest) = poisoned(true);
+        let (server, cas, digest) = poisoned(Replace::Overwrite);
         let _ = cas.get(&digest).await;
         let directory = tempfile::tempdir().unwrap();
         let source = directory.path().join("output");
@@ -362,7 +369,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_server_that_ignores_the_replacement_stays_recorded() {
-        let (_, cas, digest) = poisoned(false);
+        let (_, cas, digest) = poisoned(Replace::Ignore);
         let _ = cas.get(&digest).await;
         cas.put_bytes(b"output").await.unwrap();
         assert!(cas.is_known_corrupt(&digest));
@@ -371,7 +378,7 @@ mod tests {
 
     #[tokio::test]
     async fn without_a_corrupt_read_uploads_are_skipped_as_before() {
-        let (server, cas, digest) = poisoned(true);
+        let (server, cas, digest) = poisoned(Replace::Overwrite);
         cas.put_bytes(b"output").await.unwrap();
         assert_eq!(server.uploads.load(Ordering::Relaxed), 0);
         assert!(cas.contains(&digest).await.unwrap());
