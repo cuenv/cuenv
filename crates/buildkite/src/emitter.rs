@@ -5,6 +5,7 @@
 use crate::schema::{AgentRules, BlockStep, CommandStep, CommandValue, DependsOn, Pipeline, Step};
 use cuenv_ci::emitter::{Emitter, EmitterError, EmitterResult};
 use cuenv_ci::ir::{BuildStage, IntermediateRepresentation, OutputType, Task};
+use cuenv_core::manifest::{CacheProtocol, RemoteCache};
 use std::collections::HashMap;
 
 /// Buildkite pipeline emitter
@@ -31,6 +32,24 @@ pub struct BuildkiteEmitter {
     pub use_emojis: bool,
     /// Default queue for agents
     pub default_queue: Option<String>,
+    remote_cache: RemoteCacheAccess,
+}
+
+/// Whether the provider event and configured ref allow requesting write credentials.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuildkiteCacheTrust {
+    /// Only read credentials may be requested.
+    Untrusted,
+    /// A protected ref may request the write credential on the configured queue.
+    Protected,
+}
+
+#[derive(Debug, Clone, Default)]
+enum RemoteCacheAccess {
+    #[default]
+    Inherit,
+    Disabled,
+    Configured(Box<RemoteCache>, BuildkiteCacheTrust),
 }
 
 #[derive(Clone, Copy)]
@@ -63,6 +82,118 @@ impl BuildkiteEmitter {
     pub fn with_default_queue(mut self, queue: impl Into<String>) -> Self {
         self.default_queue = Some(queue.into());
         self
+    }
+
+    /// Configure remote cache credentials and storage for generated command steps.
+    #[must_use]
+    pub fn with_remote_cache(mut self, remote: RemoteCache, trust: BuildkiteCacheTrust) -> Self {
+        self.remote_cache = RemoteCacheAccess::Configured(Box::new(remote), trust);
+        self
+    }
+
+    /// Disable remote cache access when projects have conflicting settings.
+    #[must_use]
+    pub fn without_remote_cache(mut self) -> Self {
+        self.remote_cache = RemoteCacheAccess::Disabled;
+        self
+    }
+
+    fn apply_remote_cache(&self, step: &mut CommandStep) {
+        let (remote, trust) = match &self.remote_cache {
+            RemoteCacheAccess::Inherit => return,
+            RemoteCacheAccess::Disabled => {
+                disable_remote_cache(step, CacheDirectory::Isolated);
+                return;
+            }
+            RemoteCacheAccess::Configured(remote, trust) => (remote, *trust),
+        };
+        let ci = remote.ci.as_ref();
+        let directory = if ci.is_none_or(|ci| ci.isolated_cache_dir) {
+            CacheDirectory::Isolated
+        } else {
+            CacheDirectory::Shared
+        };
+        if ci.is_some_and(|ci| ci.auth_mode == cuenv_core::manifest::RemoteCacheCiAuthMode::Ambient)
+        {
+            let can_upload = trust == BuildkiteCacheTrust::Protected && remote.upload;
+            step.env
+                .insert("CUENV_REMOTE_CACHE_UPLOAD".into(), can_upload.to_string());
+            let directory_trust = if can_upload {
+                BuildkiteCacheTrust::Protected
+            } else {
+                BuildkiteCacheTrust::Untrusted
+            };
+            set_cache_directory(step, directory, directory_trust);
+            return;
+        }
+        let auth_env = remote.auth.as_ref().and_then(|auth| {
+            auth.bearer_token_env
+                .as_deref()
+                .or_else(|| auth.header.as_ref().map(|header| header.value_env.as_str()))
+        });
+        let (Some(ci), Some(auth_env)) = (ci, auth_env.filter(|name| valid_secret_env(name)))
+        else {
+            disable_remote_cache(step, directory);
+            return;
+        };
+
+        step.env.remove(auth_env);
+        let write = if trust == BuildkiteCacheTrust::Protected && remote.upload {
+            ci.write_queue
+                .as_deref()
+                .filter(|queue| !queue.is_empty())
+                .zip(
+                    ci.write_secret
+                        .as_deref()
+                        .filter(|secret| !secret.is_empty()),
+                )
+        } else {
+            None
+        };
+        let read = ci
+            .read_secret
+            .as_deref()
+            .filter(|secret| !secret.is_empty() && Some(*secret) != ci.write_secret.as_deref());
+        let secret = if let Some((queue, secret)) = write {
+            step.agents
+                .get_or_insert_with(|| AgentRules::with_queue(queue))
+                .queue = Some(queue.to_string());
+            secret
+        } else if let Some(secret) = read {
+            secret
+        } else {
+            disable_remote_cache(step, directory);
+            return;
+        };
+
+        // Buildkite injects the secret on job start according to the cluster's
+        // access policy. The uploaded pipeline contains only the secret key.
+        step.secrets
+            .insert(auth_env.to_string(), secret.to_string());
+        step.env
+            .insert("CUENV_REMOTE_CACHE".into(), remote.endpoint.clone());
+        step.env.insert(
+            "CUENV_REMOTE_CACHE_PROTOCOL".into(),
+            match remote.protocol {
+                CacheProtocol::Grpc => "grpc",
+                CacheProtocol::Http => "http",
+            }
+            .into(),
+        );
+        step.env.insert(
+            "CUENV_REMOTE_CACHE_INSTANCE".into(),
+            remote.instance.clone(),
+        );
+        step.env.insert(
+            "CUENV_REMOTE_CACHE_UPLOAD".into(),
+            write.is_some().to_string(),
+        );
+        let directory_trust = if write.is_some() {
+            BuildkiteCacheTrust::Protected
+        } else {
+            BuildkiteCacheTrust::Untrusted
+        };
+        set_cache_directory(step, directory, directory_trust);
     }
 
     /// Convert IR tasks to Buildkite pipeline
@@ -149,6 +280,7 @@ impl BuildkiteEmitter {
                 .iter()
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect(),
+            secrets: HashMap::new(),
             agents: None,
             artifact_paths: vec![],
             depends_on,
@@ -179,21 +311,6 @@ impl BuildkiteEmitter {
             || format!("cuenv task {}", task.id),
             |env| format!("cuenv task {} -e {}", task.id, env),
         );
-
-        // Wrap with nix develop if task has a runtime
-        let command = if let Some(runtime_id) = &task.runtime {
-            if let Some(runtime) = ir.runtimes.iter().find(|r| r.id == *runtime_id) {
-                // Source nix profile and run in nix develop
-                Some(CommandValue::Single(format!(
-                    "if [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh; else . \"$HOME/.nix-profile/etc/profile.d/nix.sh\"; fi && nix develop {}#{} --command {}",
-                    runtime.flake, runtime.output, base_command
-                )))
-            } else {
-                Some(CommandValue::Single(base_command))
-            }
-        } else {
-            Some(CommandValue::Single(base_command))
-        };
 
         // Environment variables - secrets are handled by stage tasks
         // Convert from BTreeMap to HashMap for Buildkite schema
@@ -248,11 +365,12 @@ impl BuildkiteEmitter {
             .as_ref()
             .map_or((None, None), |group| (Some(group.clone()), Some(1)));
 
-        CommandStep {
+        let mut step = CommandStep {
             label: Some(label),
             key: Some(task.id.clone()),
-            command,
+            command: None,
             env,
+            secrets: HashMap::new(),
             agents,
             artifact_paths,
             depends_on,
@@ -261,7 +379,23 @@ impl BuildkiteEmitter {
             retry: None,
             timeout_in_minutes: None,
             soft_fail: None,
-        }
+        };
+        self.apply_remote_cache(&mut step);
+        // Let cuenv acquire the runtime after withholding cache credentials.
+        // A nix develop wrapper would run shell hooks before cuenv starts.
+        let runtime = task
+            .runtime
+            .as_ref()
+            .and_then(|id| ir.runtimes.iter().find(|runtime| runtime.id == *id));
+        let command = match runtime.filter(|_| step.secrets.is_empty()) {
+            Some(runtime) => format!(
+                "if [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh; else . \"$HOME/.nix-profile/etc/profile.d/nix.sh\"; fi && nix develop {}#{} --command {}",
+                runtime.flake, runtime.output, base_command
+            ),
+            None => base_command,
+        };
+        step.command = Some(CommandValue::Single(command));
+        step
     }
 
     /// Build a block step for manual approval
@@ -306,6 +440,56 @@ impl BuildkiteEmitter {
     }
 }
 
+#[derive(Clone, Copy)]
+enum CacheDirectory {
+    Shared,
+    Isolated,
+}
+
+fn disable_remote_cache(step: &mut CommandStep, directory: CacheDirectory) {
+    step.env.insert("CUENV_REMOTE_CACHE".into(), String::new());
+    step.env
+        .insert("CUENV_REMOTE_CACHE_UPLOAD".into(), "false".into());
+    set_cache_directory(step, directory, BuildkiteCacheTrust::Untrusted);
+}
+
+fn set_cache_directory(
+    step: &mut CommandStep,
+    directory: CacheDirectory,
+    trust: BuildkiteCacheTrust,
+) {
+    if matches!(directory, CacheDirectory::Isolated) {
+        let path = match trust {
+            BuildkiteCacheTrust::Protected => "/tmp/cuenv-cache/trusted",
+            BuildkiteCacheTrust::Untrusted => "/tmp/cuenv-cache/untrusted",
+        };
+        step.env.insert("CUENV_CACHE_DIR".into(), path.into());
+    }
+}
+
+fn valid_secret_env(name: &str) -> bool {
+    if matches!(
+        name,
+        "CUENV_REMOTE_CACHE"
+            | "CUENV_REMOTE_CACHE_PROTOCOL"
+            | "CUENV_REMOTE_CACHE_INSTANCE"
+            | "CUENV_REMOTE_CACHE_UPLOAD"
+            | "CUENV_CACHE_DIR"
+    ) {
+        return false;
+    }
+    if (name.starts_with("BK") || name.starts_with("BUILDKITE"))
+        && !matches!(name, "BUILDKITE_API_TOKEN" | "BUILDKITE_ANALYTICS_TOKEN")
+    {
+        return false;
+    }
+    let mut bytes = name.bytes();
+    bytes
+        .next()
+        .is_some_and(|byte| byte == b'_' || byte.is_ascii_alphabetic())
+        && bytes.all(|byte| byte == b'_' || byte.is_ascii_alphanumeric())
+}
+
 impl Emitter for BuildkiteEmitter {
     /// Emit a thin mode Buildkite pipeline.
     ///
@@ -331,7 +515,7 @@ impl Emitter for BuildkiteEmitter {
 
         // Main execution step: cuenv ci --pipeline <name>
         let cuenv_command = format!("cuenv ci --pipeline {pipeline_name}");
-        let main_step = CommandStep {
+        let mut main_step = CommandStep {
             label: Some(self.format_label(
                 &format!("Run pipeline: {pipeline_name}"),
                 LabelKind::Standard,
@@ -339,6 +523,7 @@ impl Emitter for BuildkiteEmitter {
             key: Some("cuenv-ci".to_string()),
             command: Some(CommandValue::Single(cuenv_command)),
             env: HashMap::new(),
+            secrets: HashMap::new(),
             agents: self.default_queue.as_ref().map(AgentRules::with_queue),
             artifact_paths: vec![],
             depends_on: ir
@@ -351,6 +536,7 @@ impl Emitter for BuildkiteEmitter {
             timeout_in_minutes: None,
             soft_fail: None,
         };
+        self.apply_remote_cache(&mut main_step);
         steps.push(Step::Command(Box::new(main_step)));
 
         let pipeline = Pipeline {
@@ -745,5 +931,116 @@ mod tests {
 
         // Should just have plain cuenv task
         assert!(yaml.contains("cuenv task build"));
+    }
+
+    #[test]
+    fn remote_cache_preserves_agent_tags_and_gates_native_secrets() -> EmitterResult<()> {
+        use cuenv_core::manifest::{CacheAuth, RemoteCacheCi};
+
+        let remote = RemoteCache {
+            endpoint: "grpcs://cache.example.com:443".into(),
+            protocol: CacheProtocol::Grpc,
+            instance: "main".into(),
+            upload: true,
+            auth: Some(CacheAuth {
+                bearer_token_env: Some("CUENV_CACHE_TOKEN".into()),
+                header: None,
+                credential_helper: None,
+            }),
+            tls: None,
+            ci: Some(RemoteCacheCi {
+                read_secret: Some("CACHE_RO_TOKEN".into()),
+                write_secret: Some("CACHE_RW_TOKEN".into()),
+                write_environment: None,
+                write_queue: Some("cache-write".into()),
+                isolated_cache_dir: true,
+                ..Default::default()
+            }),
+        };
+
+        let mut task = make_task("build", &["cargo", "build"]);
+        task.resources = Some(ResourceRequirements {
+            tags: vec!["queue=linux".into(), "arch=arm64".into()],
+            ..Default::default()
+        });
+        task.runtime = Some("nix-rust".to_string());
+        let mut ir = make_ir(vec![task]);
+        ir.runtimes.push(Runtime {
+            id: "nix-rust".to_string(),
+            flake: ".".to_string(),
+            output: "devShells.x86_64-linux.default".to_string(),
+            system: "x86_64-linux".to_string(),
+            digest: "sha256:abc123".to_string(),
+            purity: PurityMode::Strict,
+        });
+        let trusted = BuildkiteEmitter::new()
+            .with_remote_cache(remote.clone(), BuildkiteCacheTrust::Protected);
+        let untrusted =
+            BuildkiteEmitter::new().with_remote_cache(remote, BuildkiteCacheTrust::Untrusted);
+
+        let protected_yaml = trusted.emit_expanded(&ir)?;
+        assert!(protected_yaml.contains("command: cuenv task build"));
+        assert!(!protected_yaml.contains("nix develop"));
+        assert!(protected_yaml.contains("queue: cache-write"));
+        assert!(protected_yaml.contains("arch: arm64"));
+        assert!(protected_yaml.contains("CUENV_CACHE_TOKEN: CACHE_RW_TOKEN"));
+        assert!(!protected_yaml.contains("CACHE_RO_TOKEN"));
+        assert!(protected_yaml.contains("CUENV_REMOTE_CACHE_UPLOAD: 'true'"));
+        assert!(protected_yaml.contains("/tmp/cuenv-cache/trusted"));
+
+        let untrusted_yaml = untrusted.emit_expanded(&ir)?;
+        assert!(!untrusted_yaml.contains("queue: cache-write"));
+        assert!(untrusted_yaml.contains("queue: linux"));
+        assert!(untrusted_yaml.contains("arch: arm64"));
+        assert!(untrusted_yaml.contains("CUENV_CACHE_TOKEN: CACHE_RO_TOKEN"));
+        assert!(!untrusted_yaml.contains("CACHE_RW_TOKEN"));
+        assert!(untrusted_yaml.contains("CUENV_REMOTE_CACHE_UPLOAD: 'false'"));
+        assert!(untrusted_yaml.contains("/tmp/cuenv-cache/untrusted"));
+
+        let thin_yaml = trusted.emit_thin(&ir)?;
+        assert!(thin_yaml.contains("cuenv ci --pipeline test-pipeline"));
+        assert!(thin_yaml.contains("CUENV_CACHE_TOKEN: CACHE_RW_TOKEN"));
+        assert!(thin_yaml.contains("queue: cache-write"));
+        Ok(())
+    }
+
+    #[test]
+    fn remote_cache_ambient_mode_preserves_isolation_and_gates_uploads() -> EmitterResult<()> {
+        use cuenv_core::manifest::{CacheAuth, RemoteCacheCi, RemoteCacheCiAuthMode};
+
+        let remote = RemoteCache {
+            endpoint: "grpcs://cache.namespace.so:443".into(),
+            protocol: CacheProtocol::Grpc,
+            instance: String::new(),
+            upload: true,
+            auth: Some(CacheAuth {
+                bearer_token_env: None,
+                header: None,
+                credential_helper: Some("bazel-credential-nsc".into()),
+            }),
+            tls: None,
+            ci: Some(RemoteCacheCi {
+                auth_mode: RemoteCacheCiAuthMode::Ambient,
+                isolated_cache_dir: true,
+                ..Default::default()
+            }),
+        };
+
+        let ir = make_ir(vec![make_task("build", &["cargo", "build"])]);
+        let trusted = BuildkiteEmitter::new()
+            .with_remote_cache(remote.clone(), BuildkiteCacheTrust::Protected);
+        let untrusted =
+            BuildkiteEmitter::new().with_remote_cache(remote, BuildkiteCacheTrust::Untrusted);
+
+        let protected_yaml = trusted.emit_thin(&ir)?;
+        assert!(!protected_yaml.contains("CUENV_REMOTE_CACHE:"));
+        assert!(protected_yaml.contains("CUENV_REMOTE_CACHE_UPLOAD: 'true'"));
+        assert!(protected_yaml.contains("/tmp/cuenv-cache/trusted"));
+
+        let untrusted_yaml = untrusted.emit_thin(&ir)?;
+        assert!(!untrusted_yaml.contains("CUENV_REMOTE_CACHE:"));
+        assert!(untrusted_yaml.contains("CUENV_REMOTE_CACHE_UPLOAD: 'false'"));
+        assert!(untrusted_yaml.contains("/tmp/cuenv-cache/untrusted"));
+        Ok(())
     }
 }

@@ -28,6 +28,7 @@ tasks: build: {
 	command: "sh"
 	args: ["-c", "printf ran > ran"]
 	inputs: ["src/**", {cuenvFiles: "project", cuenvProject: content.name, paths: ["articles/**"]}]
+	outputs: ["ran"]
 	hermetic: sandbox: "dir"
 }
 "#;
@@ -154,6 +155,7 @@ impl Monorepo {
             .env_remove("GITHUB_TOKEN")
             .env_remove("GH_TOKEN")
             .env("CUENV_STATE_DIR", self.root().join("state"))
+            .env("NO_GRAPHICS", "1")
             .arg("ci")
             .args(["--from", &self.base])
             .args(arguments)
@@ -714,6 +716,7 @@ tasks: build: {{
 	command: "sh"
 	args: ["-c", "printf ran > ran"]
 	inputs: {inputs}
+	outputs: ["ran"]
 	hermetic: sandbox: "dir"
 }}
 "#
@@ -806,6 +809,7 @@ tasks: build: {
 	command: "sh"
 	args: ["-c", "printf ran > ran"]
 	inputs: ["package.json", "src/**"]
+	outputs: ["ran"]
 	hermetic: sandbox: "dir"
 }
 tasks: lint: {
@@ -848,6 +852,7 @@ tasks: build: {
 	command: "sh"
 	args: ["-c", "printf ran > \(shared.marker)"]
 	inputs: ["src/**"]
+	outputs: [shared.marker]
 	hermetic: sandbox: "dir"
 }
 "#;

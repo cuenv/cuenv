@@ -1,8 +1,9 @@
 //! AWS Secrets Manager resolver.
 
 use async_trait::async_trait;
-use cuenv_secrets::{SecretError, SecretResolver, SecretSpec};
+use cuenv_secrets::{ResolveSecret, SecretError, SecretResolver, SecretSpec};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use tokio::process::Command;
 
 /// Configuration for resolving a single AWS Secrets Manager secret.
@@ -94,17 +95,19 @@ impl AwsSecretsManagerResolver {
         args
     }
 
-    #[tracing::instrument(name = "aws_secrets_get", level = "debug", skip(config), fields(secret_id = %config.secret_id))]
-    async fn execute_aws(name: &str, config: &AwsSecretConfig) -> Result<String, SecretError> {
+    #[tracing::instrument(name = "aws_secrets_get", level = "debug", skip(config, request), fields(secret_id = %config.secret_id))]
+    async fn execute_aws(
+        request: ResolveSecret<'_>,
+        config: &AwsSecretConfig,
+    ) -> Result<String, SecretError> {
+        let name = request.name;
         tracing::debug!("reading secret from AWS Secrets Manager");
-        let output = Command::new("aws")
-            .args(Self::args(config))
-            .env("AWS_PAGER", "")
-            .output()
-            .await
-            .map_err(|e| {
-                SecretError::resolution_failed(name, format!("Failed to execute AWS CLI: {e}"))
-            })?;
+        let mut command = Command::new("aws");
+        command.args(Self::args(config)).env("AWS_PAGER", "");
+        request.withhold_from(&mut command);
+        let output = command.output().await.map_err(|e| {
+            SecretError::resolution_failed(name, format!("Failed to execute AWS CLI: {e}"))
+        })?;
 
         if !output.status.success() {
             // The CLI's error output is deliberately not quoted: it can echo
@@ -164,9 +167,21 @@ impl AwsSecretsManagerResolver {
 #[async_trait]
 impl SecretResolver for AwsSecretsManagerResolver {
     async fn resolve(&self, name: &str, spec: &SecretSpec) -> Result<String, SecretError> {
-        let config = Self::parse_config(name, spec)?;
-        let response = Self::execute_aws(name, &config).await?;
-        Self::extract_secret(name, &response, &config)
+        self.resolve_with_options(ResolveSecret {
+            name,
+            spec,
+            withheld_env: &BTreeSet::new(),
+        })
+        .await
+    }
+
+    async fn resolve_with_options(
+        &self,
+        request: ResolveSecret<'_>,
+    ) -> Result<String, SecretError> {
+        let config = Self::parse_config(request.name, request.spec)?;
+        let response = Self::execute_aws(request, &config).await?;
+        Self::extract_secret(request.name, &response, &config)
     }
 
     fn provider_name(&self) -> &'static str {
@@ -286,6 +301,44 @@ mod tests {
         })
         .await?;
 
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn aws_cli_withholds_only_reserved_credentials() -> Result<(), Box<dyn Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let script = temp_dir.path().join("aws");
+        fs::write(
+            &script,
+            r#"#!/bin/sh
+test -z "${CUENV_AWS_TEST_CACHE_CREDENTIAL+x}" || exit 11
+test "$AWS_ACCESS_KEY_ID" = aws-test-key || exit 12
+printf '{"SecretString":"cli-secret"}\n'
+"#,
+        )?;
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755))?;
+        let path = prepend_path(temp_dir.path())?;
+        let resolver = AwsSecretsManagerResolver::new();
+        let spec = SecretSpec::new(serde_json::to_string(&AwsSecretConfig::new("prod/api"))?);
+        let withheld_env = BTreeSet::from(["CUENV_AWS_TEST_CACHE_CREDENTIAL".to_owned()]);
+        let secret = temp_env::async_with_vars(
+            [
+                ("PATH", Some(path.as_str())),
+                (
+                    "CUENV_AWS_TEST_CACHE_CREDENTIAL",
+                    Some("private-cache-sentinel"),
+                ),
+                ("AWS_ACCESS_KEY_ID", Some("aws-test-key")),
+            ],
+            resolver.resolve_with_options(ResolveSecret {
+                name: "API_KEY",
+                spec: &spec,
+                withheld_env: &withheld_env,
+            }),
+        )
+        .await?;
+        assert_eq!(secret, "cli-secret");
         Ok(())
     }
 

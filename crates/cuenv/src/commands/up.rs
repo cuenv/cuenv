@@ -485,6 +485,7 @@ async fn execute_service_task_dependencies(
                         project_root: project.root.clone(),
                         cue_module_root: Some(project.module_root.clone()),
                         cache: None,
+                        cache_policy: cuenv_task_exec::ExternalCachePolicy::LocalOnly,
                     },
                 )
             })

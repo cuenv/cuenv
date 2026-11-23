@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -1701,6 +1701,10 @@ fn source_hook(script: &str) -> Hook {
 }
 
 async fn run_source_hook_to_completion(hook: Hook) -> HookExecutionState {
+    run_joined_hook(hook, &BTreeSet::new()).await
+}
+
+async fn run_joined_hook(hook: Hook, withheld_env: &BTreeSet<String>) -> HookExecutionState {
     let temp_dir = private_temp_dir();
     let config = HookExecutionConfig {
         default_timeout_seconds: 10,
@@ -1726,18 +1730,80 @@ async fn run_source_hook_to_completion(hook: Hook) -> HookExecutionState {
         crate::HookRunUpdate::Applied
     );
 
-    super::execute_hooks(
+    super::execute_hooks_with_options(
         vec![hook],
         &config,
-        super::HookRunState {
-            manager: &state_manager,
-            state: &mut state,
-            identity: &identity,
+        super::HookRunOptions {
+            run: super::HookRunState {
+                manager: &state_manager,
+                state: &mut state,
+                identity: &identity,
+            },
+            withheld_env,
         },
     )
     .await
     .unwrap();
     state
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn hooks_withhold_cache_credentials_at_command_and_source_shell()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    const CREDENTIAL: &str = "CUENV_HOOK_TEST_CREDENTIAL";
+    const SENTINEL: &str = "private-hook-test-sentinel";
+    if std::env::var(CREDENTIAL).as_deref() != Ok(SENTINEL) {
+        let child = std::process::Command::new(std::env::current_exe()?)
+            .args([
+                "--exact",
+                "executor::tests::hooks_withhold_cache_credentials_at_command_and_source_shell",
+            ])
+            .env(CREDENTIAL, SENTINEL)
+            .output()?;
+        let output = String::from_utf8_lossy(&child.stdout);
+        assert!(
+            child.status.success() && output.contains("1 passed"),
+            "{output}"
+        );
+        return Ok(());
+    }
+
+    let withheld_env = BTreeSet::from([CREDENTIAL.to_owned()]);
+    let direct = Hook {
+        source: Some(false),
+        ..source_hook(r#"test -z "${CUENV_HOOK_TEST_CREDENTIAL+x}""#)
+    };
+    let state = run_joined_hook(direct, &withheld_env).await;
+    assert_eq!(state.status, ExecutionStatus::Completed);
+
+    let source = source_hook(
+        r#"test -z "${CUENV_HOOK_TEST_CREDENTIAL+x}" || exit 11
+cat <<'SCRIPT'
+test -z "${CUENV_HOOK_TEST_CREDENTIAL+x}" || exit 12
+export CUENV_HOOK_TEST_CREDENTIAL=project-value
+export CUENV_HOOK_TEST_SAFE=ready
+SCRIPT"#,
+    );
+    let state = run_joined_hook(source.clone(), &withheld_env).await;
+    assert_eq!(state.status, ExecutionStatus::Completed);
+    assert!(!state.environment_vars.contains_key(CREDENTIAL));
+    assert_eq!(state.environment_vars["CUENV_HOOK_TEST_SAFE"], "ready");
+
+    let prior_env = HashMap::from([(CREDENTIAL.to_owned(), "prior-value".to_owned())]);
+    let captured = source_environment::capture_source_environment_with_options(
+        source,
+        super::SourceEnvironmentOptions {
+            prior_env: &prior_env,
+            timeout_seconds: 10,
+            withheld_env: &withheld_env,
+        },
+    )
+    .await?;
+    assert!(!captured.contains_key(CREDENTIAL));
+    assert_eq!(captured["CUENV_HOOK_TEST_SAFE"], "ready");
+    assert_eq!(std::env::var(CREDENTIAL)?, SENTINEL);
+    Ok(())
 }
 
 #[tokio::test]

@@ -365,6 +365,12 @@ impl Task {
         self.hermetic.sandbox()
     }
 
+    /// Whether the task permits network access under strict OS confinement.
+    #[must_use]
+    pub fn network_allowed(&self) -> bool {
+        self.hermetic.network()
+    }
+
     /// Returns the description, or a default if not set.
     #[must_use]
     pub fn description(&self) -> &str {

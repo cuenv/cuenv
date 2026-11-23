@@ -1,7 +1,9 @@
 //! Secret resolution through the configured resolver registry.
 
 use crate::{Error, Result};
+use cuenv_secrets::ResolveSecret;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 
 use super::{Secret, SecretRegistry, SecretSpec};
 
@@ -39,6 +41,20 @@ pub trait SecretExt {
     /// # Errors
     /// Returns error if resolution fails
     async fn resolve_with_registry(&self, registry: &SecretRegistry) -> Result<String>;
+
+    /// Resolve with a custom registry and exclude reserved host variables
+    /// from the resolver's subprocesses.
+    ///
+    /// # Errors
+    /// Returns an error if resolution fails.
+    async fn resolve_withheld(
+        &self,
+        registry: &SecretRegistry,
+        withheld_env: &BTreeSet<String>,
+    ) -> Result<String> {
+        let _ = withheld_env;
+        self.resolve_with_registry(registry).await
+    }
 }
 
 #[async_trait::async_trait]
@@ -64,10 +80,25 @@ impl SecretExt for Secret {
     }
 
     async fn resolve_with_registry(&self, registry: &SecretRegistry) -> Result<String> {
+        self.resolve_withheld(registry, &BTreeSet::new()).await
+    }
+
+    async fn resolve_withheld(
+        &self,
+        registry: &SecretRegistry,
+        withheld_env: &BTreeSet<String>,
+    ) -> Result<String> {
         let spec = self.to_spec();
 
         registry
-            .resolve(&self.resolver, "secret", &spec)
+            .resolve_with_options(
+                &self.resolver,
+                ResolveSecret {
+                    name: "secret",
+                    spec: &spec,
+                    withheld_env,
+                },
+            )
             .await
             .map_err(|e| Error::configuration(format!("{e}")))
     }

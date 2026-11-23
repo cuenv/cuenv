@@ -115,6 +115,11 @@ The Nix audit uses the pinned RustSec advisory database offline and includes a
 known-vulnerable fixture to verify that advisories are checked. It does not
 check for yanked releases, because the sandbox has no registry index.
 
+`cargo deny --locked check advisories` reads the advisory exceptions in
+`deny.toml`. Run it in the Nix dev shell when editing that list. The CI
+`checks.deny` job checks bans and licenses. The separate `checks.audit` job
+uses its own `cargo audit` exceptions from `flake.nix`.
+
 For performance changes, make the claim measurable. Add or update Criterion
 coverage next to the hot path, keep a behavior regression test for the
 optimized code path, and run the narrow benchmark slice before and after the

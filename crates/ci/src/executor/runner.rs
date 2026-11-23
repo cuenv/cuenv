@@ -4,7 +4,7 @@
 //! injection, and output streaming with secret redaction.
 
 use crate::ir::Task as IRTask;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -82,6 +82,7 @@ pub struct IRTaskRunner {
     capture_output: cuenv_core::OutputCapture,
     /// Shell path for shell-mode execution
     shell_path: String,
+    withheld_env: BTreeSet<String>,
 }
 
 impl IRTaskRunner {
@@ -92,6 +93,7 @@ impl IRTaskRunner {
             project_root,
             capture_output,
             shell_path: DEFAULT_SHELL.to_string(),
+            withheld_env: BTreeSet::new(),
         }
     }
 
@@ -106,7 +108,15 @@ impl IRTaskRunner {
             project_root,
             capture_output,
             shell_path: shell_path.into(),
+            withheld_env: BTreeSet::new(),
         }
+    }
+
+    /// Exclude process-only variables from the child after applying defaults.
+    #[must_use]
+    pub fn with_withheld_env(mut self, withheld_env: BTreeSet<String>) -> Self {
+        self.withheld_env = withheld_env;
+        self
     }
 
     /// Execute a single IR task
@@ -138,6 +148,9 @@ impl IRTaskRunner {
 
         cmd.current_dir(&self.project_root);
         Self::configure_environment(&mut cmd, &env);
+        for name in &self.withheld_env {
+            cmd.env_remove(name);
+        }
         self.configure_output(&mut cmd);
 
         tracing::info!(task = %task.id, "Starting task execution");

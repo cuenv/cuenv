@@ -7,11 +7,13 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::env;
 use std::path::Path;
+use std::sync::Arc;
 
 pub use cuenv_manifest::environment::{
     ContextEnv, Env, EnvPart, EnvSelection, EnvValue, EnvValueSimple, EnvVarWithPolicies, Policy,
 };
 use cuenv_manifest::manifest::InfrastructurePolicyAction;
+pub use cuenv_secrets::is_withheld_env as is_withheld;
 
 use crate::secrets::SecretExt;
 
@@ -78,6 +80,9 @@ pub struct Environment {
     /// every existing reader of `vars` keeps working.
     #[serde(skip)]
     secret_names: BTreeSet<String>,
+
+    #[serde(skip)]
+    withheld_names: BTreeSet<String>,
 }
 
 /// The environment to record in an action's cache key.
@@ -107,7 +112,23 @@ impl Environment {
         Self {
             vars,
             secret_names: BTreeSet::new(),
+            withheld_names: BTreeSet::new(),
         }
+    }
+
+    /// Reserve process-only variables so tasks cannot inherit or serialize them.
+    pub fn withhold(&mut self, names: impl IntoIterator<Item = String>) {
+        self.withheld_names.extend(names);
+        self.vars
+            .retain(|key, _| !is_withheld(&self.withheld_names, key));
+        self.secret_names
+            .retain(|key| !is_withheld(&self.withheld_names, key));
+    }
+
+    /// Names reserved for use by the cuenv process.
+    #[must_use]
+    pub fn withheld_names(&self) -> &BTreeSet<String> {
+        &self.withheld_names
     }
 
     /// Get an environment variable value
@@ -170,6 +191,7 @@ impl Environment {
             merged.insert(key.clone(), value.clone());
         }
 
+        merged.retain(|key, _| !is_withheld(&self.withheld_names, key));
         merged
     }
 
@@ -301,7 +323,9 @@ impl Environment {
 
         let declared = passthrough
             .iter()
-            .filter(|name| !name.eq_ignore_ascii_case("HOME"))
+            .filter(|name| {
+                !name.eq_ignore_ascii_case("HOME") && !is_withheld(&self.withheld_names, name)
+            })
             .filter_map(|name| env::var(name).ok().map(|value| (name.clone(), value)));
 
         let mut merged: BTreeMap<String, String> = declared.collect();
@@ -331,6 +355,7 @@ impl Environment {
             };
         }
         Self::ensure_hermetic_defaults(&mut merged);
+        merged.retain(|key, _| !is_withheld(&self.withheld_names, key));
         ActionEnvironment::Ready(merged)
     }
 
@@ -359,7 +384,9 @@ impl Environment {
     pub fn execution_environment(&self, passthrough: &[String]) -> BTreeMap<String, String> {
         let mut merged = passthrough
             .iter()
-            .filter(|name| !name.eq_ignore_ascii_case("HOME"))
+            .filter(|name| {
+                !name.eq_ignore_ascii_case("HOME") && !is_withheld(&self.withheld_names, name)
+            })
             .filter_map(|name| env::var(name).ok().map(|value| (name.clone(), value)))
             .collect::<BTreeMap<_, _>>();
         merged.extend(
@@ -368,6 +395,7 @@ impl Environment {
                 .map(|(name, value)| (name.clone(), value.clone())),
         );
         Self::ensure_hermetic_defaults(&mut merged);
+        merged.retain(|key, _| !is_withheld(&self.withheld_names, key));
         merged
     }
 
@@ -540,11 +568,23 @@ impl Environment {
     pub async fn resolve_all_with_secrets(
         env_vars: &HashMap<String, EnvValue>,
     ) -> crate::Result<(HashMap<String, String>, Vec<String>)> {
+        Self::resolve_all_withheld(env_vars, &BTreeSet::new()).await
+    }
+
+    /// Resolve all variables and collect secret values while withholding
+    /// reserved host variable names from the resolvers.
+    ///
+    /// # Errors
+    /// Returns an error when a secret cannot be resolved.
+    pub async fn resolve_all_withheld(
+        env_vars: &HashMap<String, EnvValue>,
+        withheld_env: &BTreeSet<String>,
+    ) -> crate::Result<(HashMap<String, String>, Vec<String>)> {
         let all: Vec<_> = env_vars
             .iter()
             .map(|(key, value)| (key.as_str(), value))
             .collect();
-        Self::resolve_filtered_with_secrets(&all).await
+        Self::resolve_filtered_with_secrets(&all, withheld_env).await
     }
 
     /// Build and resolve environment for a task, filtering based on policies
@@ -582,6 +622,19 @@ impl Environment {
         task_name: &str,
         env_vars: &HashMap<String, EnvValue>,
     ) -> crate::Result<(HashMap<String, String>, Vec<String>)> {
+        Self::resolve_for_task_withheld(task_name, env_vars, &BTreeSet::new()).await
+    }
+
+    /// Resolve variables accessible to a task and collect secret values while
+    /// withholding reserved host variable names from the resolvers.
+    ///
+    /// # Errors
+    /// Returns an error when an accessible secret cannot be resolved.
+    pub async fn resolve_for_task_withheld(
+        task_name: &str,
+        env_vars: &HashMap<String, EnvValue>,
+        withheld_env: &BTreeSet<String>,
+    ) -> crate::Result<(HashMap<String, String>, Vec<String>)> {
         tracing::debug!(
             task = task_name,
             env_count = env_vars.len(),
@@ -594,7 +647,7 @@ impl Environment {
             .map(|(key, value)| (key.as_str(), value))
             .collect();
 
-        Self::resolve_filtered_with_secrets(&accessible).await
+        Self::resolve_filtered_with_secrets(&accessible, withheld_env).await
     }
 
     /// Let the secret providers referenced by `env_vars` prepare for a run
@@ -679,7 +732,7 @@ impl Environment {
             .map(|(key, value)| (key.as_str(), value))
             .collect();
 
-        Self::resolve_filtered_with_secrets(&accessible).await
+        Self::resolve_filtered_with_secrets(&accessible, &BTreeSet::new()).await
     }
 
     /// Build environment for exec command, filtering based on policies
@@ -736,7 +789,7 @@ impl Environment {
             .map(|(key, value)| (key.as_str(), value))
             .collect();
 
-        Self::resolve_filtered_with_secrets(&accessible).await
+        Self::resolve_filtered_with_secrets(&accessible, &BTreeSet::new()).await
     }
 
     /// Resolve only variables authorized for the infrastructure action.
@@ -758,7 +811,7 @@ impl Environment {
             .filter(|(_, value)| value.is_accessible_by_infrastructure(action))
             .map(|(key, value)| (key.as_str(), value))
             .collect();
-        Self::resolve_filtered_with_secrets(&accessible).await
+        Self::resolve_filtered_with_secrets(&accessible, &BTreeSet::new()).await
     }
 
     /// Resolve a pre-filtered set of environment variables, resolving all secrets
@@ -774,6 +827,7 @@ impl Environment {
     /// to `reassemble_with_resolved` to rebuild the final string values.
     async fn resolve_filtered_with_secrets(
         accessible: &[(&str, &EnvValue)],
+        withheld_env: &BTreeSet<String>,
     ) -> crate::Result<(HashMap<String, String>, Vec<String>)> {
         type SecretVarEntry<'environment> = (
             &'environment str,
@@ -788,6 +842,9 @@ impl Environment {
         let mut secret_vars: Vec<SecretVarEntry<'_>> = Vec::new();
 
         for (key, value) in accessible {
+            if is_withheld(withheld_env, key) {
+                continue;
+            }
             let collected = value.collect_secrets();
             if collected.is_empty() {
                 // No secrets - resolve immediately (just string conversion)
@@ -810,14 +867,16 @@ impl Environment {
         // registry (a &'static, so it moves freely into the spawned futures)
         let registry = cuenv_secrets::global_registry();
         let mut join_set = tokio::task::JoinSet::new();
+        let withheld_env = Arc::new(withheld_env.clone());
 
         for (key, _, secrets) in &secret_vars {
             for (part_idx, secret) in secrets {
                 let key = (*key).to_owned();
                 let part_idx = *part_idx;
                 let secret = secret.clone();
+                let withheld_env = Arc::clone(&withheld_env);
                 join_set.spawn(async move {
-                    let value = secret.resolve_with_registry(registry).await?;
+                    let value = secret.resolve_withheld(registry, &withheld_env).await?;
                     Ok::<_, crate::Error>((key, part_idx, value))
                 });
             }

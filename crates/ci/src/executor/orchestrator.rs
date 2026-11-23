@@ -23,7 +23,7 @@ use cuenv_core::manifest::Project;
 use cuenv_core::tasks::file_references::ReferenceChecks;
 use cuenv_core::{DryRun, Result};
 use cuenv_task_exec::TaskIndex;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -42,6 +42,68 @@ pub enum TaskSelection {
     All,
 }
 
+/// Deterministic 1-indexed CI task sharding specification (`<INDEX>/<TOTAL>`).
+///
+/// Splits planned tasks across `total` shards in deterministic round-robin
+/// order so each CI runner executes roughly `1 / total` of the affected tasks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShardSpec {
+    /// 1-indexed shard number (`1..=total`).
+    pub index: usize,
+    /// Total number of shards (`>= 1`).
+    pub total: usize,
+}
+
+impl ShardSpec {
+    /// Create a validated 1-indexed shard specification.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `total == 0` or `index` is outside `1..=total`.
+    pub fn try_new(index: usize, total: usize) -> std::result::Result<Self, String> {
+        if total == 0 {
+            return Err("shard total must be at least 1".to_string());
+        }
+        if index == 0 || index > total {
+            return Err(format!(
+                "shard index {index} must be between 1 and {total} (inclusive)"
+            ));
+        }
+        Ok(Self { index, total })
+    }
+
+    /// Whether the 0-indexed global task position belongs to this shard.
+    #[must_use]
+    pub const fn contains_index(self, global_index: usize) -> bool {
+        (global_index % self.total) == (self.index - 1)
+    }
+}
+
+impl std::fmt::Display for ShardSpec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}/{}", self.index, self.total)
+    }
+}
+
+impl std::str::FromStr for ShardSpec {
+    type Err = String;
+
+    fn from_str(raw: &str) -> std::result::Result<Self, Self::Err> {
+        let Some((left, right)) = raw.trim().split_once('/') else {
+            return Err(format!(
+                "invalid shard '{raw}': expected <INDEX>/<TOTAL> (for example 1/4)"
+            ));
+        };
+        let index: usize = left.trim().parse().map_err(|_| {
+            format!("invalid shard index '{left}' in '{raw}': expected positive integer")
+        })?;
+        let total: usize = right.trim().parse().map_err(|_| {
+            format!("invalid shard total '{right}' in '{raw}': expected positive integer")
+        })?;
+        Self::try_new(index, total)
+    }
+}
+
 /// Request for running CI pipelines from the executor.
 pub struct RunCiRequest {
     /// CI provider used for context, changed files, and reporting.
@@ -58,6 +120,8 @@ pub struct RunCiRequest {
     pub path_filter: Option<String>,
     /// Maximum parallel jobs inside each task DAG walk.
     pub max_parallel: usize,
+    /// Optional deterministic task shard (`--shard <INDEX>/<TOTAL>`).
+    pub shard: Option<ShardSpec>,
 }
 
 /// Run the CI pipeline logic
@@ -76,6 +140,7 @@ pub async fn run_ci(request: RunCiRequest) -> Result<()> {
         environment,
         path_filter,
         max_parallel,
+        shard,
     } = request;
 
     let context = provider.context();
@@ -108,6 +173,7 @@ pub async fn run_ci(request: RunCiRequest) -> Result<()> {
         changes: &changes,
         discovered: &discovered,
         max_parallel: max_parallel.max(1),
+        shard,
     })
     .await?;
 
@@ -282,6 +348,7 @@ struct CiProjectRunRequest<'request> {
     changes: &'request ChangedFiles,
     discovered: &'request DiscoveredCiProjects,
     max_parallel: usize,
+    shard: Option<ShardSpec>,
 }
 
 async fn run_ci_projects(
@@ -297,6 +364,7 @@ async fn run_ci_projects(
         changes,
         discovered,
         max_parallel,
+        shard,
     } = request;
 
     // Track failures with structured errors
@@ -350,6 +418,29 @@ async fn run_ci_projects(
             specific_pipeline.unwrap_or(DEFAULT_PIPELINE),
             &discovered.projects,
         ));
+    }
+
+    if let Some(shard) = shard {
+        let mut global_index = 0_usize;
+        plans.retain_mut(|(project_path, _, plan)| {
+            let mut kept = Vec::new();
+            for task in std::mem::take(&mut plan.tasks_to_run) {
+                if shard.contains_index(global_index) {
+                    kept.push(task);
+                }
+                global_index = global_index.saturating_add(1);
+            }
+            if kept.is_empty() {
+                cuenv_events::emit_ci_project_skipped!(
+                    project_path.display(),
+                    format!("No tasks assigned to shard {shard}")
+                );
+                false
+            } else {
+                plan.tasks_to_run = kept;
+                true
+            }
+        });
     }
 
     if !dry_run.is_dry_run() {
@@ -766,16 +857,6 @@ async fn execute_project_pipeline(
     // These are typically passed via GitHub Actions secrets or similar.
     super::reporting::register_ci_secrets();
 
-    // Merge static + hook-generated environment once per project, then reuse for all tasks.
-    let hook_env = request
-        .all_projects
-        .hook_environment(HookProject {
-            root: project_path,
-            config,
-            ancestor_configs: project_configs,
-        })
-        .await?;
-
     // Build task index for resolving nested task names (e.g., "deploy.preview")
     let task_index = TaskIndex::build(&config.tasks)?;
 
@@ -788,6 +869,35 @@ async fn execute_project_pipeline(
         task_names: tasks_to_run,
         projects: request.all_projects,
     }));
+    let withheld_env: BTreeSet<String> = std::iter::once(config)
+        .chain(project_configs.values())
+        .chain(
+            scope
+                .external_projects()
+                .map(|(_, project)| project.manifest.as_ref()),
+        )
+        .flat_map(|project| {
+            cuenv_task_exec::remote_cache::credential_variables(project.cache.as_ref())
+        })
+        .map(str::to_owned)
+        .collect();
+    cuenv_events::register_secrets(
+        withheld_env
+            .iter()
+            .filter_map(|name| std::env::var(name).ok()),
+    );
+
+    // Merge static + hook-generated environment once per project, then reuse for all tasks.
+    let hook_env = request
+        .all_projects
+        .hook_environment(HookProject {
+            root: project_path,
+            config,
+            ancestor_configs: project_configs,
+            withheld_env: &withheld_env,
+        })
+        .await?;
+
     let project_configs = Arc::new(project_configs.clone());
 
     let PipelineTaskResults {
@@ -805,6 +915,7 @@ async fn execute_project_pipeline(
         task_index: &task_index,
         cache_policy_override,
         hook_env: &hook_env,
+        withheld_env: &withheld_env,
         continue_on_error: pipeline_continue_on_error(config, pipeline_name),
         max_parallel,
         scope: &scope,
@@ -1151,5 +1262,41 @@ mod tests {
         let started_at = completed_at + Duration::milliseconds(10);
 
         assert_eq!(pipeline_duration_ms(started_at, completed_at), 0);
+    }
+
+    #[test]
+    fn shard_spec_parsing_and_round_robin_partitioning() {
+        let shard1: ShardSpec = "1/3".parse().unwrap();
+        let shard2: ShardSpec = "2/3".parse().unwrap();
+        let shard3: ShardSpec = "3/3".parse().unwrap();
+        assert_eq!(shard1.to_string(), "1/3");
+
+        let tasks = ["a", "b", "c", "d", "e"];
+        let s1: Vec<_> = tasks
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| shard1.contains_index(*i))
+            .map(|(_, t)| *t)
+            .collect();
+        let s2: Vec<_> = tasks
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| shard2.contains_index(*i))
+            .map(|(_, t)| *t)
+            .collect();
+        let s3: Vec<_> = tasks
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| shard3.contains_index(*i))
+            .map(|(_, t)| *t)
+            .collect();
+        assert_eq!(s1, vec!["a", "d"]);
+        assert_eq!(s2, vec!["b", "e"]);
+        assert_eq!(s3, vec!["c"]);
+
+        assert!("0/3".parse::<ShardSpec>().is_err());
+        assert!("4/3".parse::<ShardSpec>().is_err());
+        assert!("1/0".parse::<ShardSpec>().is_err());
+        assert!("invalid".parse::<ShardSpec>().is_err());
     }
 }

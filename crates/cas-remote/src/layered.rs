@@ -17,7 +17,7 @@
 //! [`RemoteCas`](crate::RemoteCas) rejects before the bytes reach this layer.
 
 use async_trait::async_trait;
-use cuenv_cas::{ActionCache, ActionResult, Cas, Digest, Result};
+use cuenv_cas::{ActionCache, ActionResult, CacheSource, Cas, Digest, Result};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tracing::{debug, warn};
@@ -268,8 +268,18 @@ impl LayeredActionCache {
 #[async_trait]
 impl ActionCache for LayeredActionCache {
     async fn lookup(&self, action_digest: &Digest) -> Result<Option<ActionResult>> {
+        Ok(self
+            .lookup_with_source(action_digest)
+            .await?
+            .map(|(result, _)| result))
+    }
+
+    async fn lookup_with_source(
+        &self,
+        action_digest: &Digest,
+    ) -> Result<Option<(ActionResult, CacheSource)>> {
         if let Some(result) = self.local.lookup(action_digest).await? {
-            return Ok(Some(result));
+            return Ok(Some((result, CacheSource::Local)));
         }
 
         let remote = match self.remote.lookup(action_digest).await {
@@ -287,7 +297,7 @@ impl ActionCache for LayeredActionCache {
         // Do not persist a remote result before its referenced blobs have
         // been fetched and verified. A dangling local result would shadow a
         // later repaired remote entry indefinitely.
-        Ok(Some(result))
+        Ok(Some((result, CacheSource::Remote)))
     }
 
     async fn update(&self, action_digest: &Digest, result: &ActionResult) -> Result<()> {
@@ -694,6 +704,29 @@ mod tests {
 
         assert_eq!(local.lookup(&digest).await.unwrap(), Some(result));
         assert!(remote.lookup(&digest).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn an_action_hit_reports_the_tier_that_supplied_it() -> Result<()> {
+        let local_dir = TempDir::new().map_err(|err| cuenv_cas::Error::io(err, ".", "tempdir"))?;
+        let remote_dir = TempDir::new().map_err(|err| cuenv_cas::Error::io(err, ".", "tempdir"))?;
+        let local = Arc::new(LocalActionCache::open(local_dir.path())?);
+        let remote = Arc::new(LocalActionCache::open(remote_dir.path())?);
+        let digest = Digest::of_bytes(b"action-with-provenance");
+        let result = sample_result();
+        remote.update(&digest, &result).await?;
+        let layered = LayeredActionCache::new(local, remote);
+
+        assert_eq!(
+            layered.lookup_with_source(&digest).await?,
+            Some((result.clone(), CacheSource::Remote))
+        );
+        layered.commit_verified(&digest, &result).await?;
+        assert_eq!(
+            layered.lookup_with_source(&digest).await?,
+            Some((result, CacheSource::Local))
+        );
+        Ok(())
     }
 
     #[tokio::test]

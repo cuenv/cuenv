@@ -23,12 +23,9 @@ env: {...}
 tasks: {...}
 ```
 
-Every field the table lists is checked, including misspelled fields inside
-them; write `tasks`, `services` and `images` entries as `schema.#Task & {...}`
-(and so on) to get the same for their own top-level fields. A misspelled
-top-level field is rejected only when your module's `language.version` is
-`v0.18.0` or later; see
-[CUE releases and language versions](/how-to/configure-a-project/#cue-releases-and-language-versions).
+The contract checks both project-level and nested fields, including entries
+in the `tasks`, `services` and `images` maps.
+[CUE releases and language versions](/how-to/configure-a-project/#cue-releases-and-language-versions)
 
 **Fields:**
 
@@ -56,7 +53,7 @@ Composable “base” configuration (no project-specific fields). This is useful
 ```cue
 import "github.com/cuenv/cuenv/schema"
 
-schema.#Base
+schema.#Base...
 
 env: {...}
 hooks: {...}
@@ -1203,16 +1200,6 @@ The database URL is never repeated in its error, because it may carry a token.
 Dependency cycles pass the schema and are reported by `cuenv infrastructure`
 itself. The Rust engine repeats these checks before it starts a provider, which
 also covers projects that do not unify with this schema.
-
-:::note[CUE language version]
-`error()` needs CUE language `v0.14.0` or later **in the module that holds
-`schema/infrastructure.cue`**. A project that imports
-`github.com/cuenv/cuenv` from a registry is unaffected by its own
-`language.version`: it can stay on `v0.9.0`. Only a module that carries its own
-copy of the `schema` directory (a vendored copy or a test fixture) must declare
-`language: version: "v0.14.1"` or later; with an older version CUE reports
-``builtin "error" is not available in version v0.9.0``.
-:::
 
 #### Environment names
 

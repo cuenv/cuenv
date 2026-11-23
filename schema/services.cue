@@ -87,7 +87,7 @@ package schema
 }
 
 #ReadinessPort: {
-	#ReadinessCommon
+	#ReadinessCommon...
 	kind: "port"
 	// TCP port on localhost (or `host` if specified)
 	port!: int & >0 & <65536
@@ -95,7 +95,7 @@ package schema
 }
 
 #ReadinessHttp: {
-	#ReadinessCommon
+	#ReadinessCommon...
 	kind: "http"
 	url!: string
 	// Expected status code(s); default 2xx
@@ -104,7 +104,7 @@ package schema
 }
 
 #ReadinessLog: {
-	#ReadinessCommon
+	#ReadinessCommon...
 	kind: "log"
 	// Regex; first match on stdout or stderr declares ready
 	pattern!: string
@@ -112,7 +112,7 @@ package schema
 }
 
 #ReadinessCommand: {
-	#ReadinessCommon
+	#ReadinessCommon...
 	kind: "command"
 	// Exit 0 = ready. Runs in service env, not service process.
 	command!: string

@@ -9,8 +9,8 @@ name: "accept"
 // A pipeline entry and a `dependsOn` entry are unified with #TaskNode. A
 // task whose inputs hold a file reference must cost there what a task with
 // plain path inputs costs. A schema that spelled the members of a group's
-// sequence out as a fresh disjunction made this export take minutes under
-// CUE v0.17; the compat script stops an evaluation that long and fails.
+// sequence out as a fresh disjunction made this export take minutes.
+// The compatibility check enforces an evaluation timeout.
 //
 // `_content` stands for an imported project: its #Files is the same value
 // whether the project is reached through an import or not.

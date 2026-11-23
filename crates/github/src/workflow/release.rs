@@ -179,7 +179,9 @@ impl ReleaseWorkflowBuilder {
                     .replace("$ENV", env)
             },
         );
-        steps.push(Step::run(&build_cmd).with_name("Build for ${{ matrix.target }}"));
+        let mut build_step = Step::run(&build_cmd).with_name("Build for ${{ matrix.target }}");
+        self.emitter.disable_remote_cache_step_env(&mut build_step);
+        steps.push(build_step);
 
         let mut upload_step = Step::uses("actions/upload-artifact@v7")
             .with_name("Upload binary")
@@ -291,6 +293,8 @@ impl ReleaseWorkflowBuilder {
                 "${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}".to_string(),
             );
         }
+        self.emitter
+            .disable_remote_cache_step_env(&mut publish_step);
         steps.push(publish_step);
 
         Job {
