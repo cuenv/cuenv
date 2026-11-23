@@ -12,8 +12,8 @@ use cuenv_cas::{
     PublishActionRequest, build_output_tree, materialize_output_tree, missing_blobs,
 };
 use cuenv_cas_remote::{
-    HttpActionCache, HttpCas, HttpRemoteClient, LayeredActionCache, LayeredCas, RemoteConfig,
-    RemoteProtocol, RemotePublisher,
+    CorruptBlobs, HttpActionCache, HttpCas, HttpRemoteClient, LayeredActionCache, LayeredCas,
+    RemoteConfig, RemoteProtocol, RemotePublisher,
 };
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -386,5 +386,132 @@ async fn failed_blob_upload_prevents_action_result_publication() {
     assert!(
         state.lock().unwrap().ac.is_empty(),
         "ActionResult must never be published when a blob upload fails"
+    );
+}
+
+/// Publish one action whose only output is `output`, against `endpoint`,
+/// sharing `corrupt` with the publisher.
+#[expect(
+    clippy::unwrap_used,
+    reason = "test harness setup; clippy's allow-unwrap-in-tests does not reach helper fns"
+)]
+async fn publish_single_output(
+    endpoint: &str,
+    output: &[u8],
+    corrupt: Arc<CorruptBlobs>,
+) -> (Digest, Digest, cuenv_cas::Result<()>) {
+    let cache_dir = TempDir::new().unwrap();
+    let local_cas = LocalCas::open(cache_dir.path()).unwrap();
+    let output_digest = local_cas.put_bytes(output).await.unwrap();
+    let command = Command {
+        arguments: vec!["sh".into(), "-c".into(), "true".into()],
+        environment_variables: std::collections::BTreeMap::new(),
+        output_files: vec!["out.txt".into()],
+        output_directories: vec![],
+        working_directory: String::new(),
+    };
+    let command_digest = local_cas
+        .put_bytes(&command.to_canonical_bytes().unwrap())
+        .await
+        .unwrap();
+    let action = Action {
+        command_digest: command_digest.clone(),
+        input_root_digest: Digest::of_bytes(b"in"),
+        platform: Platform::default(),
+        action_semantics_version: cuenv_cas::ACTION_SEMANTICS_VERSION,
+    };
+    let action_digest = local_cas
+        .put_bytes(&action.to_canonical_bytes().unwrap())
+        .await
+        .unwrap();
+    let result = ActionResult {
+        output_files: vec![OutputFile {
+            path: "out.txt".into(),
+            digest: output_digest.clone(),
+            is_executable: false,
+        }],
+        exit_code: 0,
+        ..ActionResult::default()
+    };
+
+    let write_client = HttpRemoteClient::new(
+        RemoteConfig::new(endpoint)
+            .with_protocol(RemoteProtocol::Http)
+            .writable(),
+    )
+    .unwrap();
+    let publisher = RemotePublisher::http(
+        Arc::new(HttpCas::new(write_client.clone())),
+        Arc::new(HttpActionCache::new(write_client)),
+    )
+    .with_corrupt_blobs(corrupt);
+    let outcome = publisher
+        .publish(PublishActionRequest {
+            local_cas: &local_cas,
+            action: &action,
+            action_digest: &action_digest,
+            command: &command,
+            command_digest: &command_digest,
+            result: &result,
+        })
+        .await;
+    (output_digest, action_digest, outcome)
+}
+
+#[tokio::test]
+async fn a_blob_recorded_corrupt_is_replaced_before_the_result_is_published() {
+    let (endpoint, state) = start_recording_http_cache(None).await.unwrap();
+    let output = b"task output";
+    let output_digest = Digest::of_bytes(output);
+    // The server reports the blob present, but holds the wrong bytes.
+    state
+        .lock()
+        .unwrap()
+        .cas
+        .insert(output_digest.hash.clone(), b"task outpux".to_vec());
+    let corrupt = Arc::new(CorruptBlobs::new());
+    corrupt.insert(output_digest.clone());
+
+    let (_, action_digest, outcome) =
+        publish_single_output(&endpoint, output, Arc::clone(&corrupt)).await;
+
+    outcome.unwrap();
+    let guard = state.lock().unwrap();
+    assert_eq!(
+        guard.cas.get(&output_digest.hash).map(Vec::as_slice),
+        Some(output.as_slice()),
+        "the corrupt blob is overwritten even though the server reported it present"
+    );
+    assert!(guard.ac.contains_key(&action_digest.hash));
+    assert!(
+        !corrupt.contains(&output_digest),
+        "a verified repair clears the record"
+    );
+}
+
+#[tokio::test]
+async fn without_a_record_a_present_corrupt_blob_is_not_re_uploaded() {
+    let (endpoint, state) = start_recording_http_cache(None).await.unwrap();
+    let output = b"task output";
+    let output_digest = Digest::of_bytes(output);
+    state
+        .lock()
+        .unwrap()
+        .cas
+        .insert(output_digest.hash.clone(), b"task outpux".to_vec());
+
+    let (_, _, outcome) =
+        publish_single_output(&endpoint, output, Arc::new(CorruptBlobs::new())).await;
+
+    outcome.unwrap();
+    assert_eq!(
+        state
+            .lock()
+            .unwrap()
+            .cas
+            .get(&output_digest.hash)
+            .map(Vec::as_slice),
+        Some(b"task outpux".as_slice()),
+        "an index-only presence check cannot see rotten bytes; only the record can"
     );
 }
