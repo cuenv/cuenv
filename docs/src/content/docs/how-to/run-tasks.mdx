@@ -335,6 +335,7 @@ cuenv supports task-result caching. Caching is opt-in per task through
 and materialized results.
 
 - **Inputs**: Files or glob patterns that the task reads. If these haven't changed since the last successful run, the cached task result may be reused.
+- **Ignored files**: In a git repository, a glob or directory input selects the files of the repository, not what git ignores. `crates/**` leaves out an ignored `crates/app/target/` and `*.log` files, so local cache keys and execution roots match CI. Only `.gitignore` files inside the repository count; your global excludes file and `.git/info/exclude` do not, because they differ between machines. A tracked file always counts, as it does for git, and `.git` is never an input. To read ignored files, name the ignored location itself: `node_modules/**`, `dist`, or an exact file path such as `generated/schema.json`. Outside a git repository every file counts.
 - **Outputs**: Files or directories created by the task.
 - **Cache policy**: Use `cache: {mode: "read-write"}` for ordinary read/write caching.
 - **Limitations**: Tasks with task-local runtime `env` entries may skip the task-result cache because cuenv cannot derive a stable key.
@@ -407,8 +408,9 @@ a graph that reaches the task (`cuenv task`, `cuenv ci`, `cuenv up`) and when
 `cuenv ci` selects affected tasks, including `--all` and runs with nothing to
 compare. A rename in the other project is then an error for the task that reads
 it, naming the task, the directory and the path — never a silently smaller set
-of inputs. The check reads the working tree, ignores `.gitignore`, and counts
-untracked and ignored files. `cuenv sync ci` does not check it: generating
+of inputs. The check reads the working tree and selects files exactly as
+hashing does: untracked files count, and files git ignores count only when the
+path names the ignored location itself. `cuenv sync ci` does not check it: generating
 workflows must not depend on a working tree. A reference cannot be optional; a
 glob that is legitimately empty at times (`.cuenv/changesets/*.md` after a
 release) fails its readers then.
