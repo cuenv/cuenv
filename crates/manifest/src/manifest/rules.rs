@@ -74,6 +74,11 @@ pub struct DirectoryRules {
     /// Generates .editorconfig in the same directory as .rules.cue.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub editorconfig: Option<EditorConfig>,
+
+    /// Directories, relative to this file, whose `.rules.cue` files a
+    /// workspace rules sync (`cuenv sync -A`) skips, such as test fixtures.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exclude: Vec<String>,
 }
 
 /// Simplified owners for directory rules (no output config).
