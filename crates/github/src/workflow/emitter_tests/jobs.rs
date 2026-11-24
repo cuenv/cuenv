@@ -552,6 +552,7 @@ fn task_github_job_settings_are_emitted_in_expanded_jobs() {
             }),
         }),
         if_condition: Some("always()".to_string()),
+        ..TaskGitHubJobConfig::default()
     });
 
     // A second task with image-only container & string environment inherits pipeline timeout.
@@ -618,4 +619,128 @@ fn task_github_job_settings_are_emitted_in_expanded_jobs() {
     assert_eq!(smoke_job["environment"].as_str(), Some("staging"));
     // Image-only container serializes as string shorthand.
     assert_eq!(smoke_job["container"].as_str(), Some("node:22@sha256:cafe"));
+}
+
+#[test]
+fn checkout_custom_steps_and_action_pins_compose_end_to_end() {
+    use cuenv_ci::emitter::Emitter;
+    use cuenv_core::ci::{
+        CheckoutSubmodules, GitHubActionPin, GitHubCheckoutConfig, TaskGitHubJobConfig,
+        TaskGitHubStep, TaskGitHubSteps,
+    };
+    use std::collections::BTreeMap;
+
+    let checkout_sha = "3d3c42e5aac5ba805825da76410c181273ba90b1";
+    let upload_sha = "cf430e030ddbb5b0abf93d22962f4752f3646cd9";
+    let config = crate::config::GitHubConfig {
+        checkout: Some(GitHubCheckoutConfig {
+            uses: Some("actions/checkout".to_string()),
+            persist_credentials: Some(false),
+            fetch_depth: Some(0),
+            git_ref: None,
+            submodules: Some(CheckoutSubmodules::Mode("recursive".to_string())),
+        }),
+        pins: Some(BTreeMap::from([
+            (
+                "actions/checkout".to_string(),
+                GitHubActionPin {
+                    git_ref: checkout_sha.to_string(),
+                    tag: Some("v7".to_string()),
+                },
+            ),
+            (
+                "actions/upload-artifact".to_string(),
+                GitHubActionPin {
+                    git_ref: upload_sha.to_string(),
+                    tag: Some("v7".to_string()),
+                },
+            ),
+        ])),
+        require_pinned_actions: Some(true),
+        ..Default::default()
+    };
+    let emitter = GitHubActionsEmitter::from_config(&config)
+        .without_nix()
+        .without_cuenv_build();
+
+    let mut task = super::make_task("web.build", &["bun", "run", "build"]);
+    task.github_job = Some(TaskGitHubJobConfig {
+        checkout: Some(GitHubCheckoutConfig {
+            git_ref: Some("${{ github.event.workflow_run.head_sha }}".to_string()),
+            ..Default::default()
+        }),
+        steps: Some(TaskGitHubSteps {
+            before: vec![TaskGitHubStep {
+                name: Some("Prepare".to_string()),
+                id: Some("prep".to_string()),
+                run: Some("echo prep".to_string()),
+                working_directory: Some("apps/web".to_string()),
+                ..Default::default()
+            }],
+            after: vec![TaskGitHubStep {
+                name: Some("Upload build".to_string()),
+                if_condition: Some("always()".to_string()),
+                uses: Some("actions/upload-artifact@v7".to_string()),
+                with_inputs: BTreeMap::from([(
+                    "path".to_string(),
+                    serde_json::json!("apps/web/dist"),
+                )]),
+                ..Default::default()
+            }],
+        }),
+        ..Default::default()
+    });
+
+    let ir = super::make_ir(vec![task]);
+    let yaml = emitter.emit_expanded(&ir).unwrap();
+
+    // Pinned actions keep their trailing `# <tag>` comment verbatim.
+    assert!(yaml.contains(&format!("uses: actions/checkout@{checkout_sha} # v7")));
+    assert!(yaml.contains(&format!("uses: actions/upload-artifact@{upload_sha} # v7")));
+
+    let doc: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
+    let steps = doc["jobs"]["web-build"]["steps"].as_sequence().unwrap();
+    // Checkout merged pipeline + task fields.
+    assert_eq!(
+        steps[0]["with"]["persist-credentials"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(steps[0]["with"]["fetch-depth"].as_u64(), Some(0));
+    assert_eq!(steps[0]["with"]["submodules"].as_str(), Some("recursive"));
+    assert_eq!(
+        steps[0]["with"]["ref"].as_str(),
+        Some("${{ github.event.workflow_run.head_sha }}")
+    );
+    // Custom before -> task -> custom after ordering.
+    assert_eq!(steps[1]["id"].as_str(), Some("prep"));
+    assert_eq!(steps[1]["working-directory"].as_str(), Some("apps/web"));
+    assert_eq!(steps[2]["name"].as_str(), Some("web.build"));
+    assert_eq!(steps[3]["name"].as_str(), Some("Upload build"));
+    assert_eq!(steps[3]["if"].as_str(), Some("always()"));
+
+    // requirePinnedActions fails when an unpinned action is emitted.
+    let strict_emitter = GitHubActionsEmitter::from_config(&crate::config::GitHubConfig {
+        require_pinned_actions: Some(true),
+        ..Default::default()
+    })
+    .without_nix()
+    .without_cuenv_build();
+    let unpinned_ir = super::make_ir(vec![super::make_task("check", &["cargo", "check"])]);
+    assert!(strict_emitter.emit_expanded(&unpinned_ir).is_err());
+
+    // Custom step with both uses and run is rejected.
+    let mut invalid_task = super::make_task("bad", &["true"]);
+    invalid_task.github_job = Some(TaskGitHubJobConfig {
+        steps: Some(TaskGitHubSteps {
+            before: vec![TaskGitHubStep {
+                uses: Some("actions/checkout@v7".to_string()),
+                run: Some("echo both".to_string()),
+                ..Default::default()
+            }],
+            after: vec![],
+        }),
+        ..Default::default()
+    });
+    let invalid_ir = super::make_ir(vec![invalid_task]);
+    assert!(emitter.emit_expanded(&invalid_ir).is_err());
 }

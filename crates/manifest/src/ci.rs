@@ -773,6 +773,117 @@ pub struct TaskGitHubDefaults {
     pub run: Option<TaskGitHubRunDefaults>,
 }
 
+/// Action pin override (commit SHA with optional trailing tag comment).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GitHubActionPin {
+    /// Commit SHA (or ref) to pin the action to.
+    #[serde(rename = "ref")]
+    pub git_ref: String,
+    /// Optional trailing comment (e.g. `"v7"` -> `uses: actions/checkout@<sha> # v7`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tag: Option<String>,
+}
+
+/// Submodule checkout mode (`bool` or `"recursive"` / `"true"` / `"false"`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum CheckoutSubmodules {
+    /// Boolean flag.
+    Bool(bool),
+    /// String mode (e.g., `"recursive"`).
+    Mode(String),
+}
+
+/// Configurable checkout step settings (provider, pipeline, and task level).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct GitHubCheckoutConfig {
+    /// Checkout action to use (default: `actions/checkout@v7`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uses: Option<String>,
+    /// Value for `with.persist-credentials`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub persist_credentials: Option<bool>,
+    /// Value for `with.fetch-depth`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fetch_depth: Option<u32>,
+    /// Value for `with.ref`.
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "ref")]
+    pub git_ref: Option<String>,
+    /// Value for `with.submodules`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub submodules: Option<CheckoutSubmodules>,
+}
+
+impl GitHubCheckoutConfig {
+    /// Merge `override_cfg` on top of `self`, letting explicitly set fields in
+    /// `override_cfg` win.
+    #[must_use]
+    pub fn merge(&self, override_cfg: &Self) -> Self {
+        Self {
+            uses: override_cfg.uses.clone().or_else(|| self.uses.clone()),
+            persist_credentials: override_cfg
+                .persist_credentials
+                .or(self.persist_credentials),
+            fetch_depth: override_cfg.fetch_depth.or(self.fetch_depth),
+            git_ref: override_cfg
+                .git_ref
+                .clone()
+                .or_else(|| self.git_ref.clone()),
+            submodules: override_cfg
+                .submodules
+                .clone()
+                .or_else(|| self.submodules.clone()),
+        }
+    }
+}
+
+/// Custom GitHub Actions step attached before or after a task step.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskGitHubStep {
+    /// Step display name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Step identifier (for `steps.<id>.outputs.*`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    /// Step condition (`if:`).
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "if")]
+    pub if_condition: Option<String>,
+    /// Action reference (`uses:`). Mutually exclusive with `run`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uses: Option<String>,
+    /// Shell command (`run:`). Mutually exclusive with `uses`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<String>,
+    /// Action inputs (`with:`).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty", rename = "with")]
+    pub with_inputs: BTreeMap<String, serde_json::Value>,
+    /// Step environment variables (`env:`).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, String>,
+    /// Working directory (`working-directory:`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub working_directory: Option<String>,
+    /// Shell override (`shell:`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shell: Option<String>,
+}
+
+/// Custom steps injected before and/or after a task's own step.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskGitHubSteps {
+    /// Steps emitted immediately before the task's own step.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub before: Vec<TaskGitHubStep>,
+    /// Steps emitted immediately after the task's own step.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub after: Vec<TaskGitHubStep>,
+}
+
 /// Job-level GitHub Actions settings lowered from `#TaskCI.github` into the IR.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "camelCase")]
@@ -798,6 +909,12 @@ pub struct TaskGitHubJobConfig {
     /// Job-level `if` condition expression.
     #[serde(default, skip_serializing_if = "Option::is_none", rename = "if")]
     pub if_condition: Option<String>,
+    /// Per-task checkout step overrides.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkout: Option<GitHubCheckoutConfig>,
+    /// Custom steps injected before and/or after the task's own step.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub steps: Option<TaskGitHubSteps>,
 }
 
 impl TaskGitHubJobConfig {
@@ -811,6 +928,8 @@ impl TaskGitHubJobConfig {
             && self.container.is_none()
             && self.defaults.is_none()
             && self.if_condition.is_none()
+            && self.checkout.is_none()
+            && self.steps.is_none()
     }
 }
 

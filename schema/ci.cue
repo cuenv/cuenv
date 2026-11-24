@@ -91,6 +91,46 @@ package schema
 	run?: #GitHubRunDefaults
 }
 
+// GitHub Action pin override (commit SHA with optional trailing tag comment)
+#GitHubActionPin: {
+	ref!: string // commit SHA (or ref)
+	tag?: string // optional trailing comment, e.g. "v7" -> `uses: actions/checkout@<ref> # v7`
+}
+
+// Checkout step configuration (provider, pipeline, and task level; merged in that order)
+#GitHubCheckoutConfig: {
+	uses?:               string // default: "actions/checkout@v7"
+	persistCredentials?: bool
+	fetchDepth?:         int
+	ref?:                string
+	submodules?:         bool | string
+}
+
+// Custom GitHub Actions step (exactly one of `uses` or `run` must be set)
+#GitHubStep: {
+	name?:             string
+	id?:               string
+	if?:               string
+	env?: [string]: string
+	workingDirectory?: string
+	shell?:            string
+	({
+		uses!: string
+		with?: [string]: string | number | bool
+		run?: _|_
+	} | {
+		run!:  string
+		uses?: _|_
+		with?: _|_
+	})
+}
+
+// Custom steps injected before and/or after a task's own step
+#GitHubTaskSteps: {
+	before?: [...#GitHubStep]
+	after?: [...#GitHubStep]
+}
+
 // Task and contributor-step GitHub configuration.
 #TaskCI: {
 	github?: {
@@ -116,6 +156,10 @@ package schema
 		defaults?: #GitHubJobDefaults
 		// Job-level `if` condition expression (e.g., "always()", "needs.changes.outputs.rust == 'true'").
 		if?: string
+		// Per-task checkout step override (merged on top of pipeline/provider checkout).
+		checkout?: #GitHubCheckoutConfig
+		// Custom steps injected before and/or after the task's own step.
+		steps?: #GitHubTaskSteps
 	}
 }
 
@@ -130,6 +174,12 @@ package schema
 	}
 	// Default job timeout in minutes for this pipeline (task timeoutMinutes wins)
 	timeoutMinutes?: int & >0
+	// Configurable checkout step (provider/pipeline/task merged in that order)
+	checkout?: #GitHubCheckoutConfig
+	// Action pin overrides keyed by "<owner>/<repo>" (emitted as `uses: <action>@<ref> # <tag>`)
+	pins?: [string]: #GitHubActionPin
+	// When true, fail `cuenv sync ci` if any emitted `uses:` step is not pinned to a 40-char SHA
+	requirePinnedActions?: bool
 	cachix?: {
 		name!:       string
 		authToken?:  string

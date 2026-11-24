@@ -233,11 +233,7 @@ impl GitHubActionsEmitter {
             Self::direct_execution_skipped_setup_task_ids(ir, TaskExecution::Direct);
         let mut steps = Vec::new();
 
-        steps.push(
-            Step::uses("actions/checkout@v7")
-                .with_name("Checkout")
-                .with_input("fetch-depth", serde_yaml::Value::Number(2.into())),
-        );
+        steps.push(self.build_checkout_step(None, Some(2)));
 
         let bootstrap_steps = renderer.render_tasks(&ir.sorted_phase_tasks(BuildStage::Bootstrap));
         steps.extend(bootstrap_steps);
@@ -407,11 +403,7 @@ impl GitHubActionsEmitter {
         let ir = &scoped_ir;
         let mut steps = Vec::new();
 
-        steps.push(
-            Step::uses("actions/checkout@v7")
-                .with_name("Checkout")
-                .with_input("fetch-depth", serde_yaml::Value::Number(2.into())),
-        );
+        steps.push(self.build_checkout_step(Some(task), Some(2)));
 
         let (phase_steps, secret_env_vars) =
             self.render_phase_steps(ir, options.execution, options.cuenv_setup);
@@ -468,7 +460,7 @@ impl GitHubActionsEmitter {
             ir,
             (options.execution == TaskExecution::Orchestrated).then_some(&mut task_step),
         );
-        steps.push(task_step);
+        Self::push_task_step_with_custom(&mut steps, task, task_step);
 
         let orchestrator_outputs: Vec<_> = task
             .outputs
@@ -552,11 +544,7 @@ impl GitHubActionsEmitter {
         let ir = &scoped_ir;
         let mut steps = Vec::new();
 
-        steps.push(
-            Step::uses("actions/checkout@v7")
-                .with_name("Checkout")
-                .with_input("fetch-depth", serde_yaml::Value::Number(0.into())),
-        );
+        steps.push(self.build_checkout_step(Some(task), Some(0)));
 
         let (phase_steps, secret_env_vars) =
             self.render_phase_steps(ir, TaskExecution::Orchestrated, options.cuenv_setup);
@@ -618,7 +606,7 @@ impl GitHubActionsEmitter {
         }
 
         let environment = self.task_job_environment(task, ir, Some(&mut task_step));
-        steps.push(task_step);
+        Self::push_task_step_with_custom(&mut steps, task, task_step);
 
         let mut job = Job {
             permissions: self.job_permissions_option(
@@ -687,21 +675,12 @@ impl GitHubActionsEmitter {
 
                 let mut steps = Vec::new();
 
-                steps.push(
-                    Step::uses("actions/checkout@v7")
-                        .with_name("Checkout")
-                        .with_input(
-                            "fetch-depth",
-                            serde_yaml::Value::Number(
-                                if options.execution == TaskExecution::Direct {
-                                    2
-                                } else {
-                                    0
-                                }
-                                .into(),
-                            ),
-                        ),
-                );
+                let default_depth = if options.execution == TaskExecution::Direct {
+                    2
+                } else {
+                    0
+                };
+                steps.push(self.build_checkout_step(Some(task), Some(default_depth)));
 
                 let (phase_steps, secret_env_vars) =
                     self.render_phase_steps(ir, options.execution, options.cuenv_setup);
@@ -744,7 +723,7 @@ impl GitHubActionsEmitter {
                     ir,
                     (options.execution == TaskExecution::Orchestrated).then_some(&mut task_step),
                 );
-                steps.push(task_step);
+                Self::push_task_step_with_custom(&mut steps, task, task_step);
 
                 let artifact_path = if task.outputs.is_empty() {
                     "result/bin/*".to_string()
@@ -816,6 +795,21 @@ impl GitHubActionsEmitter {
         task.matrix
             .as_ref()
             .is_some_and(|m| !m.dimensions.is_empty())
+    }
+
+    /// Push any `steps.before`, then `task_step`, then any `steps.after`.
+    fn push_task_step_with_custom(steps: &mut Vec<Step>, task: &Task, task_step: Step) {
+        if let Some(custom) = task.github_job.as_ref().and_then(|j| j.steps.as_ref()) {
+            for before in &custom.before {
+                steps.push(Self::render_custom_step(before));
+            }
+            steps.push(task_step);
+            for after in &custom.after {
+                steps.push(Self::render_custom_step(after));
+            }
+        } else {
+            steps.push(task_step);
+        }
     }
 
     /// Check if a task has artifact downloads (aggregation task).
