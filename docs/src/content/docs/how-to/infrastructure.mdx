@@ -81,13 +81,13 @@ cuenv i plan
 
 An import identifier is interpreted by the provider. cuenv supports one returned resource of the declared type per import. It reads the imported object before storing it, so the following plan compares live state with the configuration. Import does not call `ApplyResourceChange`; it does not create or update the remote object. Use the matching `--env`, `-p` and `--package` on import and follow-up commands. The command's success output includes a plan command that preserves those selectors.
 
-A resource configuration can use a scalar output from another declared resource through a native CUE selector: a top-level attribute, or a field or element inside a list or object output (see [Select from a list or object output](#select-from-a-list-or-object-output)). Untyped resources declare the output with its primitive type:
+A resource or data source configuration can use an output of another declared resource or data source. Each field of a declaration's `outputs` is a concrete reference descriptor; copy it into an argument and cuenv puts the real value there when it plans. Untyped resources declare each output they read with its type, one of `"string"`, `"number"`, `"bool"`, `"list"` or `"object"`:
 
 ```cue
 infrastructure: resources: {
 	primary: {
 		type: "cloudflare_zone"
-		outputs: id: string
+		outputs: id: type: "string"
 		configuration: {name: "example.com"}
 	}
 	www: {
@@ -100,34 +100,18 @@ infrastructure: resources: {
 }
 ```
 
-The selector names a declaration in the selected configuration and a provider output. cuenv infers an apply and destroy dependency from the reference, and stores it with the consuming resource.
+Generated provider resource and data source types declare every supported output under `outputs` already. cuenv infers an apply and destroy dependency from each reference and stores it with the consuming resource. It validates the complete reference graph before configuring a provider or calling a resource or data source.
 
-References come from CUE selector provenance, not the shape of provider configuration objects. Ordinary provider objects retain their field meanings. cuenv may start an unconfigured provider to obtain its schema; it validates the complete reference graph before configuring a provider or calling a resource or data source.
+CUE never sees the real value. `cue export` and `cue eval` show the reference as a descriptor, so every infrastructure configuration evaluates with plain CUE:
 
-The former `{fromResource, attribute}` and `{fromDataSource, attribute}` descriptor syntax is no longer supported. Replace each descriptor with a selector through the producer declaration’s `outputs` namespace. Add a bare `string`, `number`, or `bool` output declaration for an untyped producer, and regenerate provider types with `cuenv sync infrastructure`.
-
-Generated provider resource types expose supported output attributes under `outputs` automatically. An untyped resource declares them explicitly:
-
-```cue
-infrastructure: {
-	resources: {
-		primary: {
-			type: "cloudflare_zone"
-			outputs: {id: string}
-			configuration: {name: "example.com"}
-		}
-		www: {
-			type: "cloudflare_record"
-			configuration: {
-				zone_id: infrastructure.resources.primary.outputs.id
-				// Other provider-required record arguments go here.
-			}
-		}
-	}
+```json
+"zone_id": {
+	"cuenvOutput": {"namespace": "resources", "name": "primary", "environment": "", "path": ["id"]},
+	"type": "string"
 }
 ```
 
-The `outputs` declaration gives CUE a reference target; cuenv resolves its value from provider state and removes the declaration before sending configuration to the provider. Selectors must name one declared top-level output in the same selected infrastructure configuration. Declare untyped outputs as a bare `string`, `number` or `bool`; refined constraints, defaults and literal values in the output declaration are not supported. The source output and destination argument must have the same primitive type.
+The `outputs` declaration is removed before configuration is sent to the provider. A reference must name an output its declaration lists, in the same selected configuration: a resource in `environments.production` reads only outputs of `environments.production`. Its declared type must match the receiving argument, and a reference is refused anywhere other than a resource or data source `configuration`. A reference written into a string, for example `"\(json.Marshal(ref))"`, is refused too.
 
 The destination can be inside nested objects, maps, lists or tuples. For example, a Cloudflare pipeline sink can receive an account token in its `config` object:
 
@@ -135,7 +119,7 @@ The destination can be inside nested objects, maps, lists or tuples. For example
 infrastructure: resources: {
 	catalog_token: {
 		type: "cloudflare_account_token"
-		outputs: value: string
+		outputs: value: type: "string"
 		// Add the provider-required token configuration.
 	}
 	sink: {
@@ -149,28 +133,44 @@ infrastructure: resources: {
 }
 ```
 
-A scalar argument can read an output however CUE lets you write it: through an alias, a `let`, a hidden field, an imported definition, a loop variable, or inside a condition that is itself known. It can also be computed from outputs, with interpolation, arithmetic or a builtin:
+A reference is ordinary CUE data, so it can pass through an alias, a `let`, a hidden field, a definition or a comprehension. A resource declared inside your own definition must be typed `schema.#ManagedResource` or a generated `#Resource`, or the closed definition refuses the descriptor fields.
+
+### Compute a value from outputs
+
+CUE cannot compute with a value it does not know, so interpolation, arithmetic, comparisons and builtins that read an output fail in CUE: a reference is a struct, not a string. Use the schema's functions instead. cuenv evaluates them when every output they read is known; until then the argument is planned as known after apply.
+
+| Function | Result | Replaces |
+| --- | --- | --- |
+| `schema.#Format & {parts: [...]}` | the parts concatenated; numbers and bools are written as text | `"app-\(id)"` |
+| `schema.#Join & {items: [...], separator: ","}` | strings joined with a separator | `strings.Join` |
+| `schema.#Sha256 & {of: x}` | the SHA-256 digest of a string, `encoding: "hex"` (default) or `"base64"` | `hex.Encode(sha256.Sum256(x))` |
+| `schema.#Base64 & {of: x}` | a string in base64, `encoding: "standard"` (default) or `"url"`, padded | `base64.Encode(null, x)` |
+| `schema.#Select & {from: ref, path: [...], type: "string"}` | one scalar inside a list or object output | `ref[0].id` |
+
+Functions nest, so `schema.#Sha256 & {of: schema.#Format & {parts: [...]}}` works. Each result is a string except `#Select`, whose `type` names the scalar it reads.
 
 ```cue
-configuration: {
-	name:   "app-\(infrastructure.resources.bucket.outputs.id)"
-	bucket: infrastructure.resources.bucket.outputs.id & =~"^prod-"
+import "github.com/cuenv/cuenv/schema"
+
+infrastructure: resources: object: {
+	type: "aws_s3_object"
+	configuration: {
+		bucket: infrastructure.resources.bucket.outputs.id
+		key: schema.#Format & {parts: ["releases/", infrastructure.resources.bucket.outputs.id, "/latest"]}
+		tags: digest: schema.#Sha256 & {of: infrastructure.resources.bucket.outputs.arn}
+	}
 }
 ```
 
-A computed value shows as known after apply until every output it reads is known. CUE then computes it from the real values and validates its constraints. A source is always one scalar: a top-level attribute or a position inside a list or object output.
+There is no arithmetic, no JSON encoding and no constraint on an output's value. A value that decides which fields exist, a condition, a label, an index or a default cannot depend on an output, because a plan could not say what would be applied. A CUE default such as `*"fallback" | ref` evaluates to the default; it does not wait for the output.
 
-What fields exist cannot depend on an output, because a plan could not say what would be applied. Conditions, labels, indexes, defaults and presence guards that read an output, and lists or structs computed from one, are refused before any provider change, wherever they are reached from. So are references into sets or write-only fields. Comprehensions and dynamic fields that do not depend on an output work as usual. A check the configuration does not read, such as `_check: infrastructure.resources.bucket.outputs.id & =~"^prod-"`, is not refused: it is checked against the real value.
+A sensitive output can be referenced too, for example a generated API token copied into a secret manager. The receiving top-level argument is shown as `(sensitive)` in plans, including when the reference is nested and its provider does not mark it sensitive. A text plan also identifies a nested destination, for example `config.token = (sensitive)`. Map keys in these paths are hidden, and any path text that matches a registered secret is redacted. Known sensitive strings are registered for redaction before downstream provider calls, including after apply creates a source. A string computed by a function from a registered secret is registered as well, so a digest or base64 form of a secret is redacted in logs. Strings shorter than four characters, numbers and booleans are masked in plans but not covered by string redaction. The copy is stored in plaintext in the consumer's state record, like every other attribute.
 
-cuenv also checks values. After planning, after each completed change of a resource that declares outputs, after a deferred read and when apply finishes, it evaluates the configuration with the real outputs known so far and refuses one where that changes anything other than a recorded reference. If a real value changes anything else or conflicts with a constraint while planning, nothing changes. During apply, changes and deferred reads not yet started are skipped and reported as an incomplete apply (exit code 5), naming the output; changes that already ran stay recorded. An output declared as a scalar whose real value is a list or object stops the run the same way.
+Resource and data-source references infer dependencies in the same way. If a source value is unknown until its create or replacement finishes, cuenv resolves it and asks the consumer provider for a final plan before applying that consumer. A replacement reported by the provider in the initial plan stays visible and is ordered as destroy then create. If only the final plan reveals a replacement that the confirmed plan did not include, cuenv stops before changing the consumer; run `plan` again after its source is recorded. Outputs that were known at plan time need no final plan. When a consumer is replaced and its final plan fails after its delete, apply warns that it was destroyed and not recreated; the next apply creates it.
 
-A sensitive output can be referenced too, for example a generated API token copied into a secret manager. The receiving top-level argument is shown as `(sensitive)` in plans, including when the reference is nested and its provider does not mark it sensitive. A text plan also identifies a nested destination, for example `config.token = (sensitive)`. Map keys in these paths are hidden, and any path text that matches a registered secret is redacted. Known sensitive strings are registered for redaction before downstream provider calls, including after apply creates a source. String redaction covers matching copies, not transformations such as hashes or base64; strings shorter than four characters, numbers and booleans are masked in plans but not covered by string redaction. The copy is stored in plaintext in the consumer's state record, like every other attribute.
+CUE is evaluated once per run. References and functions are filled in by cuenv from provider state, not by evaluating CUE again, so editing a file after the plan cannot change the confirmed configuration. The whole `infrastructure` value must be concrete, including environments that are not selected: an unselected environment that does not export with `cue export` is refused.
 
-Resource and data-source selectors infer dependencies in the same way. If a source value is unknown until its create or replacement finishes, cuenv resolves it and asks the consumer provider for a final plan before applying that consumer. A replacement reported by the provider in the initial plan stays visible and is ordered as destroy then create. If only the final plan reveals a replacement that the confirmed plan did not include, cuenv stops before changing the consumer; run `plan` again after its source is recorded. Outputs that were known at plan time need no final plan. When a consumer is replaced and its final plan fails after its delete, apply warns that it was destroyed and not recreated; the next apply creates it.
-
-Native selectors are re-evaluated from the CUE source snapshot captured for the run, so editing a file after the plan cannot change the confirmed configuration. A snapshot is only accepted once two consecutive loads captured identical bytes, and cuenv refuses to continue if the sources keep changing while it loads them. Runtime evaluation uses the `CUENV_EVAL_TIMEOUT` budget (60 seconds by default). An interrupt or timeout stops waiting and prevents further changes; CUE itself cannot be cancelled, so an unfinished evaluation may continue in memory until it returns or the process exits. cuenv limits the number of outstanding evaluations.
-
-Numeric outputs retain their decimal precision when resolved. cuenv refuses provider-bound numbers outside the range it can safely round-trip through Terraform's numeric codecs, instead of silently rounding them. Extremely precise numeric literals elsewhere in the selected CUE configuration can also be refused if the configuration's JSON representation would lose precision. A numeric state value that cannot be represented exactly as an ordinary JSON number is stored as a typed numeric string; state written by an earlier version after rounding cannot be reconstructed. When upgrading an older provider schema, cuenv cannot distinguish those numbers from ordinary strings that look like numbers, so it conservatively refuses an unsafe-looking numeric string before sending the old state to the provider.
+Numeric outputs retain their decimal precision when resolved. cuenv refuses provider-bound numbers outside the range it can safely round-trip through Terraform's numeric codecs, instead of silently rounding them. A number in the selected configuration that cannot be represented exactly is refused before any provider call. A numeric state value that cannot be represented exactly as an ordinary JSON number is stored as a typed numeric string; state written by an earlier version after rounding cannot be reconstructed. When upgrading an older provider schema, cuenv cannot distinguish those numbers from ordinary strings that look like numbers, so it conservatively refuses an unsafe-looking numeric string before sending the old state to the provider.
 
 ## Read provider data sources
 
@@ -187,7 +187,7 @@ untyped AMI lookup can supply a managed instance's scalar `ami` argument:
 infrastructure: {
 	data: image: {
 		type: "aws_ami"
-		outputs: id: string
+		outputs: id: type: "string"
 		configuration: {
 			most_recent: true
 			owners: ["amazon"]
@@ -247,44 +247,45 @@ deletion.
 
 ### Select from a list or object output
 
-A selector can read one scalar inside a list or object output, such as the
-first match of a lookup that returns a list of objects. Declare the output down
-to the scalars you read, with the list narrowed to the elements you select, so
-CUE can index it. Generated `#Outputs` already type lists and objects; narrow
-the list in the declaration:
+A list or object output cannot be copied into an argument whole. Read one
+scalar inside it with `schema.#Select`, for example the first match of a lookup
+that returns a list of objects. Declare an untyped output as `type: "list"` or
+`type: "object"`; generated `#Outputs` already do:
 
 ```cue
-import permission_groups "registry.terraform.io/cloudflare/cloudflare/data/cloudflare_account_api_token_permission_groups_list"
+import (
+	"github.com/cuenv/cuenv/schema"
+	permission_groups "registry.terraform.io/cloudflare/cloudflare/data/cloudflare_account_api_token_permission_groups_list"
+)
 
 infrastructure: {
 	data: zoneRead: permission_groups.#DataSource & {
 		configuration: {account_id: "...", name: "Zone Read"}
-		outputs: result: [_]
 	}
 	resources: token: {
 		type: "cloudflare_account_token"
 		configuration: policies: [{
 			effect: "allow"
-			permission_groups: [{id: infrastructure.data.zoneRead.outputs.result[0].id}]
+			permission_groups: [{id: schema.#Select & {
+				from: infrastructure.data.zoneRead.outputs.result
+				path: [0, "id"]
+				type: "string"
+			}}]
 			// resources and the other policy arguments go here.
 		}]
 	}
 }
 ```
 
-An untyped declaration spells the same shape out, for example
-`outputs: result: [{id: string}]`.
-
-If the provider returns fewer elements than the selector needs, or a null on
+If the provider returns fewer elements than the path needs, or a null on
 the way, the plan fails and names the output, for example `output result[0].id
 does not exist`, instead of leaving the argument unknown. A lookup that matched
 nothing therefore stops the run before anything changes. Extra elements are
 ignored: cuenv checks the elements you select, not the length of the list.
 
-Selectors go through list, tuple and object positions only. Map keys and set
+A path goes through list, tuple and object positions only. Map keys and set
 elements cannot be selected, because a key is data rather than schema and a
-set has no order. Write-only attributes and expressions over outputs other than
-scalar computation remain unsupported.
+set has no order. Write-only attributes cannot be referenced.
 
 ## Dev and Staging environments
 
@@ -1111,15 +1112,15 @@ A replacement whose old object was destroyed but whose new object was not create
 
 ## Current limitations
 
-- **Copying a whole resource into another field is refused by CUE** under the closed schema. Move the value to a named field or use a direct selector instead.
+- **Copying a whole resource into another field is refused by CUE** under the closed schema. Move the value to a named field or reference one output instead.
 - **A self-hosted `sqld` can stop serving writes when several runs write to one database at once.** Version 0.24.32 can leave its write slot with a connection that has closed, after which every write waits until the server is restarted, while reads and `/health` still answer. Each state write then fails after four attempts of thirty seconds, and a run that had already changed a resource stops with an unrecorded change and a recovery file. See [the design notes](https://github.com/cuenv/cuenv/blob/main/docs/design/specs/2026-11-03-infrastructure-nested-output-references.md) for the cause. A database reporting `SQLITE_BUSY` is otherwise retried for thirty seconds.
 - **Secret arguments** are string-only, cannot be placed in sets, and are stored in plaintext in state unless the argument is write-only (see [Keep a value out of state with `#WriteOnly`](#keep-a-value-out-of-state-with-writeonly)); provider configuration cannot take one (see [Pass a secret to a resource](#pass-a-secret-to-a-resource)).
-- **Output reference boundaries.** A source is one scalar: a top-level attribute, or a field or element inside a list, tuple or object output. Source and destination types must match. Nested object, map and ordered collection destinations are supported; map keys and set elements as sources, sets and write-only destinations are not. If a value was unknown at plan time and its final value makes an existing consumer require replacement, apply stops before deleting or updating that consumer; plan again after the source is recorded.
+- **Output reference boundaries.** A reference reads one declared output of a resource or data source in the same selected configuration. A list or object output is read one scalar at a time with `#Select`. Values are computed only with `#Format`, `#Join`, `#Sha256`, `#Base64` and `#Select`: no interpolation, arithmetic, JSON encoding, conditions or constraints over an output. Source and destination types must match. Nested object, map and ordered collection destinations are supported; map keys and set elements as sources, sets, write-only destinations and provider configuration are not. If a value was unknown at plan time and its final value makes an existing consumer require replacement, apply stops before deleting or updating that consumer; plan again after the source is recorded.
 - **Early CUE diagnostics.** Infrastructure commands report a value-free evaluation error when CUE fails before provider sensitivity is known. Raw CUE details, including field names, source positions and custom error text, are withheld because they can contain private configuration keys or values. This does not change CUE evaluation; other cuenv commands may still display their normal CUE diagnostics.
 - **Numeric precision.** Provider-bound numbers outside cuenv's lossless Terraform codec range are rejected. Some CUE numeric literals that cannot be represented without loss in the selected configuration's JSON are rejected as well; see [Import and connect resources](#import-and-connect-resources).
 - **Resource identity is stored and sent back, but not used for import.** cuenv records the identity providers return (recent AWS, Google and Azure resources declare one), sends it back on refresh, plan and apply, and upgrades it across identity schema versions. Importing still takes a string identifier, not an identity. cuenv reports itself to providers as Terraform 1.12.0, the release that introduced resource identity, so a provider that checks the version sees the behaviour cuenv implements.
 - **Dynamic-typed configuration** infers arrays as tuples and objects as objects because configuration values carry no concrete Terraform collection type. Provider-returned dynamic values retain their reported types through state and provider round trips.
-- No `moved` blocks, saved plan files or `--target`. `--expect-plan` binds an apply to a reviewed plan by digest instead of a saved plan file. Data sources support scalar output references, including into list and object outputs and deferred reads. Import accepts only one string identifier and one returned resource; structured provider identities and multi-resource import are not supported.
+- No `moved` blocks, saved plan files or `--target`. `--expect-plan` binds an apply to a reviewed plan by digest instead of a saved plan file. Data sources support output references, including `#Select` into list and object outputs and deferred reads. Import accepts only one string identifier and one returned resource; structured provider identities and multi-resource import are not supported.
 - Replacement is always destroy-then-create; operations run one at a time.
 - **No `state move`.** Single records cannot be moved between identities; see [Moving between identities](#moving-between-identities). With S3 state, `state rename` moves a whole identity's state.
 - **One state backend for all environments.** `state` cannot be overridden per environment.

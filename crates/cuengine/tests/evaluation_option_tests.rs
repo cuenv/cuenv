@@ -2,7 +2,7 @@
 //! evaluation options across the FFI boundary.
 
 use cuengine::{
-    CueEngineError, InstanceFailures, ModuleEvalOptions, ModuleResult, PackageScope,
+    CueEngineError, InstanceFailures, InstanceText, ModuleEvalOptions, ModuleResult, PackageScope,
     SkippedDirectories, SkippedDirectory, SkippedReason,
 };
 use std::error::Error;
@@ -32,7 +32,7 @@ fn create_module_from_sources(files: &[(&str, String)]) -> TestResult<TempDir> {
     fs::create_dir_all(root.join("cue.mod"))?;
     fs::write(
         root.join("cue.mod/module.cue"),
-        "module: \"example.com/evaluation-options@v0\"\nlanguage: version: \"v0.14.1\"\n",
+        "module: \"example.com/evaluation-options@v0\"\nlanguage: version: \"v0.18.0\"\n",
     )?;
     for (name, contents) in files {
         let path = root.join(name);
@@ -58,6 +58,30 @@ fn expect_error(result: cuengine::Result<ModuleResult>) -> TestResult<CueEngineE
         Ok(module) => Err(format!("expected an error, got {:?}", module.instances).into()),
         Err(error) => Ok(error),
     }
+}
+
+#[test]
+fn kept_instance_text_holds_numbers_exactly() -> TestResult {
+    let module = create_module(&[("app.cue", "amount: 9007199254740993.1234567890123456789")])?;
+    let root = module.path();
+    let parsed = cuengine::evaluate_module(root, PACKAGE, Some(&exact_options(root, &[])))?;
+    assert!(parsed.instance_text.is_empty());
+    let kept = cuengine::evaluate_module(
+        root,
+        PACKAGE,
+        Some(&ModuleEvalOptions {
+            instance_text: InstanceText::Kept,
+            ..exact_options(root, &[])
+        }),
+    )?;
+    let text = kept.instance_text.get(".").ok_or("missing instance text")?;
+    assert!(
+        text.get().contains("9007199254740993.1234567890123456789"),
+        "{}",
+        text.get()
+    );
+    assert_eq!(kept.instances["."], parsed.instances["."]);
+    Ok(())
 }
 
 #[test]
@@ -373,7 +397,7 @@ fn module_root_named_like_a_skipped_directory_is_evaluated() -> TestResult {
         fs::create_dir_all(root.join("child"))?;
         fs::write(
             root.join("cue.mod/module.cue"),
-            "module: \"example.com/root-name@v0\"\nlanguage: version: \"v0.14.1\"\n",
+            "module: \"example.com/root-name@v0\"\nlanguage: version: \"v0.18.0\"\n",
         )?;
         fs::write(
             root.join("values.cue"),

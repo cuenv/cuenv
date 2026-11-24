@@ -309,6 +309,25 @@ pub struct ModuleEvalOptions {
     /// the target directory must itself hold the package.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unify: Vec<UnifySource>,
+    /// Whether [`ModuleResult::instance_text`] keeps the exported JSON of
+    /// each instance as CUE wrote it.
+    #[serde(skip)]
+    pub instance_text: InstanceText,
+}
+
+/// Whether a module evaluation keeps the JSON text of each instance.
+///
+/// [`ModuleResult::instances`] are parsed with `serde_json`'s default number
+/// representation, which rounds a decimal that does not fit an `f64`. A
+/// caller that must see every number exactly as CUE exported it keeps the
+/// text too, at the cost of holding the export twice.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum InstanceText {
+    /// Parse the instances only.
+    #[default]
+    Parsed,
+    /// Also keep the exported JSON text of each instance.
+    Kept,
 }
 
 /// A directory whose package instance [`ModuleEvalOptions::unify`] merges
@@ -470,6 +489,16 @@ pub struct ModuleResult {
     /// [`SkippedDirectories::Report`].
     #[serde(default, rename = "skippedDirectories")]
     pub skipped_directories: Vec<SkippedDirectory>,
+    /// The exported JSON of each instance exactly as CUE wrote it, keyed
+    /// like [`Self::instances`]. Filled only for [`InstanceText::Kept`].
+    #[serde(skip)]
+    pub instance_text: std::collections::HashMap<String, Box<serde_json::value::RawValue>>,
+}
+
+/// The instances of a module result, as text.
+#[derive(Deserialize)]
+struct InstanceTexts {
+    instances: std::collections::HashMap<String, Box<serde_json::value::RawValue>>,
 }
 
 /// CUE module dependency metadata extracted from `cue.mod/module.cue`.
@@ -559,6 +588,7 @@ struct ModuleEvalWorker {
     c_package: CString,
     c_options: CString,
     module_root: PathBuf,
+    instance_text: InstanceText,
     span: tracing::Span,
 }
 
@@ -639,6 +669,7 @@ pub fn evaluate_module(
         c_package,
         c_options,
         module_root: module_root.to_path_buf(),
+        instance_text: options.map_or_default(|options| options.instance_text),
         span: tracing::Span::current(),
     };
 
@@ -710,7 +741,7 @@ impl ModuleEvalWorker {
         let _entered = self.span.enter();
         let json_str = call_ffi_eval_module(&self.c_module_root, &self.c_package, &self.c_options)?;
         let envelope = parse_bridge_envelope(&json_str)?;
-        process_bridge_response(envelope, &self.module_root)
+        process_bridge_response(envelope, &self.module_root, self.instance_text)
     }
 }
 
@@ -857,7 +888,11 @@ fn validate_bridge_protocol(envelope: &BridgeEnvelope<'_>) -> Result<()> {
 }
 
 /// Process the bridge response and return the module result.
-fn process_bridge_response(envelope: BridgeEnvelope, module_root: &Path) -> Result<ModuleResult> {
+fn process_bridge_response(
+    envelope: BridgeEnvelope,
+    module_root: &Path,
+    instance_text: InstanceText,
+) -> Result<ModuleResult> {
     if let Some(bridge_error) = envelope.error {
         return Err(handle_bridge_error(bridge_error, module_root));
     }
@@ -873,7 +908,18 @@ fn process_bridge_response(envelope: BridgeEnvelope, module_root: &Path) -> Resu
             )
         })?;
 
-    parse_module_result(&json_data)
+    let mut result = parse_module_result(&json_data)?;
+    if instance_text == InstanceText::Kept {
+        result.instance_text = serde_json::from_str::<InstanceTexts>(&json_data)
+            .map_err(|e| {
+                Error::ffi(
+                    "cue_eval_module",
+                    format!("Failed to parse module result: {e}"),
+                )
+            })?
+            .instances;
+    }
+    Ok(result)
 }
 
 /// Handle a bridge error and convert it to our error type.
@@ -1275,6 +1321,7 @@ pub fn evaluate_cue_package(dir_path: &Path, package_name: &str) -> Result<Strin
         exclude_directories: Vec::new(),
         task_field: None,
         unify: Vec::new(),
+        instance_text: InstanceText::Parsed,
     };
 
     let result = evaluate_module(module_root, package_name, Some(&options))?;

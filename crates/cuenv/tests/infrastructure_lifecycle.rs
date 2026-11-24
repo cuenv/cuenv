@@ -108,7 +108,9 @@ async fn moving_infrastructure_to_a_separate_package_preserves_state() -> TestRe
     fs::create_dir(lifecycle.directory.path().join("infra"))?;
     fs::write(
         lifecycle.directory.path().join("infra/stack.cue"),
-        format!("package infrastructure\ninfrastructure: {{{infrastructure_cue}"),
+        format!(
+            "package infrastructure\n\nimport \"github.com/cuenv/cuenv/schema\"\n\ninfrastructure: schema.#Infrastructure & {{{infrastructure_cue}"
+        ),
     )?;
     fs::write(
         lifecycle.directory.path().join(".infrastructure.cue"),
@@ -469,6 +471,17 @@ async fn random_provider_create_edit_destroy_stack() -> TestResult {
     let identifier = pet.state["id"].as_str().ok_or("pet has no identifier")?;
     assert_eq!(pet.state["length"], 2);
     assert_eq!(identifier.split('-').count(), 2);
+    let port = |resources: &[cuenv_infrastructure::ManagedResource]| {
+        resources
+            .iter()
+            .find(|resource| resource.address.to_string() == "random_integer.port")
+            .map(|resource| resource.state["keepers"]["pet"].clone())
+    };
+    // The port's keeper is computed from the pet's name with #Format.
+    assert_eq!(
+        port(&initial),
+        Some(serde_json::json!(format!("rotate-with-{identifier}")))
+    );
     assert!(store.current_lock(&tenant).await?.is_none());
 
     let unchanged = lifecycle.run(&["apply", "--yes"])?;
@@ -479,17 +492,18 @@ async fn random_provider_create_edit_destroy_stack() -> TestResult {
         "no-op apply changed state"
     );
 
-    // Edit the actual CUE input: Random requires replacing a pet when length changes.
+    // Edit the actual CUE input: Random requires replacing a pet when length
+    // changes, and the port's keeper reads the pet's name, so it follows.
     lifecycle.edit_pet()?;
     let edit = lifecycle.run(&["plan"])?;
-    assert_eq!(edit["summary"]["replace"], 1);
-    assert_eq!(edit["summary"]["unchanged"], 2);
+    assert_eq!(edit["summary"]["replace"], 2);
+    assert_eq!(edit["summary"]["unchanged"], 1);
     assert!(
         store.list(&tenant).await? == initial,
         "plan changed stored state"
     );
     let edited = lifecycle.run(&["apply", "--yes"])?;
-    assert_eq!(edited["applied"]["replace"], 1);
+    assert_eq!(edited["applied"]["replace"], 2);
     let updated = store.list(&tenant).await?;
     assert_eq!(updated.len(), 3);
     let pet = updated
@@ -502,9 +516,15 @@ async fn random_provider_create_edit_destroy_stack() -> TestResult {
     assert_eq!(pet.state["length"], 3);
     assert_eq!(updated_identifier.split('-').count(), 3);
     assert_ne!(updated_identifier, identifier);
+    assert_eq!(
+        port(&updated),
+        Some(serde_json::json!(format!(
+            "rotate-with-{updated_identifier}"
+        )))
+    );
     for original in initial
         .iter()
-        .filter(|resource| resource.address.name != "pet")
+        .filter(|resource| !["pet", "port"].contains(&resource.address.name.as_str()))
     {
         assert!(
             updated.iter().any(|resource| resource == original),
@@ -1089,7 +1109,7 @@ infrastructure: {{
  state: turso: {{url: {url}, token: {{cuenvPassthrough: true, name: "TURSO_AUTH_TOKEN"}}}}
  providers: random: {{source: "hashicorp/random", path: {provider}}}
  resources: {{
-  primary: {{type: "random_pet", outputs: id: string, configuration: {{length: 1}}}}
+  primary: {{type: "random_pet", outputs: id: type: "string", configuration: {{length: 1}}}}
   consumer: {{type: "random_pet", configuration: {{length: 1, prefix: infrastructure.resources.primary.outputs.id}}}}
  }}
 }}
@@ -1119,7 +1139,10 @@ infrastructure: {{
 
     fs::write(
         lifecycle.directory.path().join("env.cue"),
-        configuration.replace("outputs: id: string", "outputs: id: number"),
+        configuration.replace(
+            "outputs: id: type: \"string\"",
+            "outputs: id: type: \"number\"",
+        ),
     )?;
     let refused = lifecycle.refused(&["plan"])?;
     assert!(
@@ -1644,9 +1667,8 @@ infrastructure: {{
     ] {
         let launches_before = fs::read_to_string(&launches)?;
         // Generated types reject the old object at the string field before
-        // starting the provider, even when the descriptor is otherwise valid.
-        // The field also accepts a `#Secret`, whose `resolver` the object
-        // lacks, so it is refused as incomplete rather than as a conflict.
+        // starting the provider: it is neither a string, a secret nor an
+        // output reference, so plain CUE evaluation fails.
         fs::write(
             &env_cue,
             configuration.replacen(selector, &format!("name: {descriptor}"), 1),
@@ -1658,10 +1680,7 @@ infrastructure: {{
             String::from_utf8_lossy(&output.stderr)
         );
         assert_eq!(output.status.code(), Some(3), "{printed}");
-        assert!(
-            printed.contains("configuration is incomplete or violates its constraints"),
-            "{printed}"
-        );
+        assert!(printed.contains("could not be evaluated"), "{printed}");
         assert_eq!(fs::read_to_string(&launches)?, launches_before);
         assert_eq!(fs::read_to_string(&journal)?, before);
         assert_eq!(store.list(&tenant).await?, updated);
@@ -1868,7 +1887,7 @@ async fn sensitive_data_source_destroy(source: SensitiveSource) -> TestResult {
     let tenant = TenantKey::try_new(MODULE, &project)?;
     let store = TursoStateStore::try_new(backend.clone())?;
     let declarations = r#"
- data: lookup: {type: "fake_lookup", configuration: {name: "private"}, outputs: secret_value: string}
+ data: lookup: {type: "fake_lookup", configuration: {name: "private"}, outputs: secret_value: type: "string"}
  resources: consumer: {
   type: "fake_plain"
   configuration: name: infrastructure.data.lookup.outputs.secret_value
@@ -2031,40 +2050,20 @@ infrastructure: {{
 // ---------------------------------------------------------------------------
 
 const OUTPUT_STACK: &str = r#"package stack
-import (
-	"encoding/json"
-	"strings"
-)
+import "github.com/cuenv/cuenv/schema"
 Marker: 1
-#Parts: {in: string, out: strings.Split(in, ",")}
-#Decoded: {in: string, out: json.Unmarshal(in)}
+// A definition closes what it declares: typing the producer with the schema
+// lets the schema fill in its output references.
 #Good: {
 	resources: {
-		producer: {type: "fake_plain", outputs: id: string, configuration: name: "producer"}
-		consumer: {type: "fake_plain", configuration: name: _i & =~"^."}
-	}
-	_i: resources.producer.outputs.id
-	...
-}
-#Bad: {
-	resources: {
-		producer: {type: "fake_plain", outputs: id: string, configuration: name: "producer"}
-		consumer: {type: "fake_plain", configuration: {if (_i & "x") == "x" {name: "consumer"}}}
-	}
-	_i: resources.producer.outputs.id
-	...
-}
-#Conflict: {
-	resources: {
-		producer: {type: "fake_plain", outputs: id: string, configuration: name: "producer"}
-		consumer: {type: "fake_plain", configuration: name: _i & "not-the-output"}
+		producer: schema.#ManagedResource & {type: "fake_plain", outputs: id: type: "string", configuration: name: "producer"}
+		consumer: {type: "fake_plain", configuration: name: _i}
 	}
 	_i: resources.producer.outputs.id
 	...
 }
 "#;
-const OUTPUT_PRODUCER: &str =
-    r#"producer: {type: "fake_plain", outputs: id: string, configuration: name: "producer"}"#;
+const OUTPUT_PRODUCER: &str = r#"producer: {type: "fake_plain", outputs: id: type: "string", configuration: name: "producer"}"#;
 const PRODUCER_ID: &str = "infrastructure.resources.producer.outputs.id";
 
 struct OutputLifecycle {
@@ -2229,114 +2228,39 @@ async fn imported_definitions_order_and_record_output_edges() -> TestResult {
     Ok(())
 }
 
-/// Preserved behaviour: a real output violating a consumer's constraint stops the
-/// apply after the producer, and the consumer is never created.
+/// An output has no value in CUE, so narrowing, comparing or interpolating one is a
+/// CUE error: the plan stops before any provider is asked to change anything.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires the fake provider and Turso/sqld; see module documentation"]
-async fn a_real_output_violating_a_constraint_stops_before_the_consumer() -> TestResult {
-    let stack = OutputLifecycle::new(
-        "constraint-violation",
-        "infrastructure: stack.#Conflict & {\n @INFRASTRUCTURE@\n}",
-    )?;
-    stack.lifecycle.run(&["plan"])?;
-    // The real value is checked as soon as it exists, before the consumer's turn.
-    stack.fails(
-        &["apply", "--yes"],
-        "the real value of output fake_plain.producer.id",
-    )?;
-    assert_eq!(stack.creates(), ["producer"]);
-    assert!(stack.record("consumer").await.is_err());
-    Ok(())
-}
-
-/// A real output conflicting inside a let used to be lost, so the consumer was created
-/// with the let's other conjunct, as if the output had been that value.
-#[tokio::test(flavor = "multi_thread")]
-#[ignore = "requires the fake provider and Turso/sqld; see module documentation"]
-async fn a_real_output_conflicting_inside_a_let_stops_before_the_consumer() -> TestResult {
-    let stack = OutputLifecycle::new(
-        "let-conflict",
-        &format!(
-            "let M = {PRODUCER_ID} & \"never\"\n{}",
-            outputs_stack(&format!(
-                "{OUTPUT_PRODUCER}, consumer: {{type: \"fake_plain\", configuration: name: \"\\(M)\"}}"
-            ))
-        ),
-    )?;
-    stack.lifecycle.run(&["plan"])?;
-    stack.fails(
-        &["apply", "--yes"],
-        "the real value of output fake_plain.producer.id",
-    )?;
-    assert_eq!(stack.creates(), ["producer"]);
-    assert!(stack.record("consumer").await.is_err());
-    Ok(())
-}
-
-/// Output-dependent structure is refused before the provider changes anything.
-#[tokio::test(flavor = "multi_thread")]
-#[ignore = "requires the fake provider and Turso/sqld; see module documentation"]
-async fn output_dependent_structure_is_refused_before_any_provider_change() -> TestResult {
-    let consumer = |configuration: &str| {
+async fn an_output_used_as_a_value_fails_before_any_provider_change() -> TestResult {
+    let consumer = |name: &str| {
         outputs_stack(&format!(
-            "{OUTPUT_PRODUCER}, consumer: {{type: \"fake_plain\", configuration: {configuration}}}"
+            "{OUTPUT_PRODUCER}, consumer: {{type: \"fake_plain\", configuration: name: {name}}}"
         ))
     };
-    let fake_object = outputs_stack(&format!(
-        "{OUTPUT_PRODUCER}, consumer: {{type: \"fake_obj\", configuration: close({{key: \"consumer\", (*({PRODUCER_ID} & \"version\") | \"mode\"): \"value\"}})}}"
-    ));
     let cases = [
         (
-            "imported-conditional",
-            "infrastructure: stack.#Bad & {\n @INFRASTRUCTURE@\n}".to_string(),
-        ),
-        ("close-dynamic-label", fake_object),
-        (
-            "default-marker",
-            consumer(&format!(
-                "*{{name: \"base\", if ({PRODUCER_ID} & =~\"^bad$\") != _|_ {{extra: \"e\"}}}} | {{name: \"z\"}}"
-            )),
+            "narrowed",
+            consumer(&format!("{PRODUCER_ID} & \"not-the-output\"")),
         ),
         (
-            "plain-condition",
-            consumer(&format!(
-                "{{name: \"n\", if {PRODUCER_ID} == \"x\" {{extra: \"e\"}}}}"
-            )),
+            "interpolated",
+            consumer(&format!("\"app-\\({PRODUCER_ID})\"")),
         ),
         (
-            "hidden-control-read-by-the-configuration",
+            "unread-check",
             format!(
-                "_o: {PRODUCER_ID}\n_h: {{if (_o & =~\"^x\") != _|_ {{v: 1}}}}\n{}",
-                consumer("{name: \"n\", if _h.v != _|_ {extra: \"e\"}}")
-            ),
-        ),
-        (
-            "definition-as-function",
-            format!(
-                "#F: {{in: string, out: {{if (in & =~\"^x\") != _|_ {{extra: \"e\"}}}}}}\n{}",
-                consumer(&format!(
-                    "{{name: \"n\"}} & (#F & {{in: {PRODUCER_ID}}}).out"
-                ))
+                "_check: {PRODUCER_ID} & \"not-the-output\"\ncheck: _check\n{}",
+                consumer(PRODUCER_ID)
             ),
         ),
     ];
     for (label, body) in &cases {
         let stack = OutputLifecycle::new(label, body)?;
-        stack.fails(&["plan"], "an output cannot decide the structure")?;
-        stack.fails(&["apply", "--yes"], "an output cannot decide the structure")?;
+        stack.fails(&["plan"], "could not be evaluated")?;
+        stack.fails(&["apply", "--yes"], "could not be evaluated")?;
         assert_eq!(stack.mutations(), 0, "{label} changed: {}", stack.journal());
         assert!(stack.store.list(&stack.tenant).await?.is_empty(), "{label}");
-        // The same syntax on an unrelated value must plan: the refusal above is about
-        // the output, not a mistake in this fixture.
-        if body.contains(PRODUCER_ID) {
-            let unrelated = format!(
-                "_unrelated: \"unmatched\"\n{}",
-                body.replace(PRODUCER_ID, "_unrelated")
-            );
-            OutputLifecycle::new(label, &unrelated)?
-                .lifecycle
-                .run(&["plan"])?;
-        }
     }
     Ok(())
 }
@@ -2349,9 +2273,9 @@ async fn every_way_of_reaching_an_output_is_ordered_and_filled() -> TestResult {
     let cases = [
         ("direct", String::new(), PRODUCER_ID.to_string()),
         (
-            "constrained",
+            "narrowed-to-its-type",
             String::new(),
-            format!("{PRODUCER_ID} & =~\"^.\""),
+            format!("{PRODUCER_ID} & {{type: \"string\"}}"),
         ),
         (
             "field-alias",
@@ -2366,7 +2290,7 @@ async fn every_way_of_reaching_an_output_is_ordered_and_filled() -> TestResult {
         ),
         (
             "function",
-            "#F: {in: string, v: in}\n".to_string(),
+            "#F: {in: _, v: in}\n".to_string(),
             format!("(#F & {{in: {PRODUCER_ID}}}).v"),
         ),
         (
@@ -2440,7 +2364,7 @@ async fn references_inside_known_conditions_and_loops_are_filled() -> TestResult
         &format!(
             "_producers: {{a: \"first\", b: \"second\"}}\n{}\ninfrastructure: resources: {{for key, _ in _producers {{\"consumer_\\(key)\": {{type: \"fake_plain\", configuration: name: infrastructure.resources[\"producer_\\(key)\"].outputs.id}}}}}}",
             outputs_stack(
-                "for key, name in _producers {\"producer_\\(key)\": {type: \"fake_plain\", outputs: id: string, configuration: \"name\": name}}"
+                "for key, name in _producers {\"producer_\\(key)\": {type: \"fake_plain\", outputs: id: type: \"string\", configuration: \"name\": name}}"
             )
         ),
     )?;
@@ -2469,7 +2393,7 @@ async fn computed_values_wait_for_every_output_they_read() -> TestResult {
         &format!(
             "_other: infrastructure.resources.other.outputs.id\n{}",
             outputs_stack(&format!(
-                "{OUTPUT_PRODUCER}, other: {{type: \"fake_plain\", outputs: id: string, configuration: name: \"other\"}}, interpolated: {{type: \"fake_plain\", configuration: name: \"app-\\({PRODUCER_ID})-\\(_other)\"}}, concatenated: {{type: \"fake_plain\", configuration: name: {PRODUCER_ID} + \"-suffix\"}}"
+                "{OUTPUT_PRODUCER}, other: {{type: \"fake_plain\", outputs: id: type: \"string\", configuration: name: \"other\"}}, interpolated: {{type: \"fake_plain\", configuration: name: schema.#Format & {{parts: [\"app-\", {PRODUCER_ID}, \"-\", _other]}}}}, concatenated: {{type: \"fake_plain\", configuration: name: schema.#Join & {{items: [{PRODUCER_ID}, \"suffix\"], separator: \"-\"}}}}"
             ))
         ),
     )?;
@@ -2506,46 +2430,6 @@ async fn computed_values_wait_for_every_output_they_read() -> TestResult {
     Ok(())
 }
 
-/// CUE decides the shape of a computed value. A list cannot reach a destination that
-/// holds a list, as references need a scalar, and at a scalar one the type stops the run.
-#[tokio::test(flavor = "multi_thread")]
-#[ignore = "requires the fake provider and Turso/sqld; see module documentation"]
-async fn a_computed_value_that_is_not_a_scalar_is_refused() -> TestResult {
-    let parts = format!("(stack.#Parts & {{in: {PRODUCER_ID}}}).out");
-    let into_a_set = OutputLifecycle::new(
-        "computed-list-destination",
-        &outputs_stack(&format!(
-            "{OUTPUT_PRODUCER}, consumer: {{type: \"fake_tags\", configuration: tags: {parts}}}"
-        )),
-    )?;
-    into_a_set.fails(&["plan"], "references require a scalar destination")?;
-    assert_eq!(into_a_set.mutations(), 0);
-
-    let whole_configuration = OutputLifecycle::new(
-        "computed-whole-configuration",
-        &outputs_stack(&format!(
-            "{OUTPUT_PRODUCER}, consumer: {{type: \"fake_plain\", configuration: (stack.#Decoded & {{in: {PRODUCER_ID}}}).out}}"
-        )),
-    )?;
-    whole_configuration.fails(
-        &["plan"],
-        "output selectors require a resource or data source configuration argument",
-    )?;
-    assert_eq!(whole_configuration.mutations(), 0);
-
-    let into_a_string = OutputLifecycle::new(
-        "computed-list-scalar",
-        &outputs_stack(&format!(
-            "{OUTPUT_PRODUCER}, consumer: {{type: \"fake_plain\", configuration: name: {parts}}}"
-        )),
-    )?;
-    into_a_string.lifecycle.run(&["plan"])?;
-    into_a_string.fails(&["apply", "--yes"], "wrong type for its destination")?;
-    assert_eq!(into_a_string.creates(), ["producer"]);
-    assert!(into_a_string.record("consumer").await.is_err());
-    Ok(())
-}
-
 /// A declared output is checked against the provider's schema while planning, whether or
 /// not anything reads it: otherwise its value could only be refused once it exists.
 #[tokio::test(flavor = "multi_thread")]
@@ -2554,7 +2438,7 @@ async fn an_output_declared_with_the_wrong_type_is_refused_while_planning() -> T
     let stack = OutputLifecycle::new(
         "unread-output-wrong-type",
         &outputs_stack(
-            r#"producer: {type: "fake_plain", outputs: id: number, configuration: name: "producer"}"#,
+            r#"producer: {type: "fake_plain", outputs: id: type: "number", configuration: name: "producer"}"#,
         ),
     )?;
     stack.fails(
@@ -2569,8 +2453,8 @@ async fn an_output_declared_with_the_wrong_type_is_refused_while_planning() -> T
     Ok(())
 }
 
-/// A declaration with a constraint cannot be read as an output. That says what is wrong
-/// with the declaration, not that the reference decides any structure.
+/// An output is declared with its type alone: a constraint conflicts with the
+/// schema's reference, so CUE refuses the configuration.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires the fake provider and Turso/sqld; see module documentation"]
 async fn a_refined_output_declaration_is_refused_as_a_declaration() -> TestResult {
@@ -2580,10 +2464,7 @@ async fn a_refined_output_declaration_is_refused_as_a_declaration() -> TestResul
             "producer: {{type: \"fake_plain\", outputs: id: string & =~\"^a\", configuration: name: \"producer\"}}, consumer: {{type: \"fake_plain\", configuration: name: {PRODUCER_ID}}}"
         )),
     )?;
-    stack.fails(
-        &["plan"],
-        "output declarations must be bare string, number or bool types",
-    )?;
+    stack.fails(&["plan"], "could not be evaluated")?;
     assert_eq!(stack.mutations(), 0);
     Ok(())
 }
@@ -2608,30 +2489,6 @@ async fn a_conditional_field_in_a_definition_reads_what_is_outside_it() -> TestR
     Ok(())
 }
 
-/// A check nothing in the configuration reads does not stop a plan, and a real value
-/// violating it stops the apply before anything else changes.
-#[tokio::test(flavor = "multi_thread")]
-#[ignore = "requires the fake provider and Turso/sqld; see module documentation"]
-async fn a_check_outside_the_configuration_is_verified_against_real_values() -> TestResult {
-    let stack = OutputLifecycle::new(
-        "unread-check",
-        &format!(
-            "_check: {PRODUCER_ID} & \"not-the-output\"\n{}",
-            outputs_stack(&format!(
-                "{OUTPUT_PRODUCER}, consumer: {{type: \"fake_plain\", configuration: name: {PRODUCER_ID}}}"
-            ))
-        ),
-    )?;
-    stack.lifecycle.run(&["plan"])?;
-    stack.fails(
-        &["apply", "--yes"],
-        "the real value of output fake_plain.producer.id",
-    )?;
-    assert_eq!(stack.creates(), ["producer"]);
-    assert!(stack.record("consumer").await.is_err());
-    Ok(())
-}
-
 /// A sensitive output keeps a value computed from it out of plans and logs.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires the fake provider and Turso/sqld; see module documentation"]
@@ -2639,7 +2496,7 @@ async fn a_value_computed_from_a_sensitive_output_stays_masked() -> TestResult {
     let stack = OutputLifecycle::new(
         "sensitive-computed",
         &token_stack(
-            "\"bearer \\(infrastructure.resources.producer.outputs.token)\"",
+            "schema.#Format & {parts: [\"bearer \", infrastructure.resources.producer.outputs.token]}",
             "source",
         ),
     )?;
@@ -2659,20 +2516,22 @@ async fn a_value_computed_from_a_sensitive_output_stays_masked() -> TestResult {
     Ok(())
 }
 
-/// An output declared as a scalar whose real value is a list stops the run by name.
+/// A reference to an output the provider does not declare as a scalar stops the run
+/// by name before anything changes.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires the fake provider and Turso/sqld; see module documentation"]
-async fn a_declared_scalar_output_with_a_list_value_stops_the_run() -> TestResult {
+async fn a_reference_to_a_non_scalar_output_stops_the_run() -> TestResult {
     let stack = OutputLifecycle::new(
         "non-scalar-output",
         &outputs_stack(
-            "producer: {type: \"fake_dyn\", outputs: data: string, configuration: name: \"producer\"}, later: {type: \"fake_plain\", dependsOn: [\"producer\"], configuration: name: \"later\"}",
+            "producer: {type: \"fake_dyn\", outputs: data: type: \"string\", configuration: name: \"producer\"}, later: {type: \"fake_plain\", configuration: name: infrastructure.resources.producer.outputs.data}",
         ),
     )?;
     stack.fails(
         &["apply", "--yes"],
-        "fake_dyn.producer.data is declared as a scalar",
+        "output fake_dyn.producer.data source must be a scalar provider output",
     )?;
+    assert_eq!(stack.mutations(), 0);
     assert!(!stack.creates().contains(&"later".to_string()));
     assert!(stack.record("later").await.is_err());
     Ok(())
@@ -2698,7 +2557,7 @@ async fn a_default_over_an_absent_optional_field_is_ordinary_cue() -> TestResult
 
 fn token_stack(token: &str, source: &str) -> String {
     outputs_stack(&format!(
-        "producer: {{type: \"fake_token_source\", outputs: token: string, configuration: name: \"{source}\"}}, consumer: {{type: \"fake_token_consumer\", configuration: config: {{token: {token}, label: \"ordinary-sibling\"}}}}"
+        "producer: {{type: \"fake_token_source\", outputs: token: type: \"string\", configuration: name: \"{source}\"}}, consumer: {{type: \"fake_token_consumer\", configuration: config: {{token: {token}, label: \"ordinary-sibling\"}}}}"
     ))
 }
 
@@ -2768,7 +2627,7 @@ async fn output_chains_specialize_in_order_with_exact_edges() -> TestResult {
     let stack = OutputLifecycle::new(
         "output-chain",
         &outputs_stack(&format!(
-            "{OUTPUT_PRODUCER}, middle: {{type: \"fake_plain\", outputs: id: string, configuration: name: {PRODUCER_ID}}}, last: {{type: \"fake_plain\", configuration: name: infrastructure.resources.middle.outputs.id}}"
+            "{OUTPUT_PRODUCER}, middle: {{type: \"fake_plain\", outputs: id: type: \"string\", configuration: name: {PRODUCER_ID}}}, last: {{type: \"fake_plain\", configuration: name: infrastructure.resources.middle.outputs.id}}"
         )),
     )?;
     stack.lifecycle.run(&["apply", "--yes"])?;
@@ -2809,7 +2668,7 @@ async fn separate_infrastructure_packages_share_the_output_contract() -> TestRes
     fs::write(
         directory.join("infra/stack.cue"),
         format!(
-            "package infrastructure\n_b: \"x\"\n_z: {{if _b == \"x\" {{v: 1}}}}\ninfrastructure: {{{infrastructure}"
+            "package infrastructure\nimport \"github.com/cuenv/cuenv/schema\"\n_b: \"x\"\n_z: {{if _b == \"x\" {{v: 1}}}}\ninfrastructure: schema.#Infrastructure & {{{infrastructure}"
         ),
     )?;
     fs::write(
@@ -2825,11 +2684,11 @@ async fn separate_infrastructure_packages_share_the_output_contract() -> TestRes
     fs::write(
         directory.join("infra/control.cue"),
         format!(
-            "package infrastructure\n_o: {PRODUCER_ID}\ninfrastructure: resources: consumer: configuration: {{if (_o & \"x\") == \"x\" {{extra: \"e\"}}}}\n"
+            "package infrastructure\n_o: {PRODUCER_ID}\ninfrastructure: resources: consumer: configuration: extra: _o & \"x\"\n"
         ),
     )?;
     let before = stack.mutations();
-    stack.fails(&["plan"], "an output cannot decide the structure")?;
+    stack.fails(&["plan"], "could not be evaluated")?;
     assert_eq!(stack.mutations(), before);
     Ok(())
 }
@@ -2837,7 +2696,7 @@ async fn separate_infrastructure_packages_share_the_output_contract() -> TestRes
 /// #597: a lookup that returns a list of objects feeds one element's field.
 fn groups_stack(name: &str) -> String {
     format!(
-        "infrastructure: {{\n @INFRASTRUCTURE@\n data: groups: {{type: \"fake_groups\", configuration: name: {name:?}, outputs: result: [{{id: string}}]}}\n resources: consumer: {{type: \"fake_plain\", configuration: name: infrastructure.data.groups.outputs.result[0].id}}\n}}"
+        "infrastructure: {{\n @INFRASTRUCTURE@\n data: groups: {{type: \"fake_groups\", configuration: name: {name:?}, outputs: result: type: \"list\"}}\n resources: consumer: {{type: \"fake_plain\", configuration: name: schema.#Select & {{from: infrastructure.data.groups.outputs.result, path: [0, \"id\"], type: \"string\"}}}}\n}}"
     )
 }
 
@@ -2929,10 +2788,10 @@ infrastructure: {{
   configuration: fake_provider.#Configuration & {{directory: {directory}}}
  }}
  data: {{
-  zone: fake_groups.#DataSource & {{configuration: name: "Zone Read", outputs: result: [_]}}
+  zone: fake_groups.#DataSource & {{configuration: name: "Zone Read"}}
   everything: fake_groups.#DataSource
  }}
- resources: consumer: fake_plain.#Resource & {{configuration: name: infrastructure.data.zone.outputs.result[0].id}}
+ resources: consumer: fake_plain.#Resource & {{configuration: name: schema.#Select & {{from: infrastructure.data.zone.outputs.result, path: [0, "id"], type: "string"}}}}
 }}
 "#,
         project = serde_json::to_string(&project)?,

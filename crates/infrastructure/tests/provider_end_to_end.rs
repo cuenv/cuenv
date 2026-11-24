@@ -528,10 +528,10 @@ async fn fake_data_source_generated_types_describe_configuration_and_outputs() -
     }
     assert!(package.contains("name!: string"), "{package}");
     for output in [
-        "value: string",
-        "secret_value: string",
-        "length: number",
-        "found: bool",
+        "value: {type: \"string\", ...}",
+        "secret_value: {type: \"string\", ...}",
+        "length: {type: \"number\", ...}",
+        "found: {type: \"bool\", ...}",
     ] {
         assert!(package.contains(output), "{package}");
     }
@@ -544,10 +544,8 @@ async fn fake_data_source_generated_types_describe_configuration_and_outputs() -
         .get(Path::new("data/fake_groups/data_source.cue"))
         .ok_or("groups data source package missing")?;
     assert!(
-        groups.contains(
-            "\tresult: [...{\n\t\tid: string\n\t\tname: string\n\t\tscopes: [...string]\n\t}]"
-        ),
-        "list outputs must be selectable: {groups}"
+        groups.contains("\tresult: {type: \"list\", ...}"),
+        "list outputs are read through #Select: {groups}"
     );
     Ok(())
 }

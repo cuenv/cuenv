@@ -344,7 +344,6 @@ fn contexts_survive_freezing_the_configuration() {
         ),
     );
     let target = evaluate(module.path(), NameCheck::WholeModule).unwrap();
-    // The frozen configuration is exported without `contexts`.
     assert_eq!(
         serde_json::to_value(&target.contexts).unwrap(),
         serde_json::json!({
@@ -381,7 +380,7 @@ infrastructure: {
       resources: pet: {type: "random_pet", configuration: length: 2}
     }
     prod: {
-      providers: random: {source: "hashicorp/random", version: _}
+      providers: random: {source: "hashicorp/random", version: "3.7.2"}
     }
   }
 }
@@ -505,7 +504,7 @@ infrastructure: {
   providers: random: {source: "hashicorp/random", version: "3.7.2"}
   resources: pet: {type: "random_pet", configuration: length: 2}
   environments: prod: {
-    providers: random: {source: "hashicorp/random", version: _}
+    providers: random: {source: "hashicorp/random", version: "3.7.2"}
   }
 }
 "#,
@@ -548,6 +547,28 @@ infrastructure: {
 }
 
 #[test]
+fn an_unselected_environment_must_be_concrete_too() {
+    // Plain `cue export` must accept the project, so every environment is
+    // complete whichever one a run selects.
+    let module = module_directory();
+    write(module.path(), "cue.mod/module.cue", MODULE);
+    write(
+        module.path(),
+        "app/env.cue",
+        r#"package cuenv
+name: "app"
+infrastructure: {
+  state: turso: url: "http://127.0.0.1:8080"
+  providers: random: {source: "hashicorp/random", version: "3.7.2"}
+  environments: prod: providers: random: {source: "hashicorp/random", version: _}
+}
+"#,
+    );
+    let error = evaluate(module.path(), NameCheck::TargetOnly).unwrap_err();
+    assert_eq!(crate::cli::exit_code_for(&error), EXIT_EVAL, "{error}");
+}
+
+#[test]
 fn selected_top_level_must_be_concrete_without_exposing_values() {
     let module = module_directory();
     write(module.path(), "cue.mod/module.cue", MODULE);
@@ -585,7 +606,7 @@ infrastructure: {
   resource: typo: {type: "random_pet"}
   environments: {
     dev: {providers: random: {source: "hashicorp/random", version: "3.7.2"}}
-    prod: {providers: random: {source: "hashicorp/random", version: _}}
+    prod: {providers: random: {source: "hashicorp/random", version: "3.7.2"}}
   }
 }
 "#,

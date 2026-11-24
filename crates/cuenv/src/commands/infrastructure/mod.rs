@@ -16,7 +16,6 @@
 
 mod action;
 mod apply;
-mod configuration_evaluator;
 mod confirm;
 mod dispatch;
 mod evaluation;
@@ -30,7 +29,6 @@ mod lock;
 mod migrate;
 mod object_state;
 mod output;
-mod output_selectors;
 mod provider;
 mod provider_environment;
 mod resolve;

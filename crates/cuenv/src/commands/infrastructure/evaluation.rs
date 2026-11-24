@@ -22,6 +22,9 @@ use cuenv_core::ModuleEvaluation;
 
 use cuenv_core::manifest::Project;
 use cuenv_core::module::NamedProject;
+use cuenv_infrastructure::references::{
+    ExpressionEvaluator, LoweredReferences, Selection, SourceAddress,
+};
 use cuenv_infrastructure::{ProjectInstance, TenantKey};
 use cuenv_manifest::context::ContextDefinition;
 use cuenv_manifest::environment::Env;
@@ -29,9 +32,7 @@ use cuenv_manifest::manifest::{
     Infrastructure, InfrastructureSelectionError, InfrastructureState, ProviderEnvironment,
 };
 
-use super::configuration_evaluator::{NativeConfigurationEvaluator, SnapshotRequest};
 use super::invocation::Invocation;
-use super::output_selectors::OutputSelectors;
 use crate::cli::CliError;
 use crate::commands::module_evaluation::PathEvaluation;
 
@@ -144,8 +145,9 @@ pub(super) struct Target {
     pub(super) contexts: HashMap<String, ContextDefinition>,
     /// Canonical project directory.
     pub(super) project_directory: PathBuf,
-    /// Original CUE instance and native output provenance for provider inputs.
-    pub(super) configuration_evaluator: Option<Arc<NativeConfigurationEvaluator>>,
+    /// The output references of the selected configuration, which the engine
+    /// fills with real values at plan and apply time.
+    pub(super) configuration_evaluator: Option<Arc<ExpressionEvaluator>>,
 }
 
 /// Evaluate the target project and, when asked, check its name is unique.
@@ -204,9 +206,17 @@ pub(super) fn evaluate(request: TargetRequest<'_>) -> Result<Target, CliError> {
     } else {
         (project_path.clone(), request.package, None)
     };
-    // Only a command that needs the selected configuration requires it to be
-    // concrete; state-only commands need `infrastructure.state` alone.
-    let concrete_paths = vec!["infrastructure.state".to_string()];
+    // A command that needs the configuration requires all of it to be
+    // concrete, exactly as `cue export` does: output references are concrete
+    // descriptors, never open values. State-only commands need
+    // `infrastructure.state` alone.
+    let concrete_paths = vec![
+        match request.needs {
+            Needs::Configuration => "infrastructure",
+            Needs::StateOnly => "infrastructure.state",
+        }
+        .to_string(),
+    ];
 
     // Export the infrastructure object leniently so its complete set of
     // top-level keys reaches the DTO's unknown-field check. Only selected
@@ -225,7 +235,7 @@ pub(super) fn evaluate(request: TargetRequest<'_>) -> Result<Target, CliError> {
     if request.needs == Needs::StateOnly {
         export_paths.push("infrastructure.migrateStateTo".to_string());
     }
-    let mut module = crate::commands::module_evaluation::evaluate_path(PathEvaluation {
+    let exact = crate::commands::module_evaluation::evaluate_path_exactly(PathEvaluation {
         target_path: &target_path,
         package,
         concrete_paths: concrete_paths.clone(),
@@ -240,50 +250,13 @@ pub(super) fn evaluate(request: TargetRequest<'_>) -> Result<Target, CliError> {
             error,
         })
     })?;
-    // Freezing the configuration re-exports the instance without its
-    // `contexts`, so those of this evaluation are kept.
-    let evaluated_contexts = module
-        .get(Path::new(
-            &cuenv_core::cue::discovery::compute_relative_path(&target_path, &module.root),
-        ))
-        .and_then(|instance| instance.value.get(CONTEXTS_PATH).cloned());
-    let configuration_evaluator = if request.needs == Needs::Configuration {
-        let relative =
-            cuenv_core::cue::discovery::compute_relative_path(&target_path, &module.root);
-        if let Some(environment) = request.environment
-            && let Some(instance) = module.get(Path::new(&relative))
-        {
-            let declared = declared_environment_names(&instance.value);
-            if !declared.iter().any(|name| name == environment) {
-                let name = project_fields
-                    .as_ref()
-                    .unwrap_or(&instance.value)
-                    .get("name")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or("<unknown>");
-                return Err(unknown_environment(name, environment, &declared));
-            }
-        }
-        super::configuration_evaluator::freeze_configuration(
-            &mut module,
-            &SnapshotRequest {
-                directory: &target_path,
-                package,
-                environment: request.environment,
-            },
-        )?
-    } else {
-        None
-    };
+    let mut module = exact.module;
     let relative_path =
         cuenv_core::cue::discovery::compute_relative_path(&target_path, &module.root);
-    if let Some(contexts) = evaluated_contexts
-        && let Some(value) = module
-            .instances
-            .get_mut(Path::new(&relative_path))
-            .and_then(|instance| instance.value.as_object_mut())
+    if request.needs == Needs::Configuration
+        && let Some(text) = exact.text.get(&relative_path)
     {
-        value.insert(CONTEXTS_PATH.to_string(), contexts);
+        refuse_rounded_numbers(text, request.environment)?;
     }
     if let Some(fields) = project_fields {
         let instance = module
@@ -308,6 +281,7 @@ pub(super) fn evaluate(request: TargetRequest<'_>) -> Result<Target, CliError> {
         declared_environments,
         top_level,
         remote_cache_credential_variables,
+        configuration_evaluator,
     } = projection;
     let infrastructure = infrastructure.ok_or_else(|| missing_infrastructure(&project.name))?;
     let selection = match request.environment {
@@ -419,6 +393,8 @@ struct ProjectedTarget {
     top_level: TopLevel,
     /// The variables the remote cache reads its credentials from.
     remote_cache_credential_variables: Vec<String>,
+    /// The output references of the selected configuration.
+    configuration_evaluator: Option<Arc<ExpressionEvaluator>>,
 }
 
 fn project_target(
@@ -436,15 +412,10 @@ fn project_target(
         ))
     })?;
     let mut selected = instance.clone();
-    let output_declarations = if request.needs == Needs::Configuration {
-        OutputSelectors {
-            instance_path: &relative_path,
-            references: &module.direct_references,
-            environment,
-        }
-        .lower(&mut selected.value)?
+    let lowered = if request.needs == Needs::Configuration {
+        lower_references(&mut selected.value, environment)?
     } else {
-        BTreeMap::new()
+        LoweredReferences::default()
     };
     let declared_environments = match request.needs {
         Needs::Configuration => declared_environment_names(&selected.value),
@@ -503,14 +474,13 @@ fn project_target(
         .map(|value| select_infrastructure(value, &selection))
         .transpose()?;
     if let Some(infrastructure) = &mut infrastructure {
-        for (name, declarations) in output_declarations {
-            let declaration = if let Some(name) = name.strip_prefix("data.") {
-                infrastructure.data.get_mut(name)
-            } else {
-                infrastructure.resources.get_mut(&name)
+        for (source, types) in lowered.output_types() {
+            let declaration = match source {
+                SourceAddress::Resource(address) => infrastructure.resources.get_mut(&address.name),
+                SourceAddress::DataSource(address) => infrastructure.data.get_mut(&address.name),
             };
             if let Some(declaration) = declaration {
-                declaration.output_types = declarations;
+                declaration.output_types.clone_from(types);
             }
         }
     }
@@ -520,7 +490,68 @@ fn project_target(
         declared_environments,
         top_level,
         remote_cache_credential_variables,
+        configuration_evaluator: lowered.into_evaluator().map(Arc::new),
     })
+}
+
+/// Refuse a number of the selected infrastructure configuration that does not
+/// survive JSON decoding exactly. The engine reads exact decimals, but the
+/// configuration is decoded with `f64` numbers, which would silently round it.
+/// Numbers of an environment the run does not select are never decoded.
+fn refuse_rounded_numbers(
+    text: &serde_json::value::RawValue,
+    environment: Option<&str>,
+) -> Result<(), CliError> {
+    use cuenv_infrastructure::references::ConfigurationSelector::Field;
+    let tokens = cuenv_infrastructure::type_system::scan_json_numbers(text)
+        .map_err(|_| CliError::config("the CUE configuration contains an invalid number"))?;
+    let selected = |path: &[cuenv_infrastructure::references::ConfigurationSelector]| match path {
+        [Field(root), Field(environments), Field(name), ..]
+            if root == "infrastructure" && environments == "environments" =>
+        {
+            environment == Some(name.as_str())
+        }
+        [Field(root), Field(field), ..] if root == "infrastructure" => {
+            environment.is_none()
+                || !matches!(
+                    field.as_str(),
+                    "providers" | "resources" | "data" | "providerEnvironment"
+                )
+        }
+        _ => false,
+    };
+    if tokens
+        .iter()
+        .any(|token| selected(&token.path) && token.number.as_json_number().is_none())
+    {
+        return Err(CliError::config(
+            "a number in the selected infrastructure configuration cannot be represented \
+             without losing precision",
+        ));
+    }
+    Ok(())
+}
+
+/// Take the output references out of the selected configuration: the
+/// top-level `infrastructure`, or the environment the run selected. An
+/// environment that is not declared is reported when the configuration is
+/// decoded.
+fn lower_references(
+    project: &mut serde_json::Value,
+    environment: Option<&str>,
+) -> Result<LoweredReferences, CliError> {
+    let configuration = match environment {
+        None => project.get_mut("infrastructure"),
+        Some(name) => project
+            .get_mut("infrastructure")
+            .and_then(|infrastructure| infrastructure.get_mut("environments"))
+            .and_then(|environments| environments.get_mut(name)),
+    };
+    let Some(configuration) = configuration else {
+        return Ok(LoweredReferences::default());
+    };
+    cuenv_infrastructure::references::lower(configuration, Selection { environment })
+        .map_err(|error| super::failure(&error, &Invocation::default()))
 }
 
 /// How many top-level providers, resources and data sources the project declares, counted
@@ -1165,7 +1196,7 @@ infrastructure: schema.#Infrastructure & {
  state: turso: url: "http://127.0.0.1:8080"
  providers: fake: {source: "example/fake", path: "/not-started"}
  resources: {
-  primary: {type: "fake_plain", outputs: id: string}
+  primary: {type: "fake_plain", outputs: id: type: "string"}
   record: {type: "fake_plain", configuration: name: infrastructure.resources.primary.outputs.id}
  }
 }
@@ -1289,7 +1320,7 @@ infrastructure: {
         use cuenv_manifest::manifest::InfrastructureOutputType;
         let direct = native_fixture(
             r#"resources: {
- primary: {type: "fake_plain", outputs: id: string}
+ primary: {type: "fake_plain", outputs: id: type: "string"}
  record: {type: "fake_plain", configuration: name: infrastructure.resources.primary.outputs.id}
 }"#,
         )?;
@@ -1315,17 +1346,15 @@ infrastructure: {
     }
 
     #[test]
-    fn nested_native_references_preserve_unknowns_and_revalidate_the_frozen_cue() -> TestResult {
-        use cuenv_infrastructure::references::{
-            ConfigurationEvaluator, ConfigurationSpecialization, OutputIdentity,
-        };
+    fn nested_references_stay_null_until_their_source_is_known() -> TestResult {
+        use cuenv_infrastructure::references::{ConfigurationSpecialization, OutputIdentity};
         use cuenv_infrastructure::type_system::Value;
 
         let directory = native_fixture(
             r#"resources: {
- primary: {type: "fake_plain", outputs: id: string}
+ primary: {type: "fake_plain", outputs: id: type: "string"}
  record: {type: "fake_plain", configuration: outer: inner: {
-  token: (number | =~"^expected$") & infrastructure.resources.primary.outputs.id & "expected"
+  token: infrastructure.resources.primary.outputs.id
   label: "unchanged"
  }}
 }"#,
@@ -1341,14 +1370,12 @@ infrastructure: {
             .ok_or("missing reference")?
             .clone();
         assert_eq!(reference.destination.len(), 3);
+        assert!(!reference.computed);
         assert!(
             target.infrastructure.resources["record"].configuration["outer"]["inner"]["token"]
                 .is_null()
         );
-        assert_eq!(reference.source.to_string(), "fake_plain.primary");
-        assert_eq!(reference.attribute.name(), "id");
 
-        // CUE narrows the leaf to "expected", but the producer is still unknown.
         let sources = BTreeMap::new();
         let unknown = evaluator.specialize(&ConfigurationSpecialization {
             consumer: &reference.consumer,
@@ -1359,36 +1386,32 @@ infrastructure: {
             unknown.configuration["outer"]["inner"]["token"],
             serde_json::Value::Null
         );
+        assert_eq!(
+            unknown.configuration["outer"]["inner"]["label"],
+            "unchanged"
+        );
         assert_eq!(unknown.unresolved, vec![reference.clone()]);
 
-        // Re-evaluation must use the selected instance as it stood at plan
-        // time, even if the source file changes before application.
+        // The configuration is read once: editing the source afterwards
+        // changes nothing this run plans or applies.
         std::fs::write(
             directory.path().join("env.cue"),
             "package cuenv\ninvalid: _|_\n",
         )?;
-        let identity = OutputIdentity {
-            source: reference.source.clone(),
-            attribute: reference.attribute.clone(),
-        };
-        let matching = BTreeMap::from([(identity.clone(), Value::String("expected".into()))]);
-        let known = evaluator.specialize(&ConfigurationSpecialization {
+        let known = BTreeMap::from([(
+            OutputIdentity {
+                source: reference.source.clone(),
+                attribute: reference.attribute.clone(),
+            },
+            Value::String("expected".into()),
+        )]);
+        let filled = evaluator.specialize(&ConfigurationSpecialization {
             consumer: &reference.consumer,
-            sources: &matching,
+            sources: &known,
             deferred: &[],
         })?;
-        assert_eq!(known.configuration["outer"]["inner"]["token"], "expected");
-        let violating =
-            BTreeMap::from([(identity, Value::String("synthetic-sensitive-value".into()))]);
-        let error = evaluator
-            .specialize(&ConfigurationSpecialization {
-                consumer: &reference.consumer,
-                sources: &violating,
-                deferred: &[],
-            })
-            .err()
-            .ok_or("constraint violation was accepted")?;
-        assert!(!error.to_string().contains("synthetic-sensitive-value"));
+        assert_eq!(filled.configuration["outer"]["inner"]["token"], "expected");
+        assert_eq!(filled.unresolved, Vec::new());
         Ok(())
     }
 
@@ -1405,14 +1428,14 @@ infrastructure: {
                 r#"
 providers: fake: {{source: "example/fake", path: "/not-started"}}
 resources: {{
- source: {{type: "fake_plain", outputs: id: string}}
+ source: {{type: "fake_plain", outputs: id: type: "string"}}
  consumer: {{type: "fake_plain", configuration: nested: [{{
   managed: {root}.resources.source.outputs.id
   lookup: {root}.data.source.outputs.id
  }}]}}
 }}
 data: {{
- source: {{type: "fake_lookup", outputs: id: string}}
+ source: {{type: "fake_lookup", outputs: id: type: "string"}}
  consumer: {{type: "fake_lookup", configuration: nested: [{{
   managed: {root}.resources.source.outputs.id
   lookup: {root}.data.source.outputs.id
@@ -1475,7 +1498,7 @@ data: {{
 
         let directory = native_fixture(
             r#"resources: {
- primary: {type: "fake_plain", outputs: id: number}
+ primary: {type: "fake_plain", outputs: id: type: "number"}
  consumer: {type: "fake_plain", configuration: {
   nested: token: infrastructure.resources.primary.outputs.id
   ordinary: {"$serde_json::private::Number": "42"}
@@ -1541,16 +1564,16 @@ data: {{
                     r#"let secretKey = "{key}"
 resources: record: {{type: "fake_plain", configuration: labels: {{"\(secretKey)": 9007199254740993.1234567890123456789}}}}"#
                 ),
-                "infrastructure.resources.<resource>.configuration.<value>.<value>",
+                "without losing precision",
                 2,
             ),
             (
                 format!(
                     r#"let secretKey = "{key}"
-resources: primary: {{type: "fake_plain", outputs: id: string}}
+resources: primary: {{type: "fake_plain", outputs: id: type: "string"}}
 providers: fake: configuration: labels: {{"\(secretKey)": infrastructure.resources.primary.outputs.id}}"#
                 ),
-                "infrastructure.providers.<provider>.configuration.<value>.<value>",
+                "may only set a resource or data source `configuration` argument",
                 2,
             ),
             (
@@ -1725,7 +1748,7 @@ directory: "locator-sensitive-value" & "different"
         let provider = std::env::var("CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER")?;
         let directory = native_fixture(
             r#"resources: {
- producer: {type: "fake_token_source", outputs: token: string, configuration: name: "native"}
+ producer: {type: "fake_token_source", outputs: token: type: "string", configuration: name: "native"}
  consumer: {type: "fake_token_consumer", configuration: config: {
   token: infrastructure.resources.producer.outputs.token
   label: "ordinary-sibling"
@@ -1825,19 +1848,19 @@ directory: "locator-sensitive-value" & "different"
             let configuration = format!(
                 r#"providers: fake: {{source: "example/fake", path: "/not-started"}}
 resources: {{
- primary: {{type: "fake_plain", outputs: id: string}}
- unused: {{type: "fake_plain", outputs: unused: bool}}
+ primary: {{type: "fake_plain", outputs: id: type: "string"}}
+ unused: {{type: "fake_plain", outputs: unused: type: "bool"}}
  record: {{type: "fake_plain", configuration: {{
   managed: {root}.resources.primary.outputs.id
   lookup: {root}.data.primary.outputs.id
  }}}}
 }}
 data: {{
- primary: {{type: "fake_lookup", outputs: id: number}}
- unused: {{type: "fake_lookup", outputs: unused: bool}}
+ primary: {{type: "fake_lookup", outputs: id: type: "number"}}
+ unused: {{type: "fake_lookup", outputs: unused: type: "bool"}}
  record: {{type: "fake_lookup", configuration: {{
-  managed: string & {root}.resources.primary.outputs.id
-  lookup: number & {root}.data.primary.outputs.id
+  managed: {root}.resources.primary.outputs.id
+  lookup: {root}.data.primary.outputs.id
  }}}}
 }}"#
             );
@@ -1879,11 +1902,11 @@ data: {{
             r#"let alias = infrastructure.data["source-key"].outputs["_id"]
 _fieldAlias: infrastructure.data["source-key"].outputs["_id"]
 data: {
- "source-key": {type: "fake_lookup", outputs: "_id": string}
+ "source-key": {type: "fake_lookup", outputs: "_id": type: "string"}
  record: {type: "fake_lookup", configuration: {
   viaLet: alias
   viaField: _fieldAlias
-  "_argument": string & infrastructure.data["source-key"].outputs["_id"]
+  "_argument": infrastructure.data["source-key"].outputs["_id"]
  }}
 }"#,
         )?;
@@ -1916,7 +1939,7 @@ data: {
                     let producer_fields = producer_root.replace('.', ": ");
                     let consumer_fields = consumer_root.replace('.', ": ");
                     let directory = native_fixture(&format!(
-                        r#"{producer_fields}{producer_namespace}: primary: {{type: "fake_plain", outputs: id: string}}
+                        r#"{producer_fields}{producer_namespace}: primary: {{type: "fake_plain", outputs: id: type: "string"}}
 environments: {{
  dev: providers: fake: {{source: "example/fake", path: "/not-started"}}
  prod: providers: fake: {{source: "example/fake", path: "/not-started"}}
@@ -1925,9 +1948,7 @@ environments: {{
                     ))?;
                     let error = evaluate_native_fixture(directory.path(), environment).unwrap_err();
                     assert!(
-                        error
-                            .to_string()
-                            .contains("selected infrastructure configuration"),
+                        error.to_string().contains("another environment"),
                         "{producer_root}{producer_namespace} -> {consumer_root}{consumer_namespace}: {error}"
                     );
                 }
@@ -1948,7 +1969,7 @@ environments: {
  }
  unused: {
   providers: fake: {source: "example/fake", path: "/not-started"}
-  data: incomplete: {type: "fake_lookup", configuration: name: string}
+  data: other: {type: "fake_lookup", configuration: name: "unused"}
  }
 }"#,
         )?;
@@ -1965,7 +1986,6 @@ environments: {
             "dev"
         );
         assert_eq!(selected.top_level, top.top_level);
-        assert!(evaluate_native_fixture(directory.path(), Some("unused")).is_err());
         Ok(())
     }
 
@@ -1995,7 +2015,7 @@ environments: {
     }
 
     #[test]
-    fn selected_data_must_be_concrete_but_state_only_commands_do_not_require_it() -> TestResult {
+    fn configuration_must_be_concrete_but_state_only_commands_do_not_require_it() -> TestResult {
         let directory = native_fixture(
             r#"data: incomplete: {type: "fake_lookup", configuration: name: string}
 environments: dev: {
@@ -2003,8 +2023,9 @@ environments: dev: {
  data: complete: {type: "fake_lookup", configuration: name: "dev"}
 }"#,
         )?;
+        // Plain `cue export` rejects the project, whichever environment is selected.
         assert!(evaluate_native_fixture(directory.path(), None).is_err());
-        assert!(evaluate_native_fixture(directory.path(), Some("dev")).is_ok());
+        assert!(evaluate_native_fixture(directory.path(), Some("dev")).is_err());
         let state = evaluate(TargetRequest {
             path: &directory.path().to_string_lossy(),
             package: "cuenv",
@@ -2018,14 +2039,13 @@ environments: dev: {
     }
 
     #[test]
-    fn unsupported_native_data_selectors_fail_before_external_side_effects() -> TestResult {
+    fn invalid_data_output_references_fail_before_external_side_effects() -> TestResult {
         for body in [
-            r#"data: {primary: {type: "fake_lookup", outputs: id: string}, record: {type: "fake_lookup", configuration: name: infrastructure.data.missing.outputs.id}}"#,
+            r#"data: {primary: {type: "fake_lookup", outputs: id: type: "string"}, record: {type: "fake_lookup", configuration: name: infrastructure.data.missing.outputs.id}}"#,
             r#"data: {primary: {type: "fake_lookup", outputs: id: string & =~"^prefix"}, record: {type: "fake_lookup", configuration: name: infrastructure.data.primary.outputs.id}}"#,
             r#"data: {primary: {type: "fake_lookup", outputs: id: *"default" | string}, record: {type: "fake_lookup", configuration: name: infrastructure.data.primary.outputs.id}}"#,
-            r#"data: {primary: {type: "fake_lookup", outputs: id: string}, record: {type: "fake_lookup", configuration: name: *"fallback" | infrastructure.data.primary.outputs.id}}"#,
             r#"data: {primary: {type: "fake_lookup", outputs: ids: [...string]}, record: {type: "fake_lookup", configuration: names: infrastructure.data.primary.outputs.ids}}"#,
-            r#"data: primary: {type: "fake_lookup", outputs: id: string}
+            r#"data: primary: {type: "fake_lookup", outputs: id: type: "string"}
 providers: fake: configuration: name: infrastructure.data.primary.outputs.id"#,
         ] {
             let directory = native_fixture(body)?;
@@ -2043,12 +2063,12 @@ providers: fake: configuration: name: infrastructure.data.primary.outputs.id"#,
             r#"let alias = infrastructure.resources["source-key"].outputs["_id"]
  _fieldAlias: infrastructure.resources["source-key"].outputs["_id"]
  resources: {
- "source-key": {type: "fake_plain", outputs: {"_id": string, "true": string}}
+ "source-key": {type: "fake_plain", outputs: {"_id": type: "string", "true": type: "string"}}
  record: {type: "fake_plain", configuration: {
   direct: infrastructure.resources["source-key"].outputs["_id"]
   viaLet: alias
   viaField: _fieldAlias
-  typed: string & infrastructure.resources["source-key"].outputs["_id"]
+  typed: infrastructure.resources["source-key"].outputs["_id"] & {type: "string"}
   "_argument": infrastructure.resources["source-key"].outputs["_id"]
   "true": infrastructure.resources["source-key"].outputs["true"]
  }}
@@ -2089,8 +2109,9 @@ providers: fake: configuration: name: infrastructure.data.primary.outputs.id"#,
 
     #[test]
     fn narrowed_outputs_cannot_control_project_identity_or_provider_configuration() -> TestResult {
-        let directory =
-            native_fixture(r#"resources: primary: {type: "fake_plain", outputs: id: string}"#)?;
+        let directory = native_fixture(
+            r#"resources: primary: {type: "fake_plain", outputs: id: type: "string"}"#,
+        )?;
         let file = directory.path().join("env.cue");
         let original = std::fs::read_to_string(&file)?;
         std::fs::write(
@@ -2109,13 +2130,13 @@ providers: fake: configuration: name: infrastructure.data.primary.outputs.id"#,
         assert!(evaluate_native_fixture(directory.path(), None).is_err());
 
         let directory = native_fixture(
-            r#"resources: primary: {type: "fake_plain", outputs: id: string}
+            r#"resources: primary: {type: "fake_plain", outputs: id: type: "string"}
 providerEnvironment: infrastructure.resources.primary.outputs.id"#,
         )?;
         assert!(evaluate_native_fixture(directory.path(), None).is_err());
 
         let directory = native_fixture(
-            r#"resources: primary: {type: "fake_plain", outputs: id: string}
+            r#"resources: primary: {type: "fake_plain", outputs: id: type: "string"}
 workflows: apply: environment: infrastructure.resources.primary.outputs.id & "production""#,
         )?;
         assert!(evaluate_native_fixture(directory.path(), None).is_err());
@@ -2123,72 +2144,19 @@ workflows: apply: environment: infrastructure.resources.primary.outputs.id & "pr
     }
 
     #[test]
-    fn output_checks_are_rejected_only_when_the_configuration_reads_them() -> TestResult {
-        for consumer in [
-            "",
-            r#"record: {type: "fake_plain", configuration: name: infrastructure.resources.primary.outputs.id}"#,
-        ] {
-            let directory = native_fixture(&format!(
-                r#"resources: {{
- primary: {{type: "fake_plain", outputs: id: string}}
- {consumer}
-}}"#
-            ))?;
-            let file = directory.path().join("env.cue");
-            let original = std::fs::read_to_string(&file)?;
-            for global in [
-                r#"_guard: (infrastructure.resources.primary.outputs.id & "ok") == "ok""#,
-                r#"guard: (infrastructure.resources.primary.outputs.id & "ok") == "ok""#,
-            ] {
-                std::fs::write(&file, format!("{original}\n{global}\n"))?;
-                evaluate_native_fixture(directory.path(), None)?;
-            }
-        }
-        let directory = native_fixture(
-            r#"resources: {
- primary: {type: "fake_plain", outputs: id: string}
- record: {type: "fake_plain", configuration: {name: "n", if _guard {extra: "e"}}}
-}"#,
-        )?;
-        let file = directory.path().join("env.cue");
-        let original = std::fs::read_to_string(&file)?;
-        std::fs::write(
-            &file,
-            format!(
-                "{original}\n_guard: (infrastructure.resources.primary.outputs.id & \"ok\") == \"ok\"\n"
-            ),
-        )?;
-        assert!(
-            evaluate_native_fixture(directory.path(), None).is_err(),
-            "an output deciding which fields a configuration has must be rejected"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn output_checks_respect_selected_environment_boundaries() -> TestResult {
+    fn an_environment_cannot_read_another_environments_outputs() -> TestResult {
         let directory = native_fixture(
             r#"environments: {
  dev: {providers: fake: {source: "example/fake", path: "/not-started"}, resources: record: {type: "fake_plain", configuration: name: "literal"}}
  unused: {
   providers: fake: {source: "example/fake", path: "/not-started"}
-  resources: primary: {type: "fake_plain", outputs: id: string}
-  _guard: (infrastructure.environments.unused.resources.primary.outputs.id & "ok") == "ok"
+  resources: primary: {type: "fake_plain", outputs: id: type: "string"}
  }
 }"#,
         )?;
         evaluate_native_fixture(directory.path(), Some("dev"))?;
         let file = directory.path().join("env.cue");
         let original = std::fs::read_to_string(&file)?;
-        // A check on another environment does not reach this one.
-        std::fs::write(
-            &file,
-            format!(
-                "{original}\n_guard: (infrastructure.environments.unused.resources.primary.outputs.id & \"ok\") == \"ok\"\n"
-            ),
-        )?;
-        evaluate_native_fixture(directory.path(), Some("dev"))?;
-        // Reading another environment's output from this one does.
         std::fs::write(
             &file,
             original.replace(
@@ -2196,15 +2164,18 @@ workflows: apply: environment: infrastructure.resources.primary.outputs.id & "pr
                 "configuration: name: infrastructure.environments.unused.resources.primary.outputs.id",
             ),
         )?;
-        assert!(evaluate_native_fixture(directory.path(), Some("dev")).is_err());
+        let error = evaluate_native_fixture(directory.path(), Some("dev"))
+            .err()
+            .ok_or("a reference to another environment was accepted")?;
+        assert!(error.to_string().contains("another environment"), "{error}");
         Ok(())
     }
 
     #[test]
     fn inactive_top_level_resources_can_reference_inactive_top_level_data() -> TestResult {
         let directory = native_fixture(
-            r#"data: lookup: {type: "fake_lookup", outputs: id: string}
-resources: unused: {type: "fake_plain", configuration: name: infrastructure.data.lookup.outputs.id & !="bad"}
+            r#"data: lookup: {type: "fake_lookup", outputs: id: type: "string"}
+resources: unused: {type: "fake_plain", configuration: name: infrastructure.data.lookup.outputs.id}
 environments: dev: {
  providers: fake: {source: "example/fake", path: "/not-started"}
  resources: record: {type: "fake_plain", configuration: name: "literal"}
@@ -2224,11 +2195,11 @@ environments: dev: {
             r#"environments: "outputs": {
  providers: fake: {source: "example/fake", path: "/not-started"}
  resources: {
- primary: {type: "fake_plain", outputs: id: string}
+ primary: {type: "fake_plain", outputs: id: type: "string"}
  record: {type: "fake_plain", configuration: name: infrastructure.environments.outputs.resources.primary.outputs.id}
  }
 }
-environments: unused: providers: fake: {source: "example/fake", version: string}"#,
+environments: unused: providers: fake: {source: "example/fake", path: "/not-started"}"#,
         )?;
         let configuration =
             evaluate_native_fixture(directory.path(), Some("outputs"))?.infrastructure;
@@ -2262,30 +2233,28 @@ environments: unused: providers: fake: {source: "example/fake", version: string}
     }
 
     #[test]
-    fn unsupported_native_selectors_fail_before_external_side_effects() -> TestResult {
+    fn invalid_output_references_fail_before_external_side_effects() -> TestResult {
         for body in [
-            r#"resources: {primary: {type: "fake_plain", outputs: id: string}, record: {type: "fake_plain", configuration: name: infrastructure.resources.missing.outputs.id}}"#,
+            r#"resources: {primary: {type: "fake_plain", outputs: id: type: "string"}, record: {type: "fake_plain", configuration: name: infrastructure.resources.missing.outputs.id}}"#,
             r#"resources: {primary: {type: "fake_plain", outputs: id: string & =~"^prefix"}, record: {type: "fake_plain", configuration: name: infrastructure.resources.primary.outputs.id}}"#,
             r#"resources: {primary: {type: "fake_plain", outputs: id: number & >0}, record: {type: "fake_plain", configuration: name: infrastructure.resources.primary.outputs.id}}"#,
             r#"resources: {primary: {type: "fake_plain", outputs: id: *"default" | string}, record: {type: "fake_plain", configuration: name: infrastructure.resources.primary.outputs.id}}"#,
-            r#"resources: {primary: {type: "fake_plain", outputs: id: string}, record: {type: "fake_plain", configuration: name: *"fallback" | infrastructure.resources.primary.outputs.id}}"#,
-            r#"let string = infrastructure.resources.primary.outputs.id
-resources: {primary: {type: "fake_plain", outputs: id: number}, record: {type: "fake_plain", configuration: name: *42 | string}}"#,
-            r#"resources: {primary: {type: "fake_plain", outputs: id: number}, record: {type: "fake_plain", configuration: {string: infrastructure.resources.primary.outputs.id, name: *42 | string}}}"#,
-            r#"resources: {primary: {type: "fake_plain", outputs: id: string}, record: {type: "fake_plain", configuration: name: *{} | {field: infrastructure.resources.primary.outputs.id}}}"#,
-            r#"resources: {primary: {type: "fake_plain", outputs: id: string}, record: {type: "fake_plain", configuration: name: *"fallback" | infrastructure.resources.primary.outputs.id[0:2]}}"#,
-            r#"resources: {primary: {type: "fake_plain", outputs: id: string}, record: {type: "fake_plain", configuration: name: *[] | [for value in [infrastructure.resources.primary.outputs.id] {value}]}}"#,
-            r#"resources: {primary: {type: "fake_plain", outputs: index: number}, record: {type: "fake_plain", configuration: name: *0 | [1,2][infrastructure.resources.primary.outputs.index]}}"#,
-            r#"resources: {primary: {type: "fake_plain", outputs: index: number}, record: {type: "fake_plain", configuration: name: *[] | [for values in [[1,2]] {values[infrastructure.resources.primary.outputs.index]}]}}"#,
-            r#"resources: {primary: {type: "fake_plain", outputs: id: string}, record: {type: "fake_plain", configuration: name: *{} | {"\(infrastructure.resources.primary.outputs.id)": "literal"}}}"#,
-            r#"let alias = infrastructure.resources.primary.outputs.id
-resources: {primary: {type: "fake_plain", outputs: id: string}, record: {type: "fake_plain", configuration: name: *"fallback" | alias}}"#,
-            r#"_alias: infrastructure.resources.primary.outputs.id
-resources: {primary: {type: "fake_plain", outputs: id: string}, record: {type: "fake_plain", configuration: name: *"fallback" | _alias}}"#,
-            r#"resources: {primary: {type: "fake_plain", outputs: id: string}, record: {type: "fake_plain", configuration: {name: infrastructure.resources.primary.outputs.id, missing!: string}}}"#,
-            r#"resources: {primary: {type: "fake_plain", outputs: id: string}, record: {type: "fake_plain", configuration: {name: infrastructure.resources.primary.outputs.id, unknown: string}}}"#,
+            // An output has no value in CUE: it cannot be narrowed, compared,
+            // interpolated or computed with.
+            r#"resources: {primary: {type: "fake_plain", outputs: id: type: "string"}, record: {type: "fake_plain", configuration: name: infrastructure.resources.primary.outputs.id & "literal"}}"#,
+            r#"resources: {primary: {type: "fake_plain", outputs: id: type: "string"}, record: {type: "fake_plain", configuration: name: "prefix-\(infrastructure.resources.primary.outputs.id)"}}"#,
+            r#"resources: {primary: {type: "fake_plain", outputs: id: type: "number"}, record: {type: "fake_plain", configuration: name: infrastructure.resources.primary.outputs.id + 1}}"#,
+            r#"data: {primary: {type: "fake_lookup", outputs: id: type: "string"}, record: {type: "fake_lookup", configuration: name: "prefix-\(infrastructure.data.primary.outputs.id)"}}"#,
+            r#"resources: {primary: {type: "fake_plain", outputs: id: type: "string"}, record: {type: "fake_plain", configuration: {name: "n", if (infrastructure.resources.primary.outputs.id & "ok") == "ok" {extra: "e"}}}}"#,
+            // A string that carries an encoded reference is refused.
+            r#"import "encoding/json"
+resources: {primary: {type: "fake_plain", outputs: id: type: "string"}, record: {type: "fake_plain", configuration: name: json.Marshal(infrastructure.resources.primary.outputs.id)}}"#,
+            // A list output is read through #Select, never whole.
+            r#"resources: {primary: {type: "fake_plain", outputs: ids: type: "list"}, record: {type: "fake_plain", configuration: names: infrastructure.resources.primary.outputs.ids}}"#,
+            r#"resources: {primary: {type: "fake_plain", outputs: id: type: "string"}, record: {type: "fake_plain", configuration: {name: infrastructure.resources.primary.outputs.id, missing!: string}}}"#,
+            r#"resources: {primary: {type: "fake_plain", outputs: id: type: "string"}, record: {type: "fake_plain", configuration: {name: infrastructure.resources.primary.outputs.id, unknown: string}}}"#,
             r#"providers: fake: configuration: name: infrastructure.resources.primary.outputs.id
-resources: primary: {type: "fake_plain", outputs: id: string}"#,
+resources: primary: {type: "fake_plain", outputs: id: type: "string"}"#,
         ] {
             let directory = native_fixture(body)?;
             assert!(
@@ -2297,19 +2266,69 @@ resources: primary: {type: "fake_plain", outputs: id: string}"#,
     }
 
     #[test]
-    fn native_values_computed_from_outputs_are_accepted() -> TestResult {
-        for body in [
-            r#"resources: {primary: {type: "fake_plain", outputs: id: string}, record: {type: "fake_plain", configuration: name: "prefix-\(infrastructure.resources.primary.outputs.id)"}}"#,
-            r#"resources: {primary: {type: "fake_plain", outputs: id: number}, record: {type: "fake_plain", configuration: name: infrastructure.resources.primary.outputs.id + 1}}"#,
-            r#"data: {primary: {type: "fake_lookup", outputs: id: string}, record: {type: "fake_lookup", configuration: name: "prefix-\(infrastructure.data.primary.outputs.id)"}}"#,
-            r#"data: {primary: {type: "fake_lookup", outputs: id: number}, record: {type: "fake_lookup", configuration: name: infrastructure.data.primary.outputs.id + 1}}"#,
-        ] {
-            let directory = native_fixture(body)?;
-            assert!(
-                evaluate_native_fixture(directory.path(), None).is_ok(),
-                "{body}"
-            );
-        }
+    fn functions_compute_values_from_outputs_at_plan_time() -> TestResult {
+        use cuenv_infrastructure::references::{ConfigurationSpecialization, OutputIdentity};
+        use cuenv_infrastructure::type_system::{Number, Value};
+
+        let directory = native_fixture(
+            r#"resources: {
+ primary: {type: "fake_plain", outputs: {id: type: "string", size: type: "number", tags: type: "list"}}
+ record: {type: "fake_plain", configuration: {
+  name: schema.#Format & {parts: ["prefix-", infrastructure.resources.primary.outputs.id, "-", infrastructure.resources.primary.outputs.size]}
+  digest: schema.#Sha256 & {of: infrastructure.resources.primary.outputs.id}
+  first: schema.#Select & {from: infrastructure.resources.primary.outputs.tags, path: [0], type: "string"}
+ }}
+}"#,
+        )?;
+        let target = evaluate_native_fixture(directory.path(), None)?;
+        let evaluator = target
+            .configuration_evaluator
+            .as_ref()
+            .ok_or("missing evaluator")?;
+        let computed = evaluator
+            .references()
+            .iter()
+            .filter(|reference| reference.computed)
+            .count();
+        assert_eq!(computed, 3, "format reads two sources, sha256 one");
+        let consumer = evaluator
+            .references()
+            .first()
+            .ok_or("missing reference")?
+            .consumer
+            .clone();
+        let source = evaluator.references()[0].source.clone();
+        let output = |name: &str| OutputIdentity {
+            source: source.clone(),
+            attribute: cuenv_infrastructure::references::OutputPath::attribute(name),
+        };
+        let tags = evaluator
+            .references()
+            .iter()
+            .find(|reference| reference.attribute.name() == "tags")
+            .ok_or("missing select reference")?;
+        let sources = BTreeMap::from([
+            (output("id"), Value::String("abc".into())),
+            (output("size"), Value::Number("12".parse::<Number>()?)),
+            (
+                OutputIdentity {
+                    source: tags.source.clone(),
+                    attribute: tags.attribute.clone(),
+                },
+                Value::String("first-tag".into()),
+            ),
+        ]);
+        let result = evaluator.specialize(&ConfigurationSpecialization {
+            consumer: &consumer,
+            sources: &sources,
+            deferred: &[],
+        })?;
+        assert_eq!(result.configuration["name"], "prefix-abc-12");
+        assert_eq!(
+            result.configuration["digest"],
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        assert_eq!(result.configuration["first"], "first-tag");
         Ok(())
     }
 

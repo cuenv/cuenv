@@ -9,13 +9,11 @@ name: "data-sources"
 infrastructure: {
 	state: turso: url: "http://127.0.0.1:8080"
 	providers: fake: {source: "example/fake", version: "1.0.0"}
-	// The compatibility harness exports concrete values; infrastructure runs
-	// declare this output as `string` and fill it from the provider.
+	// Outputs are concrete references: this exports with plain `cue export`
+	// exactly as a run evaluates it.
 	data: {
-		lookup: {type: "fake_lookup", outputs: id: "example-id", configuration: query: "name"}
-		// Runs declare a list output down to the selected element, such as
-		// `outputs: result: [{id: string}]`.
-		groups: {type: "fake_groups", outputs: result: [{id: "group-id"}], configuration: name: "Zone Read"}
+		lookup: {type: "fake_lookup", outputs: id: type: "string", configuration: query: "name"}
+		groups: {type: "fake_groups", outputs: result: type: "list", configuration: name: "Zone Read"}
 	}
 	resources: {
 		consumer: {
@@ -24,7 +22,11 @@ infrastructure: {
 		}
 		grouped: {
 			type: "fake_object"
-			configuration: value: infrastructure.data.groups.outputs.result[0].id
+			configuration: value: schema.#Select & {
+				from: infrastructure.data.groups.outputs.result
+				path: [0, "id"]
+				type: "string"
+			}
 		}
 	}
 }

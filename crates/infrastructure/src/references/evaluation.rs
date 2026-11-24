@@ -95,6 +95,13 @@ pub trait ConfigurationEvaluator: Send + Sync {
     /// The bare type an output is declared with, if it has one.
     fn declared_output_type(&self, identity: &OutputIdentity) -> Option<InfrastructureOutputType>;
 
+    /// Whether [`Self::verify`] can find anything. An evaluator whose every
+    /// reference is explicit data has nothing to check, and the engine then
+    /// reads no outputs to verify them.
+    fn verifies_outputs(&self) -> bool {
+        true
+    }
+
     /// Check that real outputs change nothing outside the native references.
     ///
     /// Reference analysis cannot prove an expression it does not model is

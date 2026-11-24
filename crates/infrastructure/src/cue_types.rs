@@ -60,6 +60,11 @@ pub const DATA_SOURCES_DIRECTORY_NAME: &str = "data";
 /// File holding a data source package, inside its directory.
 pub const DATA_SOURCE_FILE_NAME: &str = "data_source.cue";
 
+/// The contract generated output and argument types follow: 2 since outputs
+/// are concrete references (`{type: "string"}` filled in by the schema) and
+/// scalar arguments accept them.
+const OUTPUT_REFERENCE_CONTRACT: u32 = 2;
+
 /// Prefix of every schema digest.
 pub const SCHEMA_DIGEST_PREFIX: &str = "sha256:";
 
@@ -250,8 +255,9 @@ pub async fn load_schema(
 /// the provider block and every managed resource and data source, each attribute's type,
 /// nesting and flags and each nested block's nesting and item bounds.
 /// Descriptions, deprecation messages and schema versions are left out.
-/// Providers without data sources or write-only managed attributes retain
-/// their legacy digest. Pins predating either contract need `provider add`.
+/// The document names the output reference contract the types follow, so
+/// types generated before outputs became concrete references are refused
+/// until `cuenv sync infrastructure` regenerates them.
 #[must_use]
 pub fn schema_digest(schema: &ProviderSchema) -> String {
     let resources: BTreeMap<&String, serde_json::Value> = schema
@@ -261,6 +267,7 @@ pub fn schema_digest(schema: &ProviderSchema) -> String {
         .collect();
     let mut document = json!({
         "format": 1,
+        "output_references": OUTPUT_REFERENCE_CONTRACT,
         "provider": block_document(&schema.provider.block),
         "resources": resources,
     });
@@ -471,12 +478,24 @@ pub fn render(schema: &ProviderSchema, release: ProviderRelease<'_>) -> Result<G
 struct Package {
     header: String,
     body: String,
-    uses_list: bool,
+    /// The shared definitions the package's fields use.
+    uses: std::collections::BTreeSet<Uses>,
     /// What a string argument of `#Configuration` accepts.
     strings: Strings,
-    uses_secret: bool,
     kind: PackageKind,
-    uses_write_only: bool,
+}
+
+/// A shared definition a generated package declares only when a field uses it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Uses {
+    /// The `list` import.
+    List,
+    /// `#Secret`.
+    Secret,
+    /// `#String`, `#Number` and `#Bool`: an argument takes an output reference or function.
+    References,
+    /// `#WriteOnly`.
+    WriteOnly,
 }
 
 #[derive(PartialEq, Eq)]
@@ -498,8 +517,9 @@ struct Scope {
 enum Strings {
     /// Only a string: provider configuration, outputs, and set elements.
     Plain,
-    /// A string or a `#Secret`, resolved when the configuration reaches the
-    /// provider.
+    /// A resource or data source argument: a string can also be a
+    /// `#Secret`, resolved when the configuration reaches the provider, and
+    /// every scalar can be an output reference or function of its type.
     OrSecret,
 }
 
@@ -516,11 +536,9 @@ impl Package {
         Self {
             header,
             body: String::new(),
-            uses_list: false,
+            uses: std::collections::BTreeSet::new(),
             strings: Strings::Plain,
-            uses_secret: false,
             kind: PackageKind::Provider,
-            uses_write_only: false,
         }
     }
 
@@ -535,7 +553,7 @@ impl Package {
     }
 
     fn finish(mut self, package_name: &str) -> String {
-        if self.uses_secret {
+        if self.uses.contains(&Uses::Secret) {
             self.blank();
             self.comment_lines(
                 0,
@@ -552,17 +570,47 @@ impl Package {
             );
             self.line(0, "#Secret: {");
             self.field(1, "resolver!", "string & !=\"\"");
+            if self.uses.contains(&Uses::References) {
+                // Never an output reference, so the two cannot be confused.
+                self.field(1, "cuenvOutput?", "_|_");
+                self.field(1, "cuenvFunction?", "_|_");
+            }
             self.line(1, "...");
             self.line(0, "}");
         }
-        if self.uses_write_only {
+        if self.uses.contains(&Uses::References) {
+            self.blank();
+            self.comment_lines(
+                0,
+                &[
+                    "#String, #Number and #Bool are output references and functions of that"
+                        .to_string(),
+                    "type, such as `infrastructure.resources.NAME.outputs.id` or".to_string(),
+                    "`schema.#Format & {...}`. cuenv puts in the real value when it plans."
+                        .to_string(),
+                ],
+            );
+            for (definition, kind) in [
+                ("#String", "string"),
+                ("#Number", "number"),
+                ("#Bool", "bool"),
+            ] {
+                self.line(
+                    0,
+                    &format!(
+                        "{definition}: {{type: \"{kind}\", cuenvOutput: {{...}}, cuenvFunction?: _|_, resolver?: _|_, ...}} | {{type: \"{kind}\", cuenvFunction: string, cuenvOutput?: _|_, resolver?: _|_, ...}}"
+                    ),
+                );
+            }
+        }
+        if self.uses.contains(&Uses::WriteOnly) {
             self.blank();
             self.line(0, "#Value: string | #Secret");
             self.line(0, "#WriteOnly: #Secret & {writeOnly: true}");
         }
         let mut output = self.header;
         let _ = write!(output, "\n\npackage {package_name}\n\n");
-        if self.uses_list {
+        if self.uses.contains(&Uses::List) {
             output.push_str("import \"list\"\n\n");
         }
         output.push_str(self.body.trim_end());
@@ -605,15 +653,15 @@ impl Package {
         self.blank();
         self.line(
             0,
-            "// #Outputs contains selectable provider outputs: scalars, and lists and objects whose",
+            "// #Outputs names the provider outputs a configuration can reference. The cuenv",
         );
         self.line(
             0,
-            "// scalar fields and elements can be selected, such as result[0].id. Narrow a list to",
+            "// schema makes each one a concrete reference to this declaration's output; read",
         );
         self.line(
             0,
-            "// the elements you select, for example `outputs: result: [_]`, so CUE can index it.",
+            "// inside a list or object output with `schema.#Select`.",
         );
         self.line(0, "#Outputs: {");
         for (name, attribute) in &block.attributes {
@@ -626,7 +674,8 @@ impl Package {
                     "// Sensitive: plans mask receiving arguments; strings of at least four characters are redacted.",
                 );
             }
-            let value = output_type_expression(&attribute.value_type, 1);
+            // Open, so the schema can fill in the reference itself.
+            let value = format!("{{type: \"{}\", ...}}", output_kind(&attribute.value_type));
             self.field(1, &label(name), &value);
         }
         self.line(0, "}");
@@ -681,8 +730,8 @@ impl Package {
             {
                 return None;
             }
-            self.uses_secret = true;
-            self.uses_write_only = true;
+            self.uses.insert(Uses::Secret);
+            self.uses.insert(Uses::WriteOnly);
             return Some(Field {
                 comments: documentation_lines(
                     &attribute.documentation,
@@ -769,11 +818,11 @@ impl Package {
                 let mut value = format!("[...{object}]");
                 if nested.minimum_items > 0 {
                     let _ = write!(value, " & list.MinItems({})", nested.minimum_items);
-                    self.uses_list = true;
+                    self.uses.insert(Uses::List);
                 }
                 if nested.maximum_items > 0 {
                     let _ = write!(value, " & list.MaxItems({})", nested.maximum_items);
-                    self.uses_list = true;
+                    self.uses.insert(Uses::List);
                 }
                 value
             }
@@ -789,12 +838,21 @@ impl Package {
     /// Render the provider's cty type, retaining its nested container shape.
     fn type_expression(&mut self, value_type: &Type, depth: usize, strings: Strings) -> String {
         match value_type {
+            Type::Boolean if strings == Strings::OrSecret => {
+                self.uses.insert(Uses::References);
+                "bool | #Bool".to_string()
+            }
+            Type::Number if strings == Strings::OrSecret => {
+                self.uses.insert(Uses::References);
+                "number | #Number".to_string()
+            }
+            Type::String if strings == Strings::OrSecret => {
+                self.uses.insert(Uses::Secret);
+                self.uses.insert(Uses::References);
+                "string | #Secret | #String".to_string()
+            }
             Type::Boolean => "bool".to_string(),
             Type::Number => "number".to_string(),
-            Type::String if strings == Strings::OrSecret => {
-                self.uses_secret = true;
-                "string | #Secret".to_string()
-            }
             Type::String => "string".to_string(),
             Type::Dynamic => "_".to_string(),
             Type::List(element) => {
@@ -854,44 +912,15 @@ fn selectable_output(value_type: &Type) -> bool {
     }
 }
 
-/// The CUE type of a selectable output. Object fields are regular, not
-/// required: an output declaration describes what a provider returns.
-fn output_type_expression(value_type: &Type, depth: usize) -> String {
+/// The `type` of a selectable output's reference: a scalar, or a list or
+/// object read with `schema.#Select`.
+const fn output_kind(value_type: &Type) -> &'static str {
     match value_type {
-        Type::Boolean => "bool".to_string(),
-        Type::Number => "number".to_string(),
-        Type::String => "string".to_string(),
-        Type::Dynamic => "_".to_string(),
-        Type::List(element) | Type::Set(element) => {
-            format!("[...{}]", output_type_expression(element, depth))
-        }
-        Type::Map(element) => format!("{{[string]: {}}}", output_type_expression(element, depth)),
-        Type::Tuple(elements) => format!(
-            "[{}]",
-            elements
-                .iter()
-                .map(|element| output_type_expression(element, depth))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
-        Type::Object(attributes) => {
-            let indentation = "\t".repeat(depth + 1);
-            let mut rendered = String::from("{\n");
-            for (name, attribute_type) in attributes
-                .iter()
-                .filter(|(_, attribute_type)| selectable_output(attribute_type))
-            {
-                let _ = writeln!(
-                    rendered,
-                    "{indentation}{}: {}",
-                    label(name),
-                    output_type_expression(attribute_type, depth + 1)
-                );
-            }
-            rendered.push_str(&"\t".repeat(depth));
-            rendered.push('}');
-            rendered
-        }
+        Type::Boolean => "bool",
+        Type::Number => "number",
+        Type::String => "string",
+        Type::List(_) | Type::Set(_) | Type::Tuple(_) => "list",
+        Type::Map(_) | Type::Object(_) | Type::Dynamic => "object",
     }
 }
 

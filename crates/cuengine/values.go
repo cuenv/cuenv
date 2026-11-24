@@ -103,8 +103,18 @@ func buildValueClean(v cue.Value) interface{} {
 		}
 		return items
 
+	case cue.IntKind, cue.FloatKind, cue.NumberKind:
+		// Numbers keep the exact decimal `cue export` writes; decoding into
+		// an interface would round a decimal to the nearest float64.
+		if raw, err := v.MarshalJSON(); err == nil {
+			return json.RawMessage(raw)
+		}
+		var val interface{}
+		v.Decode(&val)
+		return val
+
 	default:
-		// Concrete value (string, number, bool, null)
+		// Concrete value (string, bool, null)
 		var val interface{}
 		v.Decode(&val)
 		return val
