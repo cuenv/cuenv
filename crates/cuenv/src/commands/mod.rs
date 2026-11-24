@@ -1,4 +1,5 @@
 /// Build container images defined in CUE configuration.
+mod autosync;
 pub mod build;
 /// Cache diagnostics and maintenance commands.
 pub mod cache;

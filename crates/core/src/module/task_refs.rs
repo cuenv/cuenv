@@ -126,6 +126,8 @@ fn strip_dependency_prefix(path: &str) -> &str {
         "images.",
         "_images.",
         "_i.",
+        "scripts.",
+        "_scripts.",
     ] {
         if let Some(stripped) = path.strip_prefix(prefix) {
             return stripped;
@@ -143,6 +145,8 @@ fn strip_dependency_prefix(path: &str) -> &str {
             ".images.",
             "._images.",
             "._i.",
+            ".scripts.",
+            "._scripts.",
         ] {
             if let Some((_, stripped)) = path.split_once(infix) {
                 return stripped;
@@ -189,6 +193,8 @@ mod tests {
         assert_eq!(strip_dependency_prefix("_s.db"), "db");
         assert_eq!(strip_dependency_prefix("_services.cache"), "cache");
         assert_eq!(strip_dependency_prefix("images.base"), "base");
+        assert_eq!(strip_dependency_prefix("scripts.release"), "release");
+        assert_eq!(strip_dependency_prefix("_scripts.release"), "release");
         assert_eq!(strip_dependency_prefix("_i.web"), "web");
         assert_eq!(strip_dependency_prefix("build"), "build");
         assert_eq!(strip_dependency_prefix("ci.deploy"), "ci.deploy");

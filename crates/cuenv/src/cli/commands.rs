@@ -605,7 +605,8 @@ impl Commands {
                     | SyncCommands::Ci { package, .. }
                     | SyncCommands::Vcs { package, .. }
                     | SyncCommands::Rules { package, .. }
-                    | SyncCommands::GitHooks { package, .. },
+                    | SyncCommands::GitHooks { package, .. }
+                    | SyncCommands::Scripts { package, .. },
                 ) if package != "cuenv" => package,
                 Some(_) | None => package,
             },

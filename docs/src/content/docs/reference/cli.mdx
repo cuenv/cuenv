@@ -1092,6 +1092,7 @@ recorded in `cue.mod/module.cue`.
 
 **Subcommands:**
 
+- `scripts`: Write `scripts.gen.cue`, the scripts of the project's `scriptDirs`, beside each project that declares them, and remove it from one that no longer does (see [Task scripts](/how-to/task-scripts/)). Supports `--dry-run`, `--check` (also fails when two files would share a script name) and `-A/--all`. Runs first, as the other operations evaluate the file.
 - `lock`: Resolve tools, artifacts, and runtimes (including OCI image digests) into `cuenv.lock`. Supports `--dry-run`, `--check`, `-A/--all`, and `-u/--update [TOOLS...]` (omit names to update all).
 - `codegen`: Sync files from CUE codegen configurations. Adds `--diff` to show changed files. Like `--check`, `--diff` never writes: configured formatters only check generated files and never rewrite them.
 - `ci`: Sync CI workflow files from CUE configuration. Adds `--provider <github|buildkite>` to filter.
@@ -1099,6 +1100,37 @@ recorded in `cue.mod/module.cue`.
 - `rules`: Sync ignore files, `.editorconfig` and `CODEOWNERS` from `.rules.cue` files. Supports `--dry-run`, `--check` and `-A/--all`.
 - `git-hooks`: Sync the pre-push hook from project configuration. Supports `--dry-run`, `--check` and `-A/--all`. On Unix, `--check` uses Git's execute-access test for a matching hook. If access fails, syncing adds the owner execute bit without changing the contents or other permissions and checks access again; it reports an error if access remains unavailable.
 - `infrastructure`: Regenerate the CUE types of every infrastructure provider `cuenv.lock` pins (see `cuenv infrastructure provider add`), and their `.gitignore` section; like managed codegen files they are not committed, so run it after a clone. Reads only `cuenv.lock`, not your CUE, installs each pinned release (requiring the pinned archive), and refuses one whose schema no longer has the pinned digest. Supports `--dry-run` and `--check`.
+
+#### Automatic sync
+
+Every other cuenv command syncs three kinds of generated files of the projects
+it evaluates, once per project and process, so that `cuenv sync` is rarely
+needed by hand:
+
+- `scripts.gen.cue`, when a file of `scriptDirs` was added, removed or renamed.
+  The project is then evaluated again. When a reference to a new script fails
+  evaluation, cuenv evaluates `scriptDirs` alone, which does not
+  read the failing reference, rewrites the file and evaluates once more.
+- Codegen files, when the codegen configuration, its formatters or a generated
+  file changed since the last sync. Syncing runs the project's configured
+  formatters, which are external programs; they run only when something
+  changed.
+- The outputs of `.rules.cue` files a previous `cuenv sync rules` wrote, when
+  one of those `.rules.cue` files changed. Changes to files they import are
+  not seen; run `cuenv sync rules` for those.
+
+What was synced is printed to stderr as `cuenv: …`. An unchanged project costs
+a fingerprint check: the size and modification time of each generated file,
+kept in `.cuenv/autosync.json` at the module root. Two cuenv processes never
+sync at once.
+
+When the `CI` environment variable is set, nothing is written and a stale
+`scripts.gen.cue` fails the command; `cuenv ci` fails the same way, and outside
+CI brings the files up to date before it starts. Set
+`CUENV_AUTOSYNC=0` to turn automatic sync off. `cuenv sync` itself never
+syncs automatically. CI workflows, `cuenv.lock`, Git dependencies,
+infrastructure provider types and the pre-push hook are only synced by
+`cuenv sync`: they need the network, or change what runs.
 
 **Example:**
 

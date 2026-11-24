@@ -162,6 +162,55 @@ pub fn resolve_task_args(params: Option<&TaskParams>, cli_args: &[String]) -> Re
     Ok(resolved)
 }
 
+/// The arguments a discovered script receives: everything after the task
+/// name, without the `--` that may separate them from cuenv's own.
+pub fn script_arguments(cli_args: &[String]) -> &[String] {
+    match cli_args.split_first() {
+        Some((first, rest)) if first == "--" => rest,
+        _ => cli_args,
+    }
+}
+
+/// The arguments a script receives after its path.
+///
+/// Without `params`, every argument after the task name, as given. With them,
+/// cuenv checks the arguments first, then passes positional ones in order and
+/// named ones as `--name value` (a true bool as `--name`, a false one not at
+/// all), sorted by name; an optional positional argument left out is dropped
+/// from the end.
+///
+/// # Errors
+///
+/// Returns an error when the arguments do not match the `params`.
+pub fn script_argv(params: Option<&TaskParams>, cli_args: &[String]) -> Result<Vec<String>> {
+    let Some(params) = params else {
+        return Ok(script_arguments(cli_args).to_vec());
+    };
+    let resolved = resolve_task_args(Some(params), cli_args)?;
+    let mut positional = resolved.positional;
+    while positional.last().is_some_and(String::is_empty) {
+        positional.pop();
+    }
+    let mut named: Vec<(&String, &String)> = resolved.named.iter().collect();
+    named.sort();
+    let mut argv = positional;
+    for (name, value) in named {
+        let is_bool = params
+            .named
+            .get(name)
+            .is_some_and(|definition| definition.param_type == cuenv_core::tasks::ParamType::Bool);
+        if is_bool {
+            if value == "true" {
+                argv.push(format!("--{name}"));
+            }
+        } else {
+            argv.push(format!("--{name}"));
+            argv.push(value.clone());
+        }
+    }
+    Ok(argv)
+}
+
 /// Apply resolved arguments to a task, interpolating placeholders in command and args
 pub fn apply_args_to_task(task: &Task, resolved_args: &ResolvedArgs) -> Task {
     let mut new_task = task.clone();
@@ -180,6 +229,65 @@ mod tests {
     use super::*;
     use cuenv_core::tasks::ParamDef;
     use std::collections::HashMap;
+
+    #[test]
+    fn script_arguments_drop_only_a_leading_separator() {
+        let args = |values: &[&str]| values.iter().map(ToString::to_string).collect::<Vec<_>>();
+        assert_eq!(
+            script_arguments(&args(&["--", "--version", "1.2 3", "--"])),
+            args(&["--version", "1.2 3", "--"])
+        );
+        assert_eq!(script_arguments(&args(&["-v", "x"])), args(&["-v", "x"]));
+        assert_eq!(script_arguments(&[]), &[] as &[String]);
+    }
+
+    #[test]
+    fn script_params_are_checked_then_passed_as_arguments() {
+        let params = TaskParams {
+            positional: vec![
+                ParamDef {
+                    description: Some("version".to_string()),
+                    required: true,
+                    ..Default::default()
+                },
+                ParamDef::default(),
+            ],
+            named: HashMap::from([
+                (
+                    "channel".to_string(),
+                    ParamDef {
+                        default: Some("stable".to_string()),
+                        ..Default::default()
+                    },
+                ),
+                (
+                    "dry".to_string(),
+                    ParamDef {
+                        param_type: cuenv_core::tasks::ParamType::Bool,
+                        ..Default::default()
+                    },
+                ),
+            ]),
+        };
+        let args = |list: &[&str]| {
+            list.iter()
+                .map(|arg| (*arg).to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            script_argv(Some(&params), &args(&["1.2.0", "--dry"])).unwrap(),
+            args(&["1.2.0", "--channel", "stable", "--dry"])
+        );
+        assert!(
+            script_argv(Some(&params), &[]).is_err(),
+            "version is required"
+        );
+        assert!(script_argv(Some(&params), &args(&["1.2.0", "--nope", "x"])).is_err());
+        assert_eq!(
+            script_argv(None, &args(&["--", "--anything", "goes here"])).unwrap(),
+            args(&["--anything", "goes here"])
+        );
+    }
 
     #[test]
     fn test_looks_like_flag() {

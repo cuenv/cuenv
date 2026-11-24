@@ -5,7 +5,8 @@ mod codegen;
 mod git_hooks;
 mod infrastructure;
 mod lock;
-mod rules;
+pub mod rules;
+mod scripts;
 mod vcs;
 
 use ci::CiSyncProvider;
@@ -14,6 +15,7 @@ use git_hooks::GitHooksSyncProvider;
 use infrastructure::InfrastructureSyncProvider;
 use lock::LockSyncProvider;
 use rules::RulesSyncProvider;
+use scripts::ScriptsSyncProvider;
 use vcs::VcsSyncProvider;
 
 use super::registry::SyncRegistry;
@@ -22,6 +24,8 @@ use super::registry::SyncRegistry;
 #[must_use]
 pub fn default_registry() -> SyncRegistry {
     let mut registry = SyncRegistry::new();
+    // First: it rewrites a file the other providers evaluate.
+    registry.register(ScriptsSyncProvider);
     registry.register(CodegenSyncProvider);
     registry.register(CiSyncProvider);
     registry.register(RulesSyncProvider);

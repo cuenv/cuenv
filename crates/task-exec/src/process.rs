@@ -38,6 +38,29 @@ pub fn task_command(program: impl AsRef<OsStr>) -> Command {
     }
 }
 
+/// The error for a task process that could not start. A program missing from
+/// `PATH` is named, since the bare `No such file or directory` from the OS
+/// does not say which program was looked for.
+fn spawn_error(task: &str, command: &Command, error: std::io::Error) -> Error {
+    if error.kind() != std::io::ErrorKind::NotFound {
+        return Error::io(format!("spawn task {task}"), error);
+    }
+    let std_command = command.as_std();
+    // Under the supervisor the task's own program follows `__supervise`.
+    let program = if TASK_SUPERVISOR.get().is_some() {
+        std_command.get_args().nth(1)
+    } else {
+        Some(std_command.get_program())
+    };
+    match program {
+        Some(program) => Error::configuration(format!(
+            "task {task}: program `{}` was not found; install it or provide it through the project runtime",
+            program.to_string_lossy()
+        )),
+        None => Error::io(format!("spawn task {task}"), error),
+    }
+}
+
 /// Outcome of a single host process attempt.
 ///
 /// A timeout is a hard policy violation, not an ordinary failure: callers must
@@ -98,7 +121,7 @@ async fn run_captured_process(
         .stderr(Stdio::piped())
         .kill_on_drop(true)
         .spawn()
-        .map_err(|e| Error::io(format!("spawn task {}", name), e))?;
+        .map_err(|e| spawn_error(name, &command, e))?;
 
     let child_pid = child.id();
     // Declared after `child`, so it is dropped first, while the leader is
@@ -226,7 +249,7 @@ async fn run_inherited_process(
         .stdin(stdin)
         .kill_on_drop(true)
         .spawn()
-        .map_err(|e| Error::io(format!("spawn task {}", name), e))?;
+        .map_err(|e| spawn_error(name, &command, e))?;
 
     let child_pid = child.id();
     // Dropped before `child`; see `run_captured_process`.

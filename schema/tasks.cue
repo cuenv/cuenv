@@ -148,6 +148,74 @@ package schema
 }
 
 // =============================================================================
+// Scripts
+// =============================================================================
+
+// An interpreter cuenv runs a script with, including a versioned Python such
+// as "python3.12" from a shebang.
+#ScriptInterpreter: "bash" | "sh" | "fish" | "nu" | "python" | "python3" | "bun" | =~"^python3\\.[0-9]+$"
+
+// A directory whose script files become `scripts` of the project. Only files
+// directly inside it are read, never in subdirectories; dotfiles, excluded
+// names and links that leave the project are skipped. A file's interpreter is
+// its shebang, else an extension only one interpreter uses (.bash, .fish,
+// .nu, .py); a `.sh`, JavaScript or TypeScript file needs a shebang or an
+// `interpreter` on its entry in `scripts`. Its name is `prefix` + the file
+// name without its extension, or its entry in `rename`. cuenv writes the
+// entries to `scripts.gen.cue` beside the project, on any command.
+#ScriptDirectory: {
+	// The directory, relative to the project.
+	path!: #AnchoredPath
+	// Prepended to each file name to name its script.
+	prefix?: string & =~"^[A-Za-z0-9_-]*$"
+	// File-name globs that never become scripts, such as "*.lib.sh".
+	exclude?: [...string]
+	// Script names by file name, for files whose names would clash:
+	// {"make.ts": "makeTs"}.
+	rename?: [string]: string & =~"^[A-Za-z0-9_-]+$"
+	// Scripts run in the workspace and are never cached unless the directory
+	// opts into hermetic execution, with the inputs, outputs and cache policy
+	// that needs. A script's own entry overrides these.
+	hermetic?: bool | #Hermetic
+	inputs?: [...#Input]
+	outputs?: [...string]
+	cache?: #TaskCachePolicy
+}
+
+// A script of the project: a file found in `scriptDirs`, written to
+// `scripts.gen.cue` by cuenv, plus what the project adds by name:
+// `scripts: release: dependsOn: [tasks.build]`. It runs as a task of the same
+// name, from the project directory, with the command line's arguments after
+// the script path. Tasks and pipelines depend on it as `scripts.release`.
+#ProjectScript: {
+	_cuenvSelf:    string | *""
+	_cuenvProject: string | *""
+	_name:         _cuenvSelf
+	// What this script runs as. Reserved.
+	cuenvRef: {kind: "task", project: _cuenvProject, name: _cuenvSelf}
+
+	// The script, relative to the project. Written by cuenv.
+	file!: string
+	// Written by cuenv from the shebang or extension; set it for a file
+	// without either.
+	interpreter?: #ScriptInterpreter
+	// A shebang program cuenv cannot run, such as "node". Written by cuenv.
+	unsupported?: string
+
+	description?: string
+	// Arguments cuenv checks before passing them to the script, positional
+	// ones in order and named ones as `--name value`. Without params every
+	// argument is passed as given.
+	params?: #TaskParams
+	dependsOn?: [...(#TaskNode | #ContainerImage | #ProjectScript)]
+	hermetic?: bool | #Hermetic
+	inputs?: [...#Input]
+	outputs?: [...string]
+	cache?: #TaskCachePolicy
+	labels?: [...string]
+}
+
+// =============================================================================
 // Single Executable Task
 // =============================================================================
 
@@ -220,8 +288,8 @@ package schema
 	// the action may depend on. See #Hermetic.
 	hermetic?: bool | #Hermetic | *true
 
-	// Dependencies - reference other tasks or images for compile-time validation
-	dependsOn?: [...(#TaskNode | #ContainerImage)]
+	// Dependencies - reference other tasks, scripts or images for compile-time validation
+	dependsOn?: [...(#TaskNode | #ContainerImage | #ProjectScript)]
 
 	// Labels for task discovery via #TaskMatcher
 	labels?: [...string]
@@ -284,8 +352,8 @@ package schema
 	// Type discriminator - must be "group"
 	type: "group"
 
-	// Dependencies on other tasks
-	dependsOn?: [...#TaskNode]
+	// Dependencies on other tasks and scripts
+	dependsOn?: [...(#TaskNode | #ProjectScript)]
 
 	// Limit concurrent executions (0 = unlimited)
 	maxConcurrency?: int

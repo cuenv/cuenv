@@ -164,7 +164,40 @@ pub fn evaluate_module_from_cwd() -> Result<ModuleEvaluation> {
         metadata: metadata.finish(),
     });
     module.require_unique_project_names()?;
+    require_current_scripts(&module)?;
     Ok(module)
+}
+
+/// Fail when the `scripts.gen.cue` of a project does not list the scripts
+/// of its `scriptDirs`: CI must run what was committed, and a script that is
+/// missing from the file would silently not run.
+fn require_current_scripts(module: &ModuleEvaluation) -> Result<()> {
+    let stale: Vec<String> = module
+        .projects()
+        .filter_map(|instance| {
+            let project_dir = module.root.join(&instance.path);
+            let directories = cuenv_core::scripts::directories(&instance.value);
+            let (drift, _) = cuenv_core::scripts::drift(&project_dir, directories.as_deref());
+            (drift != cuenv_core::scripts::Drift::None).then(|| {
+                cuenv_core::scripts::generated_path(&instance.path)
+                    .display()
+                    .to_string()
+            })
+        })
+        .collect();
+    if stale.is_empty() {
+        return Ok(());
+    }
+    Err(cuenv_core::Error::configuration(format!(
+        "{} {} not match the scriptDirs of {}; run `cuenv sync scripts` and commit the result",
+        stale.join(", "),
+        if stale.len() == 1 { "does" } else { "do" },
+        if stale.len() == 1 {
+            "its project"
+        } else {
+            "their projects"
+        },
+    )))
 }
 
 #[cfg(test)]

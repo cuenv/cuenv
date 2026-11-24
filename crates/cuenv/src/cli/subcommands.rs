@@ -233,6 +233,41 @@ pub enum SyncCommands {
         )]
         all: bool,
     },
+    /// Write scripts.gen.cue from each project's scriptDirs.
+    #[command(about = "Write scripts.gen.cue from each project's scriptDirs")]
+    Scripts {
+        /// Path to directory containing CUE files.
+        #[arg(
+            long,
+            short = 'p',
+            help = "Path to directory containing CUE files",
+            default_value = "."
+        )]
+        path: String,
+        /// Name of the CUE package to evaluate.
+        #[arg(
+            long,
+            help = "Name of the CUE package to evaluate",
+            default_value = "cuenv"
+        )]
+        package: String,
+        /// Show what would change without writing files.
+        #[arg(long, help = "Show what would change without writing files")]
+        dry_run: bool,
+        /// Check that scripts.gen.cue lists the scripts without writing it.
+        #[arg(
+            long,
+            help = "Check that scripts.gen.cue lists the scripts without writing it"
+        )]
+        check: bool,
+        /// Sync scripts for all projects in the workspace.
+        #[arg(
+            long = "all",
+            short = 'A',
+            help = "Sync scripts for all projects in the workspace"
+        )]
+        all: bool,
+    },
     /// Regenerate infrastructure provider CUE types from cuenv.lock.
     #[command(about = "Regenerate infrastructure provider CUE types from cuenv.lock")]
     Infrastructure {

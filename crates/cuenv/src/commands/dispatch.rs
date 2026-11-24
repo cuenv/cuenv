@@ -280,6 +280,9 @@ impl CommandExecutor {
                 ci_provider,
                 update_tools,
             } => {
+                // `cuenv sync` writes or checks generated files itself; a
+                // `--check` must see them as they are.
+                self.autosync.disable();
                 self.run_command(handler::SyncHandler {
                     subcommand,
                     path,
