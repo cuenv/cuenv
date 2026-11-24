@@ -590,7 +590,7 @@
         # reproduces provider behaviours real providers show only occasionally;
         # `go vet` runs as its check phase because the source is not part of the
         # cuengine Go module.
-        fake-terraform-provider = pkgs.buildGoModule {
+        fake-terraform-provider = buildGoModule126 {
           pname = "terraform-provider-fake";
           version = "0.0.0";
           src = filteredSource ./crates/infrastructure/tests/fake_provider;
