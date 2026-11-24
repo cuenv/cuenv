@@ -590,11 +590,11 @@
         # reproduces provider behaviours real providers show only occasionally;
         # `go vet` runs as its check phase because the source is not part of the
         # cuengine Go module.
-        fake-terraform-provider = pkgs.buildGoModule {
+        fake-terraform-provider = buildGoModule126 {
           pname = "terraform-provider-fake";
           version = "0.0.0";
           src = filteredSource ./crates/infrastructure/tests/fake_provider;
-          vendorHash = "sha256-HM6/k59eDfD7OpH5S3C8j6YN0Q0ina6KuKfrJVWyTB8=";
+          vendorHash = "sha256-Un437MZIb/OuAqx7zgbWoi6hb8biWv9xpf1jzVtVjcI=";
           doCheck = true;
           checkPhase = ''
             runHook preCheck

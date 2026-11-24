@@ -191,7 +191,10 @@ pub fn extract_from_zip(data: &[u8], binary_path: Option<&str>, dest: &Path) -> 
                 .by_index(i)
                 .map_err(|e| ArchiveError::extraction(format!("Failed to read zip entry: {e}")))?;
 
-            let name = file.name().to_string();
+            let name = file
+                .name()
+                .map_err(|e| ArchiveError::extraction(format!("Invalid zip entry name: {e}")))?
+                .into_owned();
             if name == path || name.ends_with(&format!("/{path}")) {
                 std::fs::create_dir_all(dest)?;
                 let file_name = Path::new(&name)

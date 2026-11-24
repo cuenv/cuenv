@@ -207,11 +207,7 @@ fn run(
 ) -> std::result::Result<Value, String> {
     let before = database.total_changes();
     let mut statement = database.prepare(sql).map_err(|error| error.to_string())?;
-    let columns: Vec<String> = statement
-        .column_names()
-        .into_iter()
-        .map(str::to_string)
-        .collect();
+    let columns: Vec<String> = statement.column_names().map(str::to_string).collect();
     let mut rows = statement
         .query(rusqlite::params_from_iter(params.iter()))
         .map_err(|error| error.to_string())?;

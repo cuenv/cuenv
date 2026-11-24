@@ -1324,7 +1324,12 @@ fn extract_provider_archive(
         let mut entry = zip_archive.by_index(index).map_err(|error| {
             InfrastructureError::install(format!("invalid archive entry: {error}"))
         })?;
-        let name = entry.name().to_string();
+        let name = entry
+            .name()
+            .map_err(|error| {
+                InfrastructureError::install(format!("invalid archive entry name: {error}"))
+            })?
+            .into_owned();
         let Some(relative) = entry.enclosed_name() else {
             return Err(InfrastructureError::install(format!(
                 "archive entry escapes destination: {name}"
@@ -1917,7 +1922,9 @@ mod tests {
         let mut archive = build_zip(&[(PROVIDER_FILE, b"#!/bin/sh\n"), ("LICENSE", b"MPL")]);
         force_unix_mode(&mut archive, 0o4777);
         let mut reader = zip::ZipArchive::new(std::io::Cursor::new(archive.as_slice())).unwrap();
-        let mode = reader.by_index(0).unwrap().unix_mode().unwrap();
+        // `unix_mode()` already clears special bits, so read the raw
+        // attributes to prove the fixture really carries setuid.
+        let mode = reader.by_index(0).unwrap().external_attributes() >> 16;
         assert_eq!(mode & 0o7777, 0o4777, "fixture must carry the setuid bit");
 
         let directory = tempfile::tempdir().unwrap();

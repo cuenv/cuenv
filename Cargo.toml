@@ -163,7 +163,7 @@ glob = "0.3"
 proptest = "1.11"
 criterion = "0.8"
 tempfile = "3.27"
-rusqlite = { version = "0.40.2", features = ["bundled"] }
+rusqlite = { version = "0.41", features = ["bundled"] }
 temp-env = { version = "0.3", features = ["async_closure"] }
 
 # BDD testing dependencies
@@ -189,7 +189,7 @@ globset = "0.4"
 ignore = "0.4"
 indexmap = "2.14"
 base64 = "0.23"
-zip = "2"
+zip = "9"
 
 # GitHub API client
 octocrab = { version = "0.49.9", default-features = false }
