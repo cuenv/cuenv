@@ -9,6 +9,7 @@ mod configuration_references;
 mod destination;
 mod discovery;
 mod evaluation;
+mod output_path;
 mod path;
 mod secrets;
 
@@ -21,5 +22,6 @@ pub use evaluation::{
     ConfigurationEvaluator, ConfigurationSelector, ConfigurationSpecialization,
     ConfigurationVerification, NativeReference, OutputIdentity, SpecializedConfiguration,
 };
+pub use output_path::OutputPath;
 pub use path::DestinationPath;
 pub use secrets::SecretArgument;

@@ -564,7 +564,9 @@ pub(super) fn planned_output(
 ) -> Result<Value> {
     outputs
         .get(&reference.source)
-        .and_then(|value| value.attribute(&reference.attribute))
+        .map(|value| reference.attribute.read(value))
+        .transpose()?
+        .flatten()
         .cloned()
         .ok_or_else(|| {
             InfrastructureError::configuration(format!(

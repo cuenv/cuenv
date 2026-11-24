@@ -23,8 +23,8 @@ use crate::protocol::{self, Diagnostic, Severity};
 #[cfg(test)]
 use crate::references::ConfigurationSpecialization;
 use crate::references::{
-    ConfigurationEvaluator, ConfigurationReferences, OutputIdentity, ResourceOutputReference,
-    SourceAddress,
+    ConfigurationEvaluator, ConfigurationReferences, OutputIdentity, OutputPath,
+    ResourceOutputReference, SourceAddress,
 };
 use crate::registry::{Installation, ProviderInstaller, ProviderSource};
 use crate::schema::{Block, ProviderSchema, Schema};
@@ -484,9 +484,14 @@ pub(super) struct DigestWriter {
 impl DigestWriter {
     pub(super) fn reference(&mut self, reference: &ResourceOutputReference) {
         self.field(reference.source.to_string().as_bytes());
-        self.field(reference.attribute.as_bytes());
+        self.field(reference.attribute.name().as_bytes());
         self.tag(if reference.native.computed { 2 } else { 1 });
         self.path(reference.destination.steps());
+        // A whole attribute keeps the digest it had before selectors existed.
+        if !reference.attribute.is_attribute() {
+            self.tag(3);
+            self.path(reference.attribute.selector());
+        }
     }
 
     fn path(&mut self, steps: &[PathStep]) {
@@ -823,7 +828,7 @@ struct OutputVerification<'read> {
 
 struct SensitiveOutput<'read> {
     source: &'read SourceAddress,
-    attribute: &'read String,
+    attribute: &'read OutputPath,
     row: &'read ManagedResource,
     schema: &'read Schema,
     value: &'read Value,
@@ -2095,7 +2100,9 @@ impl InfrastructureEngine {
             SourceAddress::DataSource(address) => input
                 .data_sources
                 .get(address)
-                .and_then(|value| value.attribute(&identity.attribute))
+                .map(|value| identity.attribute.read(value))
+                .transpose()?
+                .flatten()
                 .cloned(),
             SourceAddress::Resource(address) => {
                 let Some(row) = input.rows.get(address) else {
@@ -2120,7 +2127,7 @@ impl InfrastructureEngine {
                 let mut warnings = Vec::new();
                 let state =
                     upgraded_state(provider, &StoredState { row, schema }, &mut warnings).await?;
-                let value = state.attribute(&identity.attribute).cloned();
+                let value = identity.attribute.read(&state)?.cloned();
                 if let Some(value) = &value {
                     self.register_sensitive_output(&SensitiveOutput {
                         source: &identity.source,
@@ -2155,16 +2162,20 @@ impl InfrastructureEngine {
             schema,
             value,
         } = output;
-        if sensitivity::resource_sensitivity(row, schema).contains(attribute)
+        let name = attribute.name().to_string();
+        if sensitivity::resource_sensitivity(row, schema).contains(&name)
             || self
                 .output_sensitivity
                 .get(source)
-                .is_some_and(|attributes| attributes.contains(attribute))
+                .is_some_and(|attributes| attributes.contains(&name))
             || schema
                 .block
                 .attributes
-                .get(*attribute)
-                .is_some_and(|attribute| attribute.sensitive)
+                .get(&name)
+                .is_some_and(|schema_attribute| {
+                    schema_attribute.sensitive
+                        || (!attribute.is_attribute() && schema_attribute.contains_sensitive())
+                })
         {
             register_value_strings(value);
         }
@@ -2838,7 +2849,9 @@ impl InfrastructureEngine {
         if let SourceAddress::DataSource(address) = &reference.source {
             return data_sources
                 .get(address)
-                .and_then(|value| value.attribute(&reference.attribute))
+                .map(|value| reference.attribute.read(value))
+                .transpose()?
+                .flatten()
                 .cloned()
                 .ok_or_else(|| {
                     reference_error(
@@ -2883,8 +2896,9 @@ impl InfrastructureEngine {
             warnings,
         )
         .await?;
-        let value = source_state
-            .attribute(&reference.attribute)
+        let value = reference
+            .attribute
+            .read(&source_state)?
             .cloned()
             .ok_or_else(|| {
                 reference_error(
@@ -3285,13 +3299,23 @@ impl InfrastructureEngine {
                 reference,
                 destination_block,
                 source_block: &source_schema.block,
-                declared_type: source_declaration.output_types.get(&reference.attribute),
+                declared_type: if reference.attribute.is_attribute() {
+                    source_declaration
+                        .output_types
+                        .get(reference.attribute.name())
+                } else {
+                    None
+                },
             }
             .check()?;
-            let inherited = self
-                .output_sensitivity
-                .get(&reference.source)
-                .is_some_and(|attributes| attributes.contains(&reference.attribute));
+            let inherited =
+                self.output_sensitivity
+                    .get(&reference.source)
+                    .is_some_and(|attributes| {
+                        attributes
+                            .iter()
+                            .any(|name| name == reference.attribute.name())
+                    });
             if (joined.sensitive || inherited)
                 && !sensitive.contains(&reference.destination_attribute)
             {
@@ -4640,23 +4664,16 @@ impl OutputReferenceCheck<'_> {
                     "destination must be a settable scalar path",
                 )
             })?;
-        let source_attribute = source_block
-            .attributes
-            .get(&reference.attribute)
-            .filter(|attribute| {
-                attribute.nested.is_none()
-                    && !attribute.write_only
-                    && is_scalar(&attribute.value_type)
-            })
-            .ok_or_else(|| {
-                reference_error(
-                    destination,
-                    reference,
-                    "source must be a top-level scalar attribute",
-                )
-            })?;
+        let source = selected_output(source_block, &reference.attribute).ok_or_else(|| {
+            reference_error(
+                destination,
+                reference,
+                "source must be a scalar provider output: a top-level attribute, or an \
+                 attribute or list element inside one, never a map element",
+            )
+        })?;
         if let Some(declared) = declared_type
-            && declared_value_type(*declared) != source_attribute.value_type
+            && declared_value_type(*declared) != source.value_type
         {
             return Err(reference_error(
                 destination,
@@ -4664,9 +4681,7 @@ impl OutputReferenceCheck<'_> {
                 "native CUE output declaration type does not match the provider schema",
             ));
         }
-        if !reference.native.computed
-            && &source_attribute.value_type != destination_attribute.value_type()
-        {
+        if !reference.native.computed && &source.value_type != destination_attribute.value_type() {
             return Err(reference_error(
                 destination,
                 reference,
@@ -4674,9 +4689,57 @@ impl OutputReferenceCheck<'_> {
             ));
         }
         Ok(JoinedOutput {
-            sensitive: source_attribute.sensitive,
+            sensitive: source.sensitive,
         })
     }
+}
+
+/// The schema of one selected provider output.
+struct SelectedOutput {
+    value_type: Type,
+    sensitive: bool,
+}
+
+/// What `output` selects from a producer schema, if it is a readable scalar.
+/// A position inside an attribute takes its type from the attribute's
+/// implied type and is sensitive when anything in the attribute is.
+fn selected_output(block: &Block, output: &OutputPath) -> Option<SelectedOutput> {
+    let attribute = block.attributes.get(output.name())?;
+    if output.is_attribute() {
+        return (attribute.nested.is_none()
+            && !attribute.write_only
+            && is_scalar(&attribute.value_type))
+        .then(|| SelectedOutput {
+            value_type: attribute.value_type.clone(),
+            sensitive: attribute.sensitive,
+        });
+    }
+    if attribute.contains_write_only() || selects_unordered_element(&attribute.value_type, output) {
+        return None;
+    }
+    output
+        .value_type(&attribute.value_type)
+        .filter(is_scalar)
+        .map(|value_type| SelectedOutput {
+            value_type,
+            sensitive: attribute.contains_sensitive(),
+        })
+}
+
+/// Whether a selector passes through a map, whose keys are never selectable, or
+/// a set, whose elements have no position to select.
+fn selects_unordered_element(attribute_type: &Type, output: &OutputPath) -> bool {
+    let mut current = attribute_type.clone();
+    for step in output.selector() {
+        if matches!(current, Type::Map(_) | Type::Set(_)) {
+            return true;
+        }
+        match current.at_path(std::slice::from_ref(step)) {
+            Some(next) => current = next,
+            None => return false,
+        }
+    }
+    false
 }
 
 fn declared_value_type(declared: InfrastructureOutputType) -> Type {
@@ -4703,23 +4766,35 @@ fn validate_output_declarations(
             continue;
         };
         let attribute = &identity.attribute;
-        let schema = block
-            .attributes
-            .get(attribute)
-            .filter(|schema| {
-                schema.nested.is_none()
-                    && !schema.write_only
-                    && (is_scalar(&schema.value_type) || schema.value_type == Type::Dynamic)
-            })
-            .ok_or_else(|| {
-                InfrastructureError::configuration(format!(
-                    "{source}: output {attribute} must be a top-level scalar attribute of the \
-                     provider schema"
-                ))
-            })?;
+        let value_type = if attribute.is_attribute() {
+            block
+                .attributes
+                .get(attribute.name())
+                .filter(|schema| {
+                    schema.nested.is_none()
+                        && !schema.write_only
+                        && (is_scalar(&schema.value_type) || schema.value_type == Type::Dynamic)
+                })
+                .map(|schema| schema.value_type.clone())
+        } else {
+            block
+                .attributes
+                .get(attribute.name())
+                .filter(|schema| {
+                    !schema.contains_write_only()
+                        && !selects_unordered_element(&schema.value_type, attribute)
+                })
+                .and_then(|schema| attribute.value_type(&schema.value_type))
+                .filter(|value_type| is_scalar(value_type) || *value_type == Type::Dynamic)
+        }
+        .ok_or_else(|| {
+            InfrastructureError::configuration(format!(
+                "{source}: output {attribute} must be a scalar provider output: a top-level \
+                 attribute, or an attribute or list element inside one, never a map element"
+            ))
+        })?;
         // A dynamic attribute can hold a scalar: only its real value can say.
-        if schema.value_type != Type::Dynamic && declared_value_type(declared) != schema.value_type
-        {
+        if value_type != Type::Dynamic && declared_value_type(declared) != value_type {
             return Err(InfrastructureError::configuration(format!(
                 "{source}: output {attribute}: native CUE output declaration type does not \
                  match the provider schema"

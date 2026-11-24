@@ -47,7 +47,7 @@ impl OutputSelectors<'_> {
                     diagnostic_path(&reference.labels)
                 )));
             }
-            if target.len() != root.len() + 4
+            if target.len() < root.len() + 4
                 || target[..root.len()] != root
                 || !is_declaration_namespace(&target[root.len()])
                 || target[root.len() + 2] != "outputs"
@@ -60,7 +60,7 @@ impl OutputSelectors<'_> {
                 // alias another output: every namespace field declares one
                 // real provider attribute.
                 return Err(CliError::config(format!(
-                    "{}: output selectors require a resource or data source configuration argument and one top-level scalar output in the selected infrastructure configuration",
+                    "{}: output selectors require a resource or data source configuration argument and one scalar output in the selected infrastructure configuration",
                     diagnostic_path(&reference.labels)
                 )));
             }
@@ -82,6 +82,9 @@ impl OutputSelectors<'_> {
             let producer = &reference.target[root.len() + 1];
             let namespace = &reference.target[root.len()];
             let attribute = &reference.target[root.len() + 3];
+            // A position inside an attribute is checked from the evaluator's
+            // declarations; this map holds whole top-level attributes.
+            let whole_attribute = reference.target.len() == root.len() + 4;
             let source = project
                 .pointer(&pointer(&reference.target[..root.len() + 2]))
                 .ok_or_else(|| CliError::config("output selector source is not declared"))?;
@@ -97,6 +100,9 @@ impl OutputSelectors<'_> {
             *destination = Value::Null;
             let primitive = output_type(&reference.primitive_type)
                 .ok_or_else(|| CliError::config("output selector declaration is not primitive"))?;
+            if !whole_attribute {
+                continue;
+            }
             declarations
                 .entry(if namespace == "data" {
                     format!("data.{producer}")
@@ -242,8 +248,6 @@ mod tests {
                     "resources",
                     "producer",
                     "outputs",
-                    "id",
-                    "nested",
                 ],
                 true,
             ),

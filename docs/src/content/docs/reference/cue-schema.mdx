@@ -1449,7 +1449,7 @@ See [write-only arguments](/how-to/infrastructure/#keep-a-value-out-of-state-wit
 | `type`      | `string`          | Yes      | Managed resource type such as `random_pet` (`<provider>_<name>`) |
 | `provider`  | `#InfrastructureName`      | No       | Local provider name. Defaults to the type prefix; either way it must be a key of the same configuration's `providers` |
 | `dependsOn` | `[...#InfrastructureName]` | No       | Resources applied before (and destroyed after) this one; each must be a key of the same configuration's `resources` |
-| `outputs` | `{[string]: string \| number \| bool}` | No | Abstract top-level scalar outputs, removed before provider calls; generated types declare eligible attributes |
+| `outputs` | `{[string]: #InfrastructureOutput}` | No | Abstract outputs: bare `string`, `number` or `bool`, or lists and structs of them, removed before provider calls; generated types declare eligible attributes |
 | `configuration` | `{...}` | No | Resource arguments, validated by the provider schema |
 
 ### #DataSource
@@ -1479,16 +1479,20 @@ destroy/orphan plans, including after a process restart; see
 
 ### Infrastructure output selectors
 
-A scalar argument of a managed resource or data source may reference a top-level
-scalar output in either namespace. Use a native CUE selector such as
+A scalar argument of a managed resource or data source may reference a scalar
+output in either namespace: a top-level attribute, or a field or element inside
+a list, tuple or object output, such as `outputs.result[0].id`. Use a native CUE selector such as
 `infrastructure.data.base.outputs.id` or
 `infrastructure.resources.primary.outputs.id`. Destinations can be nested in
 objects, maps and ordered lists or tuples. Both managed resources and data
 sources can consume these selectors. Sources must belong
 to the selected configuration, and source and destination primitive types must
 match. Untyped declarations supply placeholders such as `outputs: id: string`;
-generated types supply eligible declarations automatically. Nested or collection
-selection, refined output placeholders, and expressions over outputs are unsupported.
+generated types supply eligible declarations automatically. Declare a list down to
+the elements you read, for example `outputs: result: [{id: string}]`, or narrow a
+generated list with `outputs: result: [_]`. A selected element the provider did not
+return fails the plan by name. Map keys, set elements, refined output placeholders,
+and expressions over outputs are unsupported.
 
 Sensitive primitive outputs are masked in plans. Known sensitive strings are
 registered before validation and read calls; returned sensitive strings are

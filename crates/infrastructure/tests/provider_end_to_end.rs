@@ -493,8 +493,7 @@ async fn a_provider_whose_schema_differs_from_its_generated_types_is_refused() -
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires the fake provider (CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER)"]
-async fn fake_data_source_generated_types_describe_configuration_and_scalar_outputs() -> TestResult
-{
+async fn fake_data_source_generated_types_describe_configuration_and_outputs() -> TestResult {
     use cuenv_infrastructure::cue_types::{self, ProviderRelease};
     use cuenv_infrastructure::registry::ProviderSource;
 
@@ -513,7 +512,7 @@ async fn fake_data_source_generated_types_describe_configuration_and_scalar_outp
             version: "0.0.0",
         },
     )?;
-    assert_eq!(generated.data_source_types, ["fake_lookup"]);
+    assert_eq!(generated.data_source_types, ["fake_groups", "fake_lookup"]);
     let package = generated
         .files
         .get(Path::new("data/fake_lookup/data_source.cue"))
@@ -539,6 +538,16 @@ async fn fake_data_source_generated_types_describe_configuration_and_scalar_outp
     assert!(
         !package.contains("value?:"),
         "computed outputs must not become configuration: {package}"
+    );
+    let groups = generated
+        .files
+        .get(Path::new("data/fake_groups/data_source.cue"))
+        .ok_or("groups data source package missing")?;
+    assert!(
+        groups.contains(
+            "\tresult: [...{\n\t\tid: string\n\t\tname: string\n\t\tscopes: [...string]\n\t}]"
+        ),
+        "list outputs must be selectable: {groups}"
     );
     Ok(())
 }
@@ -1472,7 +1481,7 @@ fn declared_output(
         source: cuenv_infrastructure::references::SourceAddress::Resource(
             cuenv_infrastructure::ResourceAddress::new(resource_type, name),
         ),
-        attribute: attribute.to_string(),
+        attribute: attribute.into(),
     }
 }
 

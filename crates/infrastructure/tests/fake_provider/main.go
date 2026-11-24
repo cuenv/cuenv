@@ -149,6 +149,7 @@ func (p *fakeProvider) Configure(ctx context.Context, request provider.Configure
 
 func (p *fakeProvider) DataSources(context.Context) []func() datasource.DataSource {
 	return []func() datasource.DataSource{
+		func() datasource.DataSource { return &groups{} },
 		func() datasource.DataSource { return &lookup{} },
 	}
 }

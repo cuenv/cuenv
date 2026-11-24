@@ -2833,3 +2833,121 @@ async fn separate_infrastructure_packages_share_the_output_contract() -> TestRes
     assert_eq!(stack.mutations(), before);
     Ok(())
 }
+
+/// #597: a lookup that returns a list of objects feeds one element's field.
+fn groups_stack(name: &str) -> String {
+    format!(
+        "infrastructure: {{\n @INFRASTRUCTURE@\n data: groups: {{type: \"fake_groups\", configuration: name: {name:?}, outputs: result: [{{id: string}}]}}\n resources: consumer: {{type: \"fake_plain\", configuration: name: infrastructure.data.groups.outputs.result[0].id}}\n}}"
+    )
+}
+
+/// #597: `result[0].id` resolves to the selected element's field and the stack converges.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider and Turso/sqld; see module documentation"]
+async fn a_list_output_element_field_feeds_a_resource() -> TestResult {
+    let stack = OutputLifecycle::new("list-output", &groups_stack("Zone Read"))?;
+    let planned = stack.lifecycle.execute_text(&["plan"])?;
+    assert!(planned.status.success(), "{planned:?}");
+    assert!(
+        String::from_utf8_lossy(&planned.stdout).contains("group-zone-read"),
+        "{planned:?}"
+    );
+    assert_eq!(stack.mutations(), 0, "plan must not change anything");
+    stack.lifecycle.run(&["apply", "--yes"])?;
+    assert_eq!(stack.creates(), ["group-zone-read"]);
+    assert_eq!(
+        stack.record("consumer").await?.state["name"],
+        "group-zone-read"
+    );
+    stack.lifecycle.run(&["apply", "--yes"])?;
+    assert_eq!(stack.mutations(), 1, "a converged stack must be a no-op");
+    Ok(())
+}
+
+/// #597: a selected element the provider did not return fails the plan by name,
+/// rather than leaving the destination unknown.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider and Turso/sqld; see module documentation"]
+async fn a_missing_list_element_fails_the_plan() -> TestResult {
+    let stack = OutputLifecycle::new("missing-element", &groups_stack("Missing"))?;
+    stack.fails(&["plan"], "result[0].id does not exist")?;
+    assert_eq!(stack.mutations(), 0);
+    assert!(stack.record("consumer").await.is_err());
+    Ok(())
+}
+
+/// #597 through generated types: the generated `#Outputs` types the list, the
+/// project narrows it to the element it reads, and the selected field applies.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider and Turso/sqld; see module documentation"]
+async fn generated_list_outputs_select_an_element_field() -> TestResult {
+    use cuenv_infrastructure::Cancellation;
+    use cuenv_infrastructure::cue_types::{self, ProviderRelease};
+    use cuenv_infrastructure::registry::ProviderSource;
+
+    let provider =
+        PathBuf::from(std::env::var("CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER")?).canonicalize()?;
+    let database = Database::start()?;
+    let backend = TursoConfiguration {
+        url: database.url().to_owned(),
+        authentication_token: std::env::var("TURSO_AUTH_TOKEN").ok(),
+    };
+    let directory = prepare_directory()?;
+    let (schema, _) = cue_types::load_schema(&provider, &Cancellation::default()).await?;
+    let source = ProviderSource::parse("example.com/test/fake")?;
+    let types = cue_types::render(
+        &schema,
+        ProviderRelease {
+            source: &source,
+            version: "0.0.0",
+        },
+    )?;
+    for (relative, content) in &types.files {
+        let path = directory.path().join(&types.directory).join(relative);
+        fs::create_dir_all(path.parent().ok_or("generated file has no parent")?)?;
+        fs::write(path, content)?;
+    }
+    let project = format!("generated-list-output-{}", uuid::Uuid::new_v4());
+    let tenant = TenantKey::try_new(MODULE, &project)?;
+    let store = TursoStateStore::try_new(backend.clone())?;
+    let configuration = format!(
+        r#"package examples
+import (
+ "github.com/cuenv/cuenv/schema"
+ "example.com/test/fake:fake_provider"
+ "example.com/test/fake/data/fake_groups"
+ "example.com/test/fake/resources/fake_plain"
+)
+schema.#Project
+name: {project}
+infrastructure: {{
+ state: turso: {{url: {url}, token: {{cuenvPassthrough: true, name: "TURSO_AUTH_TOKEN"}}}}
+ providers: fake: {{
+  source: "example.com/test/fake"
+  path: {provider}
+  schemaDigest: {digest}
+  configuration: fake_provider.#Configuration & {{directory: {directory}}}
+ }}
+ data: {{
+  zone: fake_groups.#DataSource & {{configuration: name: "Zone Read", outputs: result: [_]}}
+  everything: fake_groups.#DataSource
+ }}
+ resources: consumer: fake_plain.#Resource & {{configuration: name: infrastructure.data.zone.outputs.result[0].id}}
+}}
+"#,
+        project = serde_json::to_string(&project)?,
+        url = serde_json::to_string(&backend.url)?,
+        provider = serde_json::to_string(&provider)?,
+        digest = serde_json::to_string(&types.schema_digest)?,
+        directory = serde_json::to_string(directory.path())?,
+    );
+    let lifecycle = Lifecycle::from_configuration(directory, configuration, &backend)?;
+    assert_eq!(lifecycle.run(&["plan"])?["summary"]["create"], 1);
+    assert_eq!(lifecycle.run(&["apply", "--yes"])?["applied"]["create"], 1);
+    let rows = store.list(&tenant).await?;
+    assert_eq!(rows.len(), 1, "data sources must not create state rows");
+    assert_eq!(rows[0].state["name"], "group-zone-read");
+    assert_eq!(lifecycle.run(&["plan"])?["summary"]["unchanged"], 1);
+    lifecycle.run(&["destroy", "--yes"])?;
+    Ok(())
+}

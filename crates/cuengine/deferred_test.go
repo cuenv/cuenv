@@ -126,7 +126,10 @@ func TestAbstractOutputDeclarations(t *testing.T) {
 		{"string", true}, {"number", true}, {"bool", true},
 		{`string & =~"^prefix"`, false}, {"number & >0", false},
 		{`"literal"`, false}, {`*"default" | string`, false},
-		{"[...string]", false}, {"string | number", false},
+		{"string | number", false},
+		{"[...string]", true}, {"[string]", true}, {"{name: string}", true},
+		{"[{id: string, scopes: [...string]}]", true}, {"[...{id: string}]", true},
+		{`["literal"]`, false}, {"{size: number & >0}", false}, {"[string | number]", false},
 	} {
 		t.Run(test.expression, func(t *testing.T) {
 			value := compileAnalyzed("outputs: id: " + test.expression).LookupPath(cue.ParsePath("outputs"))

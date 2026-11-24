@@ -1185,7 +1185,7 @@ infrastructure: schema.#Infrastructure & {
             .ok_or("missing evaluator")?
             .references()[0];
         assert_eq!(reference.source.to_string(), "fake_plain.primary");
-        assert_eq!(reference.attribute, "id");
+        assert_eq!(reference.attribute.name(), "id");
         let whole_module = evaluate(TargetRequest {
             path: &directory.path().to_string_lossy(),
             package: "cuenv",
@@ -1296,7 +1296,7 @@ infrastructure: {
             evaluator.references()[0].source.to_string(),
             "fake_plain.primary"
         );
-        assert_eq!(evaluator.references()[0].attribute, "id");
+        assert_eq!(evaluator.references()[0].attribute.name(), "id");
         let native = target.infrastructure;
         assert!(native.resources["record"].configuration["name"].is_null());
         assert_eq!(
@@ -1339,7 +1339,7 @@ infrastructure: {
                 .is_null()
         );
         assert_eq!(reference.source.to_string(), "fake_plain.primary");
-        assert_eq!(reference.attribute, "id");
+        assert_eq!(reference.attribute.name(), "id");
 
         // CUE narrows the leaf to "expected", but the producer is still unknown.
         let sources = BTreeMap::new();
@@ -1892,7 +1892,7 @@ data: {
         assert_eq!(references.len(), 3);
         for reference in references {
             assert_eq!(reference.source.to_string(), "data.fake_lookup.source-key");
-            assert_eq!(reference.attribute, "_id");
+            assert_eq!(reference.attribute.name(), "_id");
         }
         Ok(())
     }
@@ -2059,7 +2059,7 @@ providers: fake: configuration: name: infrastructure.data.primary.outputs.id"#,
         assert_eq!(references.len(), 6);
         for reference in references {
             assert_eq!(reference.source.to_string(), "fake_plain.source-key");
-            assert!(matches!(reference.attribute.as_str(), "_id" | "true"));
+            assert!(matches!(reference.attribute.name(), "_id" | "true"));
         }
         Ok(())
     }

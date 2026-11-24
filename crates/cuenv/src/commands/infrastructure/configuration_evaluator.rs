@@ -16,9 +16,10 @@ use cuenv_core::ModuleEvaluation;
 use cuenv_core::module::DirectReference;
 use cuenv_infrastructure::references::{
     ConfigurationEvaluator, ConfigurationSelector, ConfigurationSpecialization,
-    ConfigurationVerification, NativeReference, OutputIdentity, SourceAddress,
+    ConfigurationVerification, NativeReference, OutputIdentity, OutputPath, SourceAddress,
     SpecializedConfiguration,
 };
+use cuenv_infrastructure::type_system::PathStep;
 
 use cuenv_infrastructure::{InfrastructureError, ResourceAddress};
 use cuenv_manifest::manifest::InfrastructureOutputType;
@@ -216,13 +217,12 @@ pub(super) fn freeze_configuration(
                 path_field(&namespace, root.len() + 1)?,
             ),
         )?;
-        if let Some(outputs) = json_at(&value, &namespace).and_then(Json::as_object) {
-            for attribute in outputs.keys() {
+        for path in output_leaves(&value, &namespace) {
+            {
                 let identity = OutputIdentity {
                     source: source.clone(),
-                    attribute: attribute.clone(),
+                    attribute: output_path(&path[namespace.len()..])?,
                 };
-                let path = append_field(&namespace, attribute);
                 if let Some(declared) = inspected
                     .declarations
                     .iter()
@@ -354,7 +354,7 @@ fn native_reference(
             path_field(&reference.path, root_len + 1)?,
         ),
     )?;
-    let attribute = path_field(&reference.target, root_len + 3)?.to_string();
+    let attribute = output_path(&reference.target[root_len + 3..])?;
     let destination = configuration_path(&reference.path[root_len + 3..])?;
     Ok(NativeReference {
         consumer,
@@ -465,15 +465,62 @@ fn output_namespaces(project: &Json, root: &ValuePath) -> Vec<ValuePath> {
     paths
 }
 
+/// The declared primitive outputs below an `outputs` namespace: each
+/// top-level field, or the fields and list elements inside one, down to the
+/// values that are not structs or lists.
+fn output_leaves(project: &Json, namespace: &ValuePath) -> Vec<ValuePath> {
+    fn walk(value: &Json, path: ValuePath, leaves: &mut Vec<ValuePath>) {
+        match value {
+            Json::Object(fields) => {
+                for (name, field) in fields {
+                    walk(field, append_field(&path, name), leaves);
+                }
+            }
+            Json::Array(items) => {
+                for (index, item) in items.iter().enumerate() {
+                    let mut item_path = path.clone();
+                    item_path.push(ValueSelector::Index(index));
+                    walk(item, item_path, leaves);
+                }
+            }
+            _ => leaves.push(path),
+        }
+    }
+    let mut leaves = Vec::new();
+    if let Some(outputs) = json_at(project, namespace).and_then(Json::as_object) {
+        for (name, value) in outputs {
+            walk(value, append_field(namespace, name), &mut leaves);
+        }
+    }
+    leaves
+}
+
+/// The output a path below `outputs` names: its top-level attribute, then
+/// the struct fields and list indexes inside it.
+fn output_path(path: &[ValueSelector]) -> Result<OutputPath, CliError> {
+    let invalid = || CliError::config("an output selector uses an invalid path");
+    let Some((ValueSelector::Field(attribute), rest)) = path.split_first() else {
+        return Err(invalid());
+    };
+    let selector = rest
+        .iter()
+        .map(|selector| match selector {
+            ValueSelector::Field(field) => Ok(PathStep::Attribute(field.clone())),
+            ValueSelector::Index(index) => i64::try_from(*index)
+                .map(PathStep::Index)
+                .map_err(|_| invalid()),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    OutputPath::nested(attribute.clone(), selector).map_err(|_| invalid())
+}
+
 /// Every output field, including unselected and invalid declarations, is a
 /// potential dependency when referenced from a selected or global expression.
 fn all_output_paths(project: &Json) -> Vec<ValuePath> {
     let mut paths = Vec::new();
     for root in infrastructure_roots(project) {
         for namespace in output_namespaces(project, &root) {
-            if let Some(outputs) = json_at(project, &namespace).and_then(Json::as_object) {
-                paths.extend(outputs.keys().map(|name| append_field(&namespace, name)));
-            }
+            paths.extend(output_leaves(project, &namespace));
         }
     }
     paths
@@ -588,8 +635,14 @@ impl NativeConfigurationEvaluator {
         let mut path = self.declaration_path(&identity.source);
         path.extend([
             field_selector("outputs"),
-            field_selector(&identity.attribute),
+            field_selector(identity.attribute.name()),
         ]);
+        path.extend(identity.attribute.selector().iter().map(|step| match step {
+            PathStep::Attribute(name) | PathStep::Key(name) => field_selector(name),
+            PathStep::Index(index) => {
+                ValueSelector::Index(usize::try_from(*index).unwrap_or(usize::MAX))
+            }
+        }));
         path
     }
 

@@ -6,7 +6,7 @@ description: Declare managed resources in CUE and let cuenv drive Terraform prov
 cuenv can manage real infrastructure with the provider ecosystem you already know from Terraform and OpenTofu — without either command line tool. `cuenv infrastructure` (short form: `cuenv i`) launches unmodified `terraform-provider-*` binaries, speaks their gRPC plugin protocol (versions 5 and 6), and stores every managed resource as its own record in a remote SQLite database: [Turso](https://turso.tech) (libSQL) or [Cloudflare D1](https://developers.cloudflare.com/d1/). Use `--env Dev` or `--env Staging` to select a complete infrastructure configuration and its project environment values.
 
 :::caution[Experimental]
-`cuenv infrastructure` is **experimental**, and `cuenv infrastructure --help` says so. Its behavior, command line flags, schema and state layout can still change between releases, and it is not covered by the stability promises of the other commands. `#Infrastructure` is **partial**: create, update, replace, delete, refresh, import, scalar output references, state upgrades, dependency ordering, fenced state locking and verified registry installs work against real providers. Read [Current limitations](#current-limitations) before pointing it at anything you care about — in particular, records cannot be moved between state identities yet, and replacements are always destroy-then-create.
+`cuenv infrastructure` is **experimental**, and `cuenv infrastructure --help` says so. Its behavior, command line flags, schema and state layout can still change between releases, and it is not covered by the stability promises of the other commands. `#Infrastructure` is **partial**: create, update, replace, delete, refresh, import, scalar output references (including fields and elements of list and object outputs), state upgrades, dependency ordering, fenced state locking and verified registry installs work against real providers. Read [Current limitations](#current-limitations) before pointing it at anything you care about — in particular, records cannot be moved between state identities yet, and replacements are always destroy-then-create.
 
 Schema version 1 databases migrate in place to version 2. Incompatible earlier development layouts remain unsupported; see [Configure the state backend](#configure-the-state-backend).
 :::
@@ -81,7 +81,7 @@ cuenv i plan
 
 An import identifier is interpreted by the provider. cuenv supports one returned resource of the declared type per import. It reads the imported object before storing it, so the following plan compares live state with the configuration. Import does not call `ApplyResourceChange`; it does not create or update the remote object. Use the matching `--env`, `-p` and `--package` on import and follow-up commands. The command's success output includes a plan command that preserves those selectors.
 
-A resource configuration can use a top-level scalar output from another declared resource through a native CUE selector. Untyped resources declare the output with its primitive type:
+A resource configuration can use a scalar output from another declared resource through a native CUE selector: a top-level attribute, or a field or element inside a list or object output (see [Select from a list or object output](#select-from-a-list-or-object-output)). Untyped resources declare the output with its primitive type:
 
 ```cue
 infrastructure: resources: {
@@ -100,7 +100,7 @@ infrastructure: resources: {
 }
 ```
 
-The selector names a declaration in the selected configuration and a top-level provider output. cuenv infers an apply and destroy dependency from the reference, and stores it with the consuming resource.
+The selector names a declaration in the selected configuration and a provider output. cuenv infers an apply and destroy dependency from the reference, and stores it with the consuming resource.
 
 References come from CUE selector provenance, not the shape of provider configuration objects. Ordinary provider objects retain their field meanings. cuenv may start an unconfigured provider to obtain its schema; it validates the complete reference graph before configuring a provider or calling a resource or data source.
 
@@ -158,7 +158,7 @@ configuration: {
 }
 ```
 
-A computed value shows as known after apply until every output it reads is known. CUE then computes it from the real values and validates its constraints. Source selection remains limited to top-level scalars.
+A computed value shows as known after apply until every output it reads is known. CUE then computes it from the real values and validates its constraints. A source is always one scalar: a top-level attribute or a position inside a list or object output.
 
 What fields exist cannot depend on an output, because a plan could not say what would be applied. Conditions, labels, indexes, defaults and presence guards that read an output, and lists or structs computed from one, are refused before any provider change, wherever they are reached from. So are references into sets or write-only fields. Comprehensions and dynamic fields that do not depend on an output work as usual. A check the configuration does not read, such as `_check: infrastructure.resources.bucket.outputs.id & =~"^prod-"`, is not refused: it is checked against the real value.
 
@@ -176,7 +176,7 @@ Numeric outputs retain their decimal precision when resolved. cuenv refuses prov
 
 Declare read-only lookups under `infrastructure.data`. Generated packages live
 at `<provider import path>/data/<type>` and expose `#DataSource`,
-`#Configuration` and scalar `#Outputs`, just as managed resource packages
+`#Configuration` and `#Outputs`, just as managed resource packages
 expose `#Resource`. Use a distinct import alias if a declaration shadows the
 package name.
 
@@ -243,11 +243,48 @@ exist, a data-only top level is allowed only if the no-flag identity has no
 managed state; adding a lookup does not bypass the protection for legacy
 no-flag resources. Without named environments, normal orphan deletion still
 applies: removing managed declarations and leaving only data can plan their
-deletion. Collection inputs and
-results are supported by the provider protocol, but references still select
-only top-level scalar attributes. A lookup returning only a list of objects,
-such as Cloudflare permission groups, cannot yet supply a selected element.
-Selecting nested or collection outputs, and expressions over outputs, remain follow-up work.
+deletion.
+
+### Select from a list or object output
+
+A selector can read one scalar inside a list or object output, such as the
+first match of a lookup that returns a list of objects. Declare the output down
+to the scalars you read, with the list narrowed to the elements you select, so
+CUE can index it. Generated `#Outputs` already type lists and objects; narrow
+the list in the declaration:
+
+```cue
+import permission_groups "registry.terraform.io/cloudflare/cloudflare/data/cloudflare_account_api_token_permission_groups_list"
+
+infrastructure: {
+	data: zoneRead: permission_groups.#DataSource & {
+		configuration: {account_id: "...", name: "Zone Read"}
+		outputs: result: [_]
+	}
+	resources: token: {
+		type: "cloudflare_account_token"
+		configuration: policies: [{
+			effect: "allow"
+			permission_groups: [{id: infrastructure.data.zoneRead.outputs.result[0].id}]
+			// resources and the other policy arguments go here.
+		}]
+	}
+}
+```
+
+An untyped declaration spells the same shape out, for example
+`outputs: result: [{id: string}]`.
+
+If the provider returns fewer elements than the selector needs, or a null on
+the way, the plan fails and names the output, for example `output result[0].id
+does not exist`, instead of leaving the argument unknown. A lookup that matched
+nothing therefore stops the run before anything changes. Extra elements are
+ignored: cuenv checks the elements you select, not the length of the list.
+
+Selectors go through list, tuple and object positions only. Map keys and set
+elements cannot be selected, because a key is data rather than schema and a
+set has no order. Write-only attributes and expressions over outputs other than
+scalar computation remain unsupported.
 
 ## Dev and Staging environments
 
@@ -1077,12 +1114,12 @@ A replacement whose old object was destroyed but whose new object was not create
 - **Copying a whole resource into another field is refused by CUE** under the closed schema. Move the value to a named field or use a direct selector instead.
 - **A self-hosted `sqld` can stop serving writes when several runs write to one database at once.** Version 0.24.32 can leave its write slot with a connection that has closed, after which every write waits until the server is restarted, while reads and `/health` still answer. Each state write then fails after four attempts of thirty seconds, and a run that had already changed a resource stops with an unrecorded change and a recovery file. See [the design notes](https://github.com/cuenv/cuenv/blob/main/docs/design/specs/2026-11-03-infrastructure-nested-output-references.md) for the cause. A database reporting `SQLITE_BUSY` is otherwise retried for thirty seconds.
 - **Secret arguments** are string-only, cannot be placed in sets, and are stored in plaintext in state unless the argument is write-only (see [Keep a value out of state with `#WriteOnly`](#keep-a-value-out-of-state-with-writeonly)); provider configuration cannot take one (see [Pass a secret to a resource](#pass-a-secret-to-a-resource)).
-- **Output reference boundaries.** Sources must be top-level scalar provider attributes, and source/destination types must match. Nested object, map and ordered collection destinations are supported; nested or collection sources, sets and write-only destinations are not. If a value was unknown at plan time and its final value makes an existing consumer require replacement, apply stops before deleting or updating that consumer; plan again after the source is recorded.
+- **Output reference boundaries.** A source is one scalar: a top-level attribute, or a field or element inside a list, tuple or object output. Source and destination types must match. Nested object, map and ordered collection destinations are supported; map keys and set elements as sources, sets and write-only destinations are not. If a value was unknown at plan time and its final value makes an existing consumer require replacement, apply stops before deleting or updating that consumer; plan again after the source is recorded.
 - **Early CUE diagnostics.** Infrastructure commands report a value-free evaluation error when CUE fails before provider sensitivity is known. Raw CUE details, including field names, source positions and custom error text, are withheld because they can contain private configuration keys or values. This does not change CUE evaluation; other cuenv commands may still display their normal CUE diagnostics.
 - **Numeric precision.** Provider-bound numbers outside cuenv's lossless Terraform codec range are rejected. Some CUE numeric literals that cannot be represented without loss in the selected configuration's JSON are rejected as well; see [Import and connect resources](#import-and-connect-resources).
 - **Resource identity is stored and sent back, but not used for import.** cuenv records the identity providers return (recent AWS, Google and Azure resources declare one), sends it back on refresh, plan and apply, and upgrades it across identity schema versions. Importing still takes a string identifier, not an identity. cuenv reports itself to providers as Terraform 1.12.0, the release that introduced resource identity, so a provider that checks the version sees the behaviour cuenv implements.
 - **Dynamic-typed configuration** infers arrays as tuples and objects as objects because configuration values carry no concrete Terraform collection type. Provider-returned dynamic values retain their reported types through state and provider round trips.
-- No nested or collection output selection, `moved` blocks, saved plan files or `--target`. `--expect-plan` binds an apply to a reviewed plan by digest instead of a saved plan file. Data sources support scalar output references, including deferred reads. Import accepts only one string identifier and one returned resource; structured provider identities and multi-resource import are not supported.
+- No `moved` blocks, saved plan files or `--target`. `--expect-plan` binds an apply to a reviewed plan by digest instead of a saved plan file. Data sources support scalar output references, including into list and object outputs and deferred reads. Import accepts only one string identifier and one returned resource; structured provider identities and multi-resource import are not supported.
 - Replacement is always destroy-then-create; operations run one at a time.
 - **No `state move`.** Single records cannot be moved between identities; see [Moving between identities](#moving-between-identities). With S3 state, `state rename` moves a whole identity's state.
 - **One state backend for all environments.** `state` cannot be overridden per environment.

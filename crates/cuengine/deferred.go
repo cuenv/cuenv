@@ -44,14 +44,50 @@ func validateAbstractNamespace(value cue.Value, path cue.Path) error {
 	if value.Kind() != cue.StructKind {
 		return fmt.Errorf("%s: abstract namespace must be a struct", path)
 	}
+	return validateAbstractFields(value, path)
+}
+
+// validateAbstractFields checks every regular field of a struct is an abstract
+// declaration: a bare primitive, or a struct or list whose existing elements are.
+func validateAbstractFields(value cue.Value, path cue.Path) error {
 	fields, err := value.Fields(cue.Definitions(false))
 	if err != nil {
 		return err
 	}
 	for fields.Next() {
-		if primitiveDeclaration(fields.Value()) == "" {
-			return fmt.Errorf("%s: abstract declarations must be bare string, number or bool types without defaults or refinements", cue.MakePath(append(path.Selectors(), fields.Selector())...))
+		child := cue.MakePath(append(path.Selectors(), fields.Selector())...)
+		if err := validateAbstractDeclaration(fields.Value(), child); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+// validateAbstractDeclaration accepts a bare primitive, a struct of
+// declarations, or a list of declarations. A list whose length is open has no
+// element that can be selected, so only its known elements are checked.
+func validateAbstractDeclaration(value cue.Value, path cue.Path) error {
+	if primitiveDeclaration(value) != "" {
+		return nil
+	}
+	switch value.IncompleteKind() {
+	case cue.StructKind:
+		return validateAbstractFields(value, path)
+	case cue.ListKind:
+		if value.Len().Validate(cue.Concrete(true)) != nil {
+			return nil
+		}
+		items, err := value.List()
+		if err != nil {
+			return err
+		}
+		for index := 0; items.Next(); index++ {
+			child := cue.MakePath(append(path.Selectors(), cue.Index(index))...)
+			if err := validateAbstractDeclaration(items.Value(), child); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return fmt.Errorf("%s: abstract declarations must be bare string, number or bool types without defaults or refinements, or lists and structs of them", path)
 }
