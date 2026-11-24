@@ -717,7 +717,13 @@ impl NodeChecks<'_> {
                 }
             }
             Value::Object(object) => {
-                let path = format!("tasks.{name}");
+                // A task made from a script was declared at `scripts.<name>`,
+                // where evaluation recorded its references.
+                let path = if object.contains_key("_cuenvScript") {
+                    format!("scripts.{name}")
+                } else {
+                    format!("tasks.{name}")
+                };
                 let mut problems = self.task_dependencies(object, &path);
                 if is_group(object) {
                     for (child, child_node) in object.iter_mut() {

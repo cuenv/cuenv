@@ -37,6 +37,8 @@ in the `tasks`, `services` and `images` maps.
 | `hooks`      | `#Hooks`                      | No       | Shell hooks for onEnter/onExit       |
 | `name`       | `string`                      | Yes      | Project name (what references name)  |
 | `tasks`      | `{[string]: #Task}`           | No       | Task definitions                     |
+| `scriptDirs` | `[...#ScriptDirectory]`       | No       | Directories whose scripts run as tasks |
+| `scripts`    | `{[string]: #ProjectScript}`  | No       | Scripts found in `scriptDirs`, written to `scripts.gen.cue` by cuenv |
 | `services`   | `{[string]: #Service}`        | No       | Long-running supervised processes    |
 | `images`     | `{[string]: #ContainerImage}` | No       | Container image build definitions    |
 | `ci`         | `#CI`                         | No       | CI pipeline configuration            |
@@ -713,38 +715,58 @@ tasks: {
 
 A sequence is simply an array of `#TaskNode` - the tasks execute in array order.
 
-### #TaskScriptDirectory
+### #ScriptDirectory
 
-A directory whose script files become tasks, listed in `taskScripts` on
-`#Project`. Nothing is scanned unless a directory is listed.
+A directory whose script files become `scripts` of the project, listed in
+`scriptDirs` on `#Project`. Nothing is scanned unless a directory is listed.
+cuenv writes what it finds to `scripts.gen.cue` beside the project.
 
 ```cue
-taskScripts: [{
-    path:     "scripts"              // relative to the project
-    prefix:   "s-"                   // optional, prepended to each task name
-    exclude:  ["*.lib.sh"]           // file-name globs that are never tasks
-    interpreters: "deploy.ts": "bun" // over the shebang and the extension
-    hermetic: false                  // default; true opts into the sandbox and cache
-    inputs:   []                     // added to the script itself when hermetic
+scriptDirs: [{
+    path:     "scripts"                   // relative to the project
+    prefix:   "s-"                        // optional, prepended to each name
+    exclude:  ["*.lib.sh"]                // file-name globs that are never scripts
+    rename:   {"make.ts": "makeTs"}       // names by file name
+    hermetic: false                       // default; true opts into the sandbox and cache
+    inputs:   []                          // added to the script itself
     outputs:  []
 }]
 ```
 
-Only files directly in the directory are read. The interpreter is the
-`interpreters` entry, else the shebang, else an unambiguous extension (`.bash`,
-`.fish`, `.nu`, `.py`). See [Task scripts](/how-to/task-scripts/) for the full
-rules.
+Only files directly in the directory are read. The interpreter is the shebang,
+else an unambiguous extension (`.bash`, `.fish`, `.nu`, `.py`). Two files that
+would share a name are both left out until one is renamed or excluded. See
+[Task scripts](/how-to/task-scripts/) for the full rules.
 
-### #TaskScriptInterpreter
+### #ProjectScript
 
-`"bash" | "sh" | "fish" | "nu" | "python" | "python3" | "bun"`: the
-interpreters a discovered script can run with.
+An entry of `scripts` on `#Project`: a file found in `scriptDirs`, written by
+cuenv (`file`, `interpreter`, or `unsupported` for a shebang program cuenv does
+not run), plus what the project adds by name. It runs as a task of the same
+name. Tasks and pipelines reference it as `scripts.<name>`, in `dependsOn` and
+in `ci.pipelines.<name>.tasks`.
 
-### #TaskScriptRef
+| Field          | Type                        | Description                                                  |
+| -------------- | --------------------------- | ------------------------------------------------------------ |
+| `file`         | `string`                    | The script, relative to the project. Written by cuenv.        |
+| `interpreter`  | `#ScriptInterpreter`        | Written from the shebang or extension; set it when neither tells. |
+| `description`  | `string`                    | Shown by `cuenv task`.                                        |
+| `params`       | `#TaskParams`               | Checked, then passed as positional arguments and `--name value`. |
+| `dependsOn`    | `[...(#TaskNode \| #ProjectScript)]` | Tasks and scripts that run first.                    |
+| `hermetic`, `inputs`, `outputs`, `cache` | as on `#Task` | Over the directory's.                              |
+| `labels`       | `[...string]`                | As on `#Task`.                                                |
 
-Names a discovered script task in a CI pipeline, where it has no CUE value to
-reference: `{taskScript: "release"}`. Accepted wherever `#PipelineTask` is, and
-as `task` of a `#MatrixTask`.
+```cue
+scripts: release: {
+    dependsOn: [tasks.build]
+    params: positional: [{description: "Version", required: true}]
+}
+```
+
+### #ScriptInterpreter
+
+`"bash" | "sh" | "fish" | "nu" | "python" | "python3" | "bun"`, or a
+versioned `"python3.N"`: the interpreters a script can run with.
 
 ### #TaskCapture
 

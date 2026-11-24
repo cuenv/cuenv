@@ -33,6 +33,13 @@ use cuenv_core::Result;
 ///
 /// Returns error if pipeline execution fails, export fails, or configuration is invalid.
 pub async fn execute_ci(args: CiArgs) -> Result<()> {
+    // CI evaluates every project on its own; outside CI, bring the
+    // generated scripts files up to date first so that it does not fail on
+    // a script added since the last cuenv command.
+    if let Ok(cwd) = std::env::current_dir() {
+        super::autosync::refresh_known_scripts(&cwd);
+    }
+
     // Export mode: generate pipeline YAML
     if let Some(format) = args.export {
         return exporter::execute_export(&args, format).await;

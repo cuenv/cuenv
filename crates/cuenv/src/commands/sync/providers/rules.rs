@@ -127,7 +127,14 @@ fn sync_workspace(request: SyncRequest<'_>) -> Result<SyncResult> {
         ));
     }
 
-    let result = sync_rules_files(&repo_root, &discovered_files, &options.mode, executor)?;
+    let result = sync_rules_files(
+        &RulesFiles {
+            repo_root: &repo_root,
+            files: &discovered_files,
+        },
+        &options.mode,
+        executor,
+    )?;
     if options.mode == SyncMode::Write && !result.had_error {
         record_rules_fingerprint(&repo_root, WORKSPACE_KEY, &discovered_files);
     }
@@ -170,7 +177,7 @@ pub fn autosync(executor: &CommandExecutor, start: &Path) -> Result<()> {
         return Ok(());
     };
     let stale: Vec<(String, Vec<PathBuf>)> = {
-        let Some(store) = autosync::Store::open(&repo_root) else {
+        let Some(store) = autosync::Store::open_existing(&repo_root) else {
             return Ok(());
         };
         store
@@ -189,7 +196,14 @@ pub fn autosync(executor: &CommandExecutor, start: &Path) -> Result<()> {
             .into_iter()
             .filter(|file| autosync::FileStamp::of(file) != autosync::FileStamp::Missing)
             .collect();
-        let result = sync_rules_files(&repo_root, &present, &SyncMode::Write, executor)?;
+        let result = sync_rules_files(
+            &RulesFiles {
+                repo_root: &repo_root,
+                files: &present,
+            },
+            &SyncMode::Write,
+            executor,
+        )?;
         if result.had_error {
             return Err(cuenv_core::Error::configuration(result.output));
         }
@@ -199,13 +213,19 @@ pub fn autosync(executor: &CommandExecutor, start: &Path) -> Result<()> {
     Ok(())
 }
 
+/// `.rules.cue` files of one repository.
+struct RulesFiles<'files> {
+    repo_root: &'files Path,
+    files: &'files [PathBuf],
+}
+
 /// Sync the given `.rules.cue` files and the CODEOWNERS they aggregate.
 fn sync_rules_files(
-    repo_root: &Path,
-    files: &[PathBuf],
+    rules: &RulesFiles<'_>,
     mode: &SyncMode,
     executor: &CommandExecutor,
 ) -> Result<SyncResult> {
+    let RulesFiles { repo_root, files } = *rules;
     let options_mode = mode;
     let mut outputs = Vec::new();
     let mut had_error = false;

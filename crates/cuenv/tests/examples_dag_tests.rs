@@ -39,6 +39,7 @@ fn get_examples_dir() -> TestResult<PathBuf> {
 fn load_example_manifest(example_path: &Path) -> TestResult<Project> {
     let directory = example_path.canonicalize()?;
     let executor = CommandExecutor::new("examples".to_string());
+    executor.disable_autosync();
     let module = executor.module(&directory)?;
     let relative = directory.strip_prefix(&module.root)?;
     let instance = module.get(relative).ok_or_else(|| {
@@ -94,10 +95,10 @@ fn get_example_expectations() -> Vec<ExampleExpectations> {
             has_env: false,
         },
         ExampleExpectations {
-            // hello, plus greet, count, wave, table and report discovered
-            // from scripts/ (common.lib.sh is excluded).
-            name: "task-scripts",
-            min_task_count: 6,
+            // hello and summary, plus greet, count, wave, table and report
+            // listed in scripts.gen.cue (common.lib.sh is excluded).
+            name: "scripts",
+            min_task_count: 7,
             has_hooks: false,
             has_env: false,
         },
@@ -525,16 +526,39 @@ fn test_task_basic_specific_tasks() -> TestResult {
 }
 
 #[test]
-fn test_task_scripts_example_discovers_scripts_for_tasks_and_ci() -> TestResult {
+fn test_scripts_example_runs_scripts_as_tasks_and_in_ci() -> TestResult {
     let examples_dir = get_examples_dir()?;
-    let manifest = load_named_example(&examples_dir, "task-scripts")?;
+    let manifest = load_named_example(&examples_dir, "scripts")?;
 
     let mut names: Vec<&str> = manifest.tasks.keys().map(String::as_str).collect();
     names.sort_unstable();
     assert_eq!(
         names,
-        ["count", "greet", "hello", "report", "table", "wave"],
+        [
+            "count", "greet", "hello", "report", "summary", "table", "wave"
+        ],
         "common.lib.sh is excluded and README.md is no script"
+    );
+
+    let dependencies = |task: &str| -> Result<Vec<String>, io::Error> {
+        Ok(manifest
+            .tasks
+            .get(task)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, format!("{task} should exist")))?
+            .depends_on()
+            .iter()
+            .map(|dependency| dependency.task_name().to_string())
+            .collect())
+    };
+    assert_eq!(
+        dependencies("count")?,
+        ["hello"],
+        "a script depends on a task"
+    );
+    assert_eq!(
+        dependencies("summary")?,
+        ["count"],
+        "a task depends on a script"
     );
 
     let pipeline: Vec<&str> = manifest
@@ -542,13 +566,13 @@ fn test_task_scripts_example_discovers_scripts_for_tasks_and_ci() -> TestResult 
         .as_ref()
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "ci should exist"))?
         .pipelines
-        .get("scripts")
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "scripts pipeline should exist"))?
+        .get("default")
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "default pipeline should exist"))?
         .tasks
         .iter()
         .map(|task| task.task_name())
         .collect();
-    assert_eq!(pipeline, ["greet", "hello"]);
+    assert_eq!(pipeline, ["greet", "summary"]);
 
     Ok(())
 }

@@ -5,7 +5,6 @@ mod imported_projects;
 mod module_evaluation;
 mod node_checks;
 mod task_refs;
-mod task_scripts;
 mod task_sources;
 mod unique_names;
 

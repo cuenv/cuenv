@@ -109,14 +109,14 @@ package schema
 // Matrix task configuration for pipeline
 #MatrixTask: {
 	type:  "matrix"  // Discriminator for CUE disjunction (distinguishes from #TaskNode)
-	task!: #TaskNode | #TaskScriptRef // Task reference (CUE ref for compile-time validation)
+	task!: #TaskNode | #ProjectScript // Task or script reference (CUE ref for compile-time validation)
 	matrix: [string]: [...string] // Matrix dimensions (e.g., arch: ["linux-x64", "darwin-arm64"])
 	artifacts?: [...#ArtifactDownload] // Artifacts to download before running
 	params?: [string]: string // Parameters to pass to the task
 }
 
 // Pipeline task reference - either a direct task reference or a matrix task
-#PipelineTask: #TaskNode | #MatrixTask | #TaskScriptRef
+#PipelineTask: #TaskNode | #MatrixTask | #ProjectScript
 
 // GitHub Action configuration for contributor tasks
 #GitHubActionConfig: {

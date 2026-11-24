@@ -37,6 +37,13 @@ impl CommandExecutor {
         }
     }
 
+    /// Leave generated files alone for the life of this executor, for
+    /// callers that only read projects, such as tests over checked-in
+    /// examples.
+    pub fn disable_autosync(&self) {
+        self.autosync.disable();
+    }
+
     /// Get the CUE package name used for evaluation.
     #[must_use]
     pub fn package(&self) -> &str {
@@ -66,23 +73,25 @@ impl CommandExecutor {
             cuenv_core::Error::io_with_path("canonicalize path", path.to_path_buf(), e)
         })?;
 
-        let module_root = {
-            let mut guard = self.local_modules.lock().map_err(|_| {
-                cuenv_core::Error::configuration("Failed to acquire local module cache lock")
-            })?;
-            if !guard.contains_key(&target_path) {
-                let module = match self.local_module_from_workspace_cache(&target_path) {
-                    Some(module) => module,
-                    None => self.evaluate_path_module(&target_path)?,
-                };
-                guard.insert(target_path.clone(), module);
+        let loaded = match self.load_local_module(&target_path) {
+            Ok(loaded) => loaded,
+            // A reference to a script added since the last sync fails the
+            // evaluation before cuenv can see the script: sync from the
+            // directories the project last declared, then try once more.
+            Err(error) if self.recover_scripts(&target_path) => {
+                tracing::debug!(%error, "evaluating again after updating scripts.gen.cue");
+                self.load_local_module(&target_path)?
             }
-            guard.get(&target_path).map(|module| module.root.clone())
+            Err(error) => return Err(error),
         };
         // Syncing reads the project through this method, so it runs with
         // the cache unlocked.
-        if let Some(module_root) = module_root {
-            self.autosync(&module_root, &target_path);
+        if let Some((module_root, value)) = loaded {
+            let evaluated = self.autosync(&module_root, &target_path, value.as_ref())?;
+            if evaluated == super::autosync::Evaluated::Stale {
+                self.forget_local_module(&target_path)?;
+                self.load_local_module(&target_path)?;
+            }
         }
 
         let guard = self.local_modules.lock().map_err(|_| {
@@ -92,6 +101,71 @@ impl CommandExecutor {
             guard,
             key: target_path,
         })
+    }
+
+    /// Evaluate `target_path` into the local cache unless it is there,
+    /// returning its module root and, for a project, its evaluated value.
+    fn load_local_module(
+        &self,
+        target_path: &Path,
+    ) -> Result<Option<(PathBuf, Option<serde_json::Value>)>> {
+        let mut guard = self.local_modules.lock().map_err(|_| {
+            cuenv_core::Error::configuration("Failed to acquire local module cache lock")
+        })?;
+        if !guard.contains_key(target_path) {
+            let module = match self.local_module_from_workspace_cache(target_path) {
+                Some(module) => module,
+                None => self.evaluate_path_module(target_path)?,
+            };
+            guard.insert(target_path.to_path_buf(), module);
+        }
+        Ok(guard.get(target_path).map(|module| {
+            let relative = super::relative_path_from_root(&module.root, target_path);
+            let value = module
+                .get(&relative)
+                .filter(|instance| instance.kind == InstanceKind::Project)
+                .map(|instance| script_fields(&instance.value));
+            (module.root.clone(), value)
+        }))
+    }
+
+    /// Drop every cached evaluation, after a file CUE reads was rewritten.
+    fn forget_local_module(&self, target_path: &Path) -> Result<()> {
+        self.local_modules
+            .lock()
+            .map_err(|_| {
+                cuenv_core::Error::configuration("Failed to acquire local module cache lock")
+            })?
+            .remove(target_path);
+        self.workspace_modules
+            .lock()
+            .map_err(|_| {
+                cuenv_core::Error::configuration("Failed to acquire workspace module cache lock")
+            })?
+            .clear();
+        Ok(())
+    }
+
+    /// Drop every cached evaluation, after a file CUE reads was rewritten
+    /// outside of evaluation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a module cache lock is poisoned.
+    pub fn forget_evaluations(&self) -> Result<()> {
+        self.local_modules
+            .lock()
+            .map_err(|_| {
+                cuenv_core::Error::configuration("Failed to acquire local module cache lock")
+            })?
+            .clear();
+        self.workspace_modules
+            .lock()
+            .map_err(|_| {
+                cuenv_core::Error::configuration("Failed to acquire workspace module cache lock")
+            })?
+            .clear();
+        Ok(())
     }
 
     /// Derive a path-local module evaluation from a cached workspace evaluation.
@@ -142,25 +216,29 @@ impl CommandExecutor {
                 target_path.display()
             ))
         })?;
-        let mut guard = self.workspace_modules.lock().map_err(|_| {
-            cuenv_core::Error::configuration("Failed to acquire workspace module cache lock")
-        })?;
-
-        if !guard.contains_key(&module_root) {
-            schema_compat::warn_for_module(&module_root)?;
-            let module = self.evaluate_workspace_module(&module_root)?;
-            module.require_unique_project_names()?;
-            guard.insert(module_root.clone(), module);
+        let projects = match self.load_workspace_module(&module_root) {
+            Ok(projects) => projects,
+            Err(error) if self.recover_workspace_scripts(&module_root) => {
+                tracing::debug!(%error, "evaluating again after updating scripts.gen.cue");
+                self.load_workspace_module(&module_root)?
+            }
+            Err(error) => return Err(error),
+        };
+        let mut stale = false;
+        for (project, value) in &projects {
+            stale |= self.autosync(&module_root, project, Some(value))?
+                == super::autosync::Evaluated::Stale;
         }
-        let projects: Vec<PathBuf> = guard.get(&module_root).map_or_else(Vec::new, |module| {
-            module
-                .projects()
-                .map(|instance| module_root.join(&instance.path))
-                .collect()
-        });
-        drop(guard);
-        for project in &projects {
-            self.autosync(&module_root, project);
+        if stale {
+            self.workspace_modules
+                .lock()
+                .map_err(|_| {
+                    cuenv_core::Error::configuration(
+                        "Failed to acquire workspace module cache lock",
+                    )
+                })?
+                .remove(&module_root);
+            self.load_workspace_module(&module_root)?;
         }
 
         let guard = self.workspace_modules.lock().map_err(|_| {
@@ -170,6 +248,43 @@ impl CommandExecutor {
             guard,
             key: module_root,
         })
+    }
+
+    /// Evaluate the whole module into the workspace cache unless it is
+    /// there, returning each project's directory and evaluated value.
+    fn load_workspace_module(
+        &self,
+        module_root: &Path,
+    ) -> Result<Vec<(PathBuf, serde_json::Value)>> {
+        let mut guard = self.workspace_modules.lock().map_err(|_| {
+            cuenv_core::Error::configuration("Failed to acquire workspace module cache lock")
+        })?;
+        if !guard.contains_key(module_root) {
+            schema_compat::warn_for_module(module_root)?;
+            let module = self.evaluate_workspace_module(module_root)?;
+            module.require_unique_project_names()?;
+            guard.insert(module_root.to_path_buf(), module);
+        }
+        Ok(guard.get(module_root).map_or_else(Vec::new, |module| {
+            module
+                .projects()
+                .map(|instance| {
+                    (
+                        module_root.join(&instance.path),
+                        script_fields(&instance.value),
+                    )
+                })
+                .collect()
+        }))
+    }
+
+    /// [`Self::recover_scripts`] for every project of the module that
+    /// declared `scriptDirs` before.
+    fn recover_workspace_scripts(&self, module_root: &Path) -> bool {
+        super::autosync::known_script_projects(module_root)
+            .keys()
+            .map(|project| self.recover_scripts(Path::new(project)))
+            .fold(false, |any, recovered| any | recovered)
     }
 
     /// Get the module root path if at least one module has been loaded.
@@ -238,4 +353,14 @@ impl CommandExecutor {
             .and_then(|modules| check(&modules))
             .unwrap_or(false)
     }
+}
+
+/// The part of a project's value that syncing its scripts reads, without
+/// copying the rest.
+fn script_fields(project: &serde_json::Value) -> serde_json::Value {
+    let mut fields = serde_json::Map::new();
+    if let Some(directories) = project.get("scriptDirs") {
+        fields.insert("scriptDirs".to_string(), directories.clone());
+    }
+    serde_json::Value::Object(fields)
 }

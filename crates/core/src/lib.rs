@@ -50,6 +50,7 @@ pub mod module;
 pub mod paths;
 pub mod rules;
 pub mod runtime;
+pub mod scripts;
 pub mod secrets;
 pub mod shell;
 pub mod tasks;

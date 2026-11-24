@@ -130,17 +130,6 @@ fn test_pipeline_task_simple() {
 }
 
 #[test]
-fn a_pipeline_names_a_discovered_script_task_by_name() {
-    let task: PipelineTask = serde_json::from_str(r#"{"taskScript": "release"}"#).unwrap();
-    assert!(matches!(task, PipelineTask::Simple(_)));
-    assert_eq!(task.task_name(), "release");
-    let json =
-        r#"{"type": "matrix", "task": {"taskScript": "build"}, "matrix": {"arch": ["x64"]}}"#;
-    let task: PipelineTask = serde_json::from_str(json).unwrap();
-    assert_eq!(task.task_name(), "build");
-}
-
-#[test]
 fn test_pipeline_task_matrix() {
     // Matrix task with CUE ref (object with _name) and type discriminator
     let json = r#"{"type": "matrix", "task": {"_name": "release.build"}, "matrix": {"arch": ["linux-x64", "darwin-arm64"]}}"#;

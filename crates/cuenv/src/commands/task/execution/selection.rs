@@ -191,6 +191,28 @@ fn apply_task_arguments(
             ))
         })?;
 
+    // A script receives its arguments after its path, checked against its
+    // `params` when it declares any, never interpolated.
+    if let TaskNode::Task(task) = &node
+        && task.script_file.is_some()
+    {
+        if input.task_args.is_empty() && task.params.is_none() {
+            return Ok(());
+        }
+        let mut forwarded = (**task).clone();
+        forwarded
+            .args
+            .extend(crate::commands::task::arguments::script_argv(
+                task.params.as_ref(),
+                input.task_args,
+            )?);
+        tasks_in_scope.tasks.insert(
+            display_task_name.to_string(),
+            TaskNode::Task(Box::new(forwarded)),
+        );
+        return Ok(());
+    }
+
     if input.task_args.is_empty() {
         return Ok(());
     }
@@ -200,22 +222,6 @@ fn apply_task_arguments(
             "Task arguments are not supported for task groups or lists".to_string(),
         ));
     };
-
-    // A discovered script parses its own arguments: they follow its path as
-    // given, one argument each, never interpolated.
-    if task.script_file.is_some() {
-        let mut forwarded = (*task).clone();
-        forwarded.args.extend(
-            crate::commands::task::arguments::script_arguments(input.task_args)
-                .iter()
-                .cloned(),
-        );
-        tasks_in_scope.tasks.insert(
-            display_task_name.to_string(),
-            TaskNode::Task(Box::new(forwarded)),
-        );
-        return Ok(());
-    }
 
     let resolved_args =
         crate::commands::task::arguments::resolve_task_args(task.params.as_ref(), input.task_args)?;

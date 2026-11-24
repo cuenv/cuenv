@@ -1,51 +1,64 @@
 //! Keep generated files in step with their sources on every command.
 //!
-//! The first time a command evaluates a project, cuenv compares codegen and
-//! `.rules.cue` outputs with fingerprints of what it last wrote
-//! (`.cuenv/autosync.json`). An unchanged project costs a few `stat` calls;
-//! only drift renders and writes, exactly as `cuenv sync codegen` and
-//! `cuenv sync rules -A` would. Nothing is written when `CI` is set or
-//! `CUENV_AUTOSYNC=0`, and never during `cuenv sync`, whose `--check` must see
-//! the files as they are.
+//! The first time a command evaluates a project, cuenv:
+//!
+//! - rewrites `scripts.gen.cue` when the files of its `scriptDirs` changed,
+//!   then evaluates the project again, so `scripts.<name>` always names the
+//!   scripts on disk;
+//! - resyncs codegen outputs and `.rules.cue` outputs whose sources changed
+//!   since it last wrote them, judged by fingerprints in
+//!   `.cuenv/autosync.json`, so an unchanged project costs a few `stat`
+//!   calls.
+//!
+//! When `CI` is set nothing is written, and a stale `scripts.gen.cue` is an
+//! error: generated files are committed, not made on a runner.
+//! `CUENV_AUTOSYNC=0` turns all of it off, and `cuenv sync`, whose `--check`
+//! must see the files as they are, never syncs on its own.
 
 mod store;
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use cuenv_core::Result;
 use cuenv_core::manifest::Project;
+use cuenv_core::scripts::{self, Drift};
+use serde_json::Value;
 
 use super::CommandExecutor;
 use super::sync::functions::{CodegenSyncOptions, CodegenSyncRequest, execute_sync_codegen};
 use store::{CodegenPrint, digest};
 pub use store::{FileStamp, RulesPrint, Store, stamps};
 
-/// Whether this process may write generated files on its own.
+/// What this process does about generated files on its own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AutoSyncMode {
+    /// Rewrite what drifted.
     Write,
+    /// Write nothing; a stale `scripts.gen.cue` fails the command.
+    Check,
+    /// Leave generated files alone.
     Off,
 }
 
 impl AutoSyncMode {
-    /// Off in CI, where generated files must be committed rather than made,
-    /// and when `CUENV_AUTOSYNC` is `0` or `false`.
+    /// `Check` in CI, `Off` when `CUENV_AUTOSYNC` is `0` or `false`, else
+    /// `Write`.
     pub fn from_environment() -> Self {
-        let set = |name: &str| {
-            std::env::var(name).is_ok_and(|value| {
-                let value = value.trim();
-                !value.is_empty() && value != "0" && !value.eq_ignore_ascii_case("false")
-            })
-        };
         let disabled = std::env::var("CUENV_AUTOSYNC").is_ok_and(|value| {
             let value = value.trim();
             value == "0" || value.eq_ignore_ascii_case("false")
         });
-        if disabled || set("CI") {
+        let ci = std::env::var("CI").is_ok_and(|value| {
+            let value = value.trim();
+            !value.is_empty() && value != "0" && !value.eq_ignore_ascii_case("false")
+        });
+        if disabled {
             Self::Off
+        } else if ci {
+            Self::Check
         } else {
             Self::Write
         }
@@ -63,7 +76,13 @@ pub struct AutoSync {
 impl Default for AutoSync {
     fn default() -> Self {
         Self {
-            mode: Mutex::new(AutoSyncMode::from_environment()),
+            // Unit tests evaluate fixtures, examples and this repository;
+            // none of them may be rewritten by it.
+            mode: Mutex::new(if cfg!(test) {
+                AutoSyncMode::Off
+            } else {
+                AutoSyncMode::from_environment()
+            }),
             synced: Mutex::new(HashSet::new()),
             rules_synced: Mutex::new(false),
         }
@@ -71,21 +90,20 @@ impl Default for AutoSync {
 }
 
 impl AutoSync {
+    /// Leave generated files alone for the rest of the process.
     pub fn disable(&self) {
         if let Ok(mut mode) = self.mode.lock() {
             *mode = AutoSyncMode::Off;
         }
     }
 
-    fn writes(&self) -> bool {
-        self.mode
-            .lock()
-            .is_ok_and(|mode| *mode == AutoSyncMode::Write)
+    fn mode(&self) -> AutoSyncMode {
+        self.mode.lock().map_or(AutoSyncMode::Off, |mode| *mode)
     }
 
-    /// True the first time `path` is claimed in this process.
+    /// True the first time `path` is claimed in this process, unless off.
     fn claim(&self, path: &Path) -> bool {
-        self.writes()
+        self.mode() != AutoSyncMode::Off
             && self
                 .synced
                 .lock()
@@ -93,7 +111,7 @@ impl AutoSync {
     }
 
     fn claim_rules(&self) -> bool {
-        self.writes()
+        self.mode() == AutoSyncMode::Write
             && self.rules_synced.lock().is_ok_and(|mut done| {
                 let first = !*done;
                 *done = true;
@@ -102,20 +120,98 @@ impl AutoSync {
     }
 }
 
+/// Whether syncing changed a file CUE evaluates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[must_use]
+pub enum Evaluated {
+    /// The evaluation still holds.
+    Current,
+    /// `scripts.gen.cue` was rewritten; the project must be evaluated again.
+    Stale,
+}
+
 impl CommandExecutor {
-    /// Sync the generated files of the project at `project_dir` (canonical)
-    /// and of the repository's `.rules.cue` files, once per process.
+    /// Sync the generated files of the project at `project_dir` (canonical),
+    /// once per process, from its evaluated `value`.
     ///
-    /// Must be called without holding a module lock: syncing reads the
-    /// project through [`CommandExecutor::module`]. Failures are reported and
-    /// never fail the command that triggered them.
-    pub(super) fn autosync(&self, module_root: &Path, project_dir: &Path) {
-        if self.autosync.claim(project_dir) {
+    /// Must be called without holding a module lock: codegen reads the
+    /// project through [`CommandExecutor::module`]. Only a stale
+    /// `scripts.gen.cue` in CI fails; any other failure is reported and the
+    /// command goes on.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error in CI when `scripts.gen.cue` does not list the
+    /// project's scripts.
+    pub(super) fn autosync(
+        &self,
+        module_root: &Path,
+        project_dir: &Path,
+        value: Option<&Value>,
+    ) -> Result<Evaluated> {
+        if !self.autosync.claim(project_dir) {
+            return Ok(Evaluated::Current);
+        }
+        let evaluated = match value {
+            Some(value) => self.sync_scripts(module_root, project_dir, value)?,
+            None => Evaluated::Current,
+        };
+        if self.autosync.mode() == AutoSyncMode::Write && evaluated == Evaluated::Current {
             report(self.autosync_codegen(module_root, project_dir));
         }
         if self.autosync.claim_rules() {
             report(super::sync::providers::rules::autosync(self, project_dir));
         }
+        Ok(evaluated)
+    }
+
+    /// Bring `scripts.gen.cue` in line with the project's `scriptDirs`.
+    fn sync_scripts(
+        &self,
+        module_root: &Path,
+        project_dir: &Path,
+        value: &Value,
+    ) -> Result<Evaluated> {
+        let directories = scripts::directories(value);
+        if self.autosync.mode() == AutoSyncMode::Write {
+            remember_script_dirs(module_root, project_dir, value.get("scriptDirs"));
+        }
+        let (drift, scan) = scripts::drift(project_dir, directories.as_deref());
+        for clash in &scan.clashes {
+            cuenv_events::emit_stderr!(format!("cuenv: {clash}"));
+        }
+        if drift == Drift::None {
+            return Ok(Evaluated::Current);
+        }
+        if self.autosync.mode() == AutoSyncMode::Check {
+            return Err(cuenv_core::Error::configuration(format!(
+                "{} does not list the scripts of {}; run `cuenv sync scripts` and commit it",
+                scripts::GENERATED_FILE,
+                project_dir.display()
+            )));
+        }
+        write_generated(project_dir, &self.package, written(&drift, &scan))?;
+        Ok(Evaluated::Stale)
+    }
+
+    /// After an evaluation failed: rewrite `scripts.gen.cue` from the
+    /// `scriptDirs` the project last evaluated with, so that a reference to
+    /// a script added since resolves. True when the file was rewritten.
+    pub(super) fn recover_scripts(&self, project_dir: &Path) -> bool {
+        if self.autosync.mode() != AutoSyncMode::Write {
+            return false;
+        }
+        let Some(module_root) = super::env_file::find_cue_module_root(project_dir) else {
+            return false;
+        };
+        let Some(declared) =
+            known_script_projects(&module_root).remove(&project_dir.display().to_string())
+        else {
+            return false;
+        };
+        let directories = scripts::directories(&serde_json::json!({ "scriptDirs": declared }));
+        let (drift, scan) = scripts::drift(project_dir, directories.as_deref());
+        drift == Drift::Stale && write_generated(project_dir, &self.package, Some(&scan)).is_ok()
     }
 
     fn autosync_codegen(&self, module_root: &Path, project_dir: &Path) -> Result<()> {
@@ -154,9 +250,7 @@ impl CommandExecutor {
             },
             self,
         ))??;
-        if output.lines().any(|line| !line.trim().is_empty()) {
-            tracing::debug!(%output, "codegen autosync");
-        }
+        tracing::debug!(%output, "codegen autosync");
         let written = CodegenPrint {
             config,
             outputs: stamps(outputs.iter().map(PathBuf::as_path)),
@@ -181,6 +275,101 @@ impl CommandExecutor {
         let relative = super::relative_path_from_root(module_root, project_dir);
         module.get(&relative)?.deserialize().ok()
     }
+}
+
+/// Write the generated scripts file of a project for `scan`, or remove it
+/// when there is no scan, as for a project that no longer declares
+/// `scriptDirs`.
+///
+/// # Errors
+///
+/// Returns an error when the file cannot be written or removed.
+pub fn write_generated(
+    project_dir: &Path,
+    package: &str,
+    scan: Option<&scripts::Scan>,
+) -> Result<()> {
+    let path = scripts::generated_path(project_dir);
+    match scan {
+        None => std::fs::remove_file(&path)
+            .map_err(|error| cuenv_core::Error::io_with_path("remove", path.clone(), error))?,
+        Some(scan) => {
+            let existing = std::fs::read_to_string(&path).ok();
+            let package = existing
+                .as_deref()
+                .and_then(scripts::package_of)
+                .unwrap_or(package);
+            let text = scripts::render(package, scan);
+            let dir = path.parent().unwrap_or(project_dir);
+            let written = (|| -> std::io::Result<()> {
+                let mut file = tempfile::NamedTempFile::new_in(dir)?;
+                std::io::Write::write_all(&mut file, text.as_bytes())?;
+                file.persist(&path).map_err(|error| error.error)?;
+                Ok(())
+            })();
+            written
+                .map_err(|error| cuenv_core::Error::io_with_path("write", path.clone(), error))?;
+        }
+    }
+    cuenv_events::emit_stderr!(format!("cuenv: updated {}", relative_or_full(&path)));
+    Ok(())
+}
+
+fn relative_or_full(path: &Path) -> String {
+    std::env::current_dir()
+        .ok()
+        .and_then(|cwd| path.strip_prefix(cwd).ok().map(Path::to_path_buf))
+        .unwrap_or_else(|| path.to_path_buf())
+        .display()
+        .to_string()
+}
+
+/// What [`write_generated`] takes for a drift: nothing when the file is to go.
+pub fn written<'scan>(drift: &Drift, scan: &'scan scripts::Scan) -> Option<&'scan scripts::Scan> {
+    (*drift != Drift::Orphaned).then_some(scan)
+}
+
+/// Keep the project's `scriptDirs` for [`CommandExecutor::recover_scripts`],
+/// writing the store only when they changed.
+fn remember_script_dirs(module_root: &Path, project_dir: &Path, declared: Option<&Value>) {
+    let key = project_dir.display().to_string();
+    let known = known_script_projects(module_root).remove(&key);
+    if known.as_ref() == declared {
+        return;
+    }
+    if let Some(mut store) = Store::open(module_root) {
+        match declared {
+            Some(declared) => store.prints.scripts.insert(key, declared.clone()),
+            None => store.prints.scripts.remove(&key),
+        };
+        store.save();
+    }
+}
+
+/// Outside CI, rewrite each stale `scripts.gen.cue` of the module around
+/// `start` from the `scriptDirs` its project last evaluated with. Costs a
+/// directory scan per project and no evaluation.
+pub fn refresh_known_scripts(start: &Path) {
+    if AutoSyncMode::from_environment() != AutoSyncMode::Write {
+        return;
+    }
+    let Some(module_root) = super::env_file::find_cue_module_root(start) else {
+        return;
+    };
+    for (project, declared) in known_script_projects(&module_root) {
+        let project_dir = PathBuf::from(project);
+        let directories = scripts::directories(&serde_json::json!({ "scriptDirs": declared }));
+        let (drift, scan) = scripts::drift(&project_dir, directories.as_deref());
+        if drift == Drift::Stale {
+            report(write_generated(&project_dir, "cuenv", Some(&scan)));
+        }
+    }
+}
+
+/// The `scriptDirs` of each project of a module that declared any, by
+/// project directory, as last evaluated.
+pub fn known_script_projects(module_root: &Path) -> BTreeMap<String, Value> {
+    Store::open_existing(module_root).map_or_else(BTreeMap::new, |store| store.prints.scripts)
 }
 
 /// Every file codegen of a project writes, `.gitignore` included.

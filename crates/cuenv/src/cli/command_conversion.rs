@@ -678,6 +678,25 @@ fn resolve_sync_command(input: SyncCommandInput) -> SyncResolution {
             ci_provider: None,
             update_tools: None,
         }),
+        Some(SyncCommands::Scripts {
+            path,
+            package,
+            dry_run,
+            check,
+            all,
+        }) => sync_provider_resolution(SyncProviderInput {
+            provider_name: "scripts",
+            path: effective_path(&base_path, path),
+            package: effective_package(&base_package, package),
+            flags: flags.combined(SyncFlags {
+                dry_run,
+                check,
+                all,
+            }),
+            show_diff: false,
+            ci_provider: None,
+            update_tools: None,
+        }),
         Some(SyncCommands::Infrastructure {
             path,
             dry_run,

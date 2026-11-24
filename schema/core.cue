@@ -47,9 +47,16 @@ package schema
 		_cuenvSelf:    taskName
 		_cuenvProject: name
 	}) | (#TaskSequence & [...({_cuenvProject: name, ...} | [...])])
-	// Directories whose script files become tasks, named after each file.
-	// Nothing is scanned unless a directory is listed here.
-	taskScripts?: [...#TaskScriptDirectory]
+	// Directories whose script files become `scripts`, named after each
+	// file. Nothing is scanned unless a directory is listed here.
+	scriptDirs?: [...#ScriptDirectory]
+	// Scripts found in `scriptDirs`, written by cuenv to `scripts.gen.cue`,
+	// with what the project adds to them by name. Each runs as a task of the
+	// same name.
+	scripts?: [string]~(scriptName,_): #ProjectScript & {
+		_cuenvSelf:    scriptName
+		_cuenvProject: name
+	}
 	// Services live in their own field but share the project DAG.
 	// Services may depend on tasks (build → run); tasks may depend on
 	// services (db ready → seed task). Cycles forbidden as with tasks.

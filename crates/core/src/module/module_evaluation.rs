@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use crate::Error;
 use crate::tasks::SourceLocation;
 
-use super::{deserialize, node_checks, task_refs, task_scripts, task_sources};
+use super::{deserialize, node_checks, task_refs, task_sources};
 
 /// The top-level field of a cuenv project that holds its task graph.
 ///
@@ -175,6 +175,17 @@ impl ModuleEvaluation {
                     InstanceKind::Base
                 };
 
+                // A project's scripts run as tasks of the same name, so every
+                // reader of the project, and the checks below, see them.
+                let mut script_problems = std::collections::BTreeMap::new();
+                if matches!(kind, InstanceKind::Project) {
+                    crate::scripts::into_tasks(
+                        &mut value,
+                        &slash_path(&relative_instance_path(&path)),
+                        &mut script_problems,
+                    );
+                }
+
                 // A node another project stamped is never named by bare
                 // reference metadata: inspect the stamps before any name is
                 // assigned, while whole sequences still carry theirs.
@@ -183,18 +194,8 @@ impl ModuleEvaluation {
                     at: metadata.sources.as_ref().or(metadata.declarations.as_ref()),
                 };
                 let mut diagnostics = node_checks::check_identities(&mut value, declarations);
-
-                // Tasks a project discovers from its script directories join
-                // its declared tasks, so every reader of the project sees them.
-                if matches!(kind, InstanceKind::Project) {
-                    task_scripts::discover(
-                        &mut value,
-                        task_scripts::ScriptPlace {
-                            module_root: &root,
-                            instance: &relative_instance_path(&path),
-                        },
-                        &mut diagnostics.tasks,
-                    );
+                for (task, problems) in script_problems {
+                    diagnostics.tasks.entry(task).or_default().extend(problems);
                 }
 
                 // Enrich task references with _name using CUE reference metadata.
@@ -472,6 +473,13 @@ impl std::fmt::Display for InstanceKind {
             Self::Project => write!(f, "Project"),
         }
     }
+}
+
+fn slash_path(path: &Path) -> String {
+    path.components()
+        .map(|component| component.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 #[cfg(test)]
