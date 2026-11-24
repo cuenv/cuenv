@@ -491,7 +491,8 @@ fn emit_release_workflow(
     use cuenv_github::workflow::ReleaseWorkflowBuilder;
 
     let ir = ctx.to_ir(pipeline_name);
-    let workflow = ReleaseWorkflowBuilder::new(ctx.github_emitter()).build(&ir);
+    let emitter = ctx.github_emitter();
+    let workflow = ReleaseWorkflowBuilder::new(emitter.clone()).build(&ir);
 
     let workflow_name = match &ir.pipeline.project_name {
         Some(project) => format!("{project}-{}", ir.pipeline.name),
@@ -499,9 +500,11 @@ fn emit_release_workflow(
     };
     let filename = format!("{}.yml", sanitize_workflow_name(&workflow_name));
 
-    let yaml = workflow.to_yaml().map_err(|e| {
-        cuenv_core::Error::configuration(format!("Failed to serialize workflow: {e}"))
-    })?;
+    let yaml = emitter
+        .serialize_workflow_with_pins(&workflow)
+        .map_err(|e| {
+            cuenv_core::Error::configuration(format!("Failed to serialize workflow: {e}"))
+        })?;
 
     Ok(vec![(filename, yaml)])
 }
@@ -710,6 +713,8 @@ fn emit_standard_workflow(
     emitter
         .validate_workflow_permissions(&ir)
         .map_err(|e| cuenv_core::Error::configuration(e.to_string()))?;
+    cuenv_github::workflow::GitHubActionsEmitter::validate_custom_steps(&ir)
+        .map_err(|e| cuenv_core::Error::configuration(e.to_string()))?;
     let cuenv_setup = pipeline_cuenv_setup(ctx, &emitter, &ir);
 
     // Build jobs using build_simple_job (which supports project_path for working-directory)
@@ -754,9 +759,11 @@ fn emit_standard_workflow(
         env: IndexMap::new(),
         jobs,
     };
-    let yaml = workflow.to_yaml().map_err(|e| {
-        cuenv_core::Error::configuration(format!("Failed to serialize workflow: {e}"))
-    })?;
+    let yaml = emitter
+        .serialize_workflow_with_pins(&workflow)
+        .map_err(|e| {
+            cuenv_core::Error::configuration(format!("Failed to serialize workflow: {e}"))
+        })?;
 
     Ok(vec![(filename, yaml)])
 }

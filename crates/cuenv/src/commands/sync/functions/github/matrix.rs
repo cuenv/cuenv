@@ -49,6 +49,8 @@ pub(super) fn emit_matrix_workflow(
     emitter
         .validate_workflow_permissions(&ir)
         .map_err(|e| cuenv_core::Error::configuration(e.to_string()))?;
+    cuenv_github::workflow::GitHubActionsEmitter::validate_custom_steps(&ir)
+        .map_err(|e| cuenv_core::Error::configuration(e.to_string()))?;
     let cuenv_setup = implementation::pipeline_cuenv_setup(ctx, &emitter, &ir);
 
     let explicit_task_names: HashSet<String> = ctx
@@ -95,9 +97,11 @@ pub(super) fn emit_matrix_workflow(
         env: indexmap::IndexMap::new(),
         jobs,
     };
-    let yaml = workflow.to_yaml().map_err(|e| {
-        cuenv_core::Error::configuration(format!("Failed to serialize workflow: {e}"))
-    })?;
+    let yaml = emitter
+        .serialize_workflow_with_pins(&workflow)
+        .map_err(|e| {
+            cuenv_core::Error::configuration(format!("Failed to serialize workflow: {e}"))
+        })?;
 
     Ok(vec![(filename, yaml)])
 }

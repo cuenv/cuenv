@@ -77,6 +77,16 @@ pub(super) enum RunnerOverridePolicy {
     PreserveExisting,
 }
 
+/// Policy for enforcing commit-SHA pins on emitted `uses:` steps.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ActionPinPolicy {
+    /// Allow tags, branches, or commit SHAs (default).
+    #[default]
+    Flexible,
+    /// Fail workflow emission if any non-local `uses:` step is not pinned to a 40-char hex SHA.
+    RequireSha,
+}
+
 /// A job that runs after a command workflow's main job.
 #[derive(Debug, Clone)]
 pub struct FollowUpJob<'a> {
@@ -136,6 +146,12 @@ pub struct GitHubActionsEmitter {
     pub runner_labels: Option<Vec<String>>,
     /// Default job timeout in minutes (`provider.github.timeoutMinutes`)
     pub timeout_minutes: Option<u32>,
+    /// Configurable checkout step (provider/pipeline level; task checkout merges on top)
+    pub checkout: Option<cuenv_core::ci::GitHubCheckoutConfig>,
+    /// Action pin overrides keyed by `<owner>/<repo>`
+    pub action_pins: std::collections::BTreeMap<String, cuenv_core::ci::GitHubActionPin>,
+    /// Whether to require every emitted `uses:` step to be pinned to a full 40-char SHA
+    pub action_pin_policy: ActionPinPolicy,
     /// Optional project remote cache configuration for trust-boundary workflow emission
     pub remote_cache: Option<cuenv_core::manifest::RemoteCache>,
 }
@@ -155,6 +171,9 @@ impl Default for GitHubActionsEmitter {
             run_name: None,
             runner_labels: None,
             timeout_minutes: None,
+            checkout: None,
+            action_pins: std::collections::BTreeMap::new(),
+            action_pin_policy: ActionPinPolicy::Flexible,
             remote_cache: None,
         }
     }
@@ -371,6 +390,17 @@ impl GitHubActionsEmitter {
 
         // Apply default job timeout
         emitter.timeout_minutes = config.timeout_minutes;
+
+        // Apply checkout configuration
+        emitter.checkout.clone_from(&config.checkout);
+
+        // Apply action pin overrides and strict pinning policy
+        if let Some(pins) = &config.pins {
+            emitter.action_pins.clone_from(pins);
+        }
+        if config.require_pinned_actions == Some(true) {
+            emitter.action_pin_policy = ActionPinPolicy::RequireSha;
+        }
 
         // Apply Cachix configuration
         if let Some(cachix) = &config.cachix {
@@ -843,11 +873,7 @@ impl GitHubActionsEmitter {
         let mut steps = Vec::new();
 
         // Checkout step
-        steps.push(
-            Step::uses("actions/checkout@v7")
-                .with_name("Checkout")
-                .with_input("fetch-depth", serde_yaml::Value::Number(2.into())),
-        );
+        steps.push(self.build_checkout_step(None, Some(2)));
 
         // Bootstrap and setup phase steps
         let (phase_steps, secret_env) =
@@ -975,7 +1001,7 @@ impl GitHubActionsEmitter {
             jobs,
         };
 
-        Self::serialize_workflow(&workflow)
+        self.serialize_workflow_with_pins(&workflow)
     }
 
     /// Emit multiple workflow files for projects with multiple pipelines.
@@ -998,7 +1024,7 @@ impl GitHubActionsEmitter {
         // Generate a single workflow with all tasks as jobs
         let workflow = self.build_workflow(ir, &workflow_name)?;
         let filename = format!("{}.yml", sanitize_filename(&workflow_name));
-        let yaml = Self::serialize_workflow(&workflow)?;
+        let yaml = self.serialize_workflow_with_pins(&workflow)?;
         workflows.insert(filename, yaml);
 
         Ok(workflows)
@@ -1019,6 +1045,7 @@ impl GitHubActionsEmitter {
         workflow_name: &str,
     ) -> EmitterResult<Workflow> {
         self.validate_workflow_permissions(ir)?;
+        Self::validate_custom_steps(ir)?;
         let workflow_filename = format!("{}.yml", sanitize_filename(workflow_name));
         let triggers = self.build_triggers(ir, &workflow_filename);
         let jobs = self.build_jobs(ir);
@@ -1355,10 +1382,173 @@ impl GitHubActionsEmitter {
         jobs
     }
 
-    /// Serialize a workflow to YAML with a generation header
-    fn serialize_workflow(workflow: &Workflow) -> EmitterResult<String> {
-        let yaml = serde_yaml::to_string(workflow)
+    /// Build the checkout step for a job, merging provider/pipeline checkout config
+    /// with any per-task checkout override.
+    #[must_use]
+    pub(super) fn build_checkout_step(
+        &self,
+        task: Option<&cuenv_ci::ir::Task>,
+        default_fetch_depth: Option<u32>,
+    ) -> Step {
+        let task_checkout = task
+            .and_then(|t| t.github_job.as_ref())
+            .and_then(|j| j.checkout.as_ref());
+        let merged = match (&self.checkout, task_checkout) {
+            (Some(base), Some(over)) => Some(base.merge(over)),
+            (None, Some(over)) => Some(over.clone()),
+            (Some(base), None) => Some(base.clone()),
+            (None, None) => None,
+        };
+
+        let Some(cfg) = merged else {
+            let mut step = Step::uses("actions/checkout@v7").with_name("Checkout");
+            if let Some(depth) = default_fetch_depth {
+                step = step.with_input("fetch-depth", serde_yaml::Value::Number(depth.into()));
+            }
+            return step;
+        };
+
+        let uses = match cfg.uses.as_deref() {
+            Some(action) if action.contains('@') => action.to_string(),
+            Some("actions/checkout") | None => "actions/checkout@v7".to_string(),
+            Some(action) => action.to_string(),
+        };
+
+        let mut step = Step::uses(uses).with_name("Checkout");
+        if let Some(persist) = cfg.persist_credentials {
+            step = step.with_input("persist-credentials", serde_yaml::Value::Bool(persist));
+        }
+        if let Some(depth) = cfg.fetch_depth.or(default_fetch_depth) {
+            step = step.with_input("fetch-depth", serde_yaml::Value::Number(depth.into()));
+        }
+        if let Some(git_ref) = &cfg.git_ref {
+            step = step.with_input("ref", serde_yaml::Value::String(git_ref.clone()));
+        }
+        if let Some(submodules) = &cfg.submodules {
+            let val = match submodules {
+                cuenv_core::ci::CheckoutSubmodules::Bool(b) => serde_yaml::Value::Bool(*b),
+                cuenv_core::ci::CheckoutSubmodules::Mode(s) => serde_yaml::Value::String(s.clone()),
+            };
+            step = step.with_input("submodules", val);
+        }
+        step
+    }
+
+    /// Convert a custom `TaskGitHubStep` into a workflow `Step`.
+    pub(super) fn render_custom_step(custom: &cuenv_core::ci::TaskGitHubStep) -> Step {
+        let mut step = Step {
+            name: custom.name.clone(),
+            id: custom.id.clone(),
+            if_condition: custom.if_condition.clone(),
+            uses: custom.uses.clone(),
+            run: custom.run.clone(),
+            working_directory: custom.working_directory.clone(),
+            shell: custom.shell.clone(),
+            ..Default::default()
+        };
+        for (k, v) in &custom.with_inputs {
+            if let Ok(yaml_val) = serde_yaml::to_value(v) {
+                step.with_inputs.insert(k.clone(), yaml_val);
+            }
+        }
+        for (k, v) in &custom.env {
+            step.env.insert(k.clone(), v.clone());
+        }
+        step
+    }
+
+    /// Validate that every custom step in `ir` sets exactly one of `uses` or `run`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EmitterError::InvalidIR`] if a custom step sets neither or both.
+    pub fn validate_custom_steps(ir: &IntermediateRepresentation) -> EmitterResult<()> {
+        for task in &ir.tasks {
+            let Some(steps) = task.github_job.as_ref().and_then(|j| j.steps.as_ref()) else {
+                continue;
+            };
+            for (phase, list) in [("before", &steps.before), ("after", &steps.after)] {
+                for (idx, step) in list.iter().enumerate() {
+                    match (&step.uses, &step.run) {
+                        (Some(_), Some(_)) => {
+                            return Err(EmitterError::InvalidIR(format!(
+                                "task '{}' custom step {phase}[{idx}] cannot set both `uses` and `run`",
+                                task.id
+                            )));
+                        }
+                        (None, None) => {
+                            return Err(EmitterError::InvalidIR(format!(
+                                "task '{}' custom step {phase}[{idx}] must set either `uses` or `run`",
+                                task.id
+                            )));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Serialize a workflow to YAML, applying configured action pins, enforcing
+    /// `requirePinnedActions`, and preserving `# <tag>` trailing comments.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EmitterError::InvalidIR`] if `requirePinnedActions` is enabled
+    /// and any non-local `uses:` step is not pinned to a 40-character hex SHA,
+    /// or [`EmitterError::Serialization`] if YAML serialization fails.
+    pub fn serialize_workflow_with_pins(&self, workflow: &Workflow) -> EmitterResult<String> {
+        let mut pinned = workflow.clone();
+        let mut tag_comments: Vec<(String, String)> = Vec::new();
+
+        for job in pinned.jobs.values_mut() {
+            for step in &mut job.steps {
+                let Some(uses) = step.uses.as_mut() else {
+                    continue;
+                };
+                if uses.starts_with("./") || uses.starts_with("docker://") {
+                    continue;
+                }
+                let action_name = uses.split('@').next().unwrap_or(uses.as_str()).to_string();
+                if let Some(pin) = self.action_pins.get(&action_name) {
+                    let rewritten = format!("{action_name}@{}", pin.git_ref);
+                    if let Some(tag) = &pin.tag {
+                        tag_comments.push((rewritten.clone(), tag.clone()));
+                    }
+                    *uses = rewritten;
+                }
+                if self.action_pin_policy == ActionPinPolicy::RequireSha {
+                    let is_sha = uses.split_once('@').is_some_and(|(_, git_ref)| {
+                        git_ref.len() == 40 && git_ref.bytes().all(|b| b.is_ascii_hexdigit())
+                    });
+                    if !is_sha {
+                        return Err(EmitterError::InvalidIR(format!(
+                            "action '{uses}' is not pinned to a full 40-character commit SHA (requirePinnedActions is enabled)"
+                        )));
+                    }
+                }
+            }
+        }
+
+        let mut yaml = serde_yaml::to_string(&pinned)
             .map_err(|e| EmitterError::Serialization(e.to_string()))?;
+
+        if !tag_comments.is_empty() {
+            let mut out = String::with_capacity(yaml.len() + tag_comments.len() * 8);
+            for line in yaml.lines() {
+                out.push_str(line);
+                if let Some((_, rhs)) = line.split_once("uses: ") {
+                    let trimmed = rhs.trim().trim_matches('\'').trim_matches('"');
+                    if let Some((_, tag)) = tag_comments.iter().find(|(u, _)| u == trimmed) {
+                        out.push_str(" # ");
+                        out.push_str(tag);
+                    }
+                }
+                out.push('\n');
+            }
+            yaml = out;
+        }
 
         // Add generation header
         let header =
@@ -1410,7 +1600,7 @@ impl Emitter for GitHubActionsEmitter {
     fn emit_expanded(&self, ir: &IntermediateRepresentation) -> EmitterResult<String> {
         let workflow_name = Self::build_workflow_name(ir);
         let workflow = self.build_workflow(ir, &workflow_name)?;
-        Self::serialize_workflow(&workflow)
+        self.serialize_workflow_with_pins(&workflow)
     }
 
     fn format_name(&self) -> &'static str {

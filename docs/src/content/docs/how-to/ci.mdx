@@ -673,6 +673,39 @@ groups with `cancel-in-progress: false`. For job-level `if` conditions, GitHub
 applies an implicit `success()` unless the expression calls a status function
 such as `always()`, `failure()`, or `!cancelled()`.
 
+### Action pins, checkout, and custom steps
+
+Configure commit-SHA action pins (with optional `# <tag>` comments), strict SHA
+enforcement, checkout options, and per-task `steps.before` / `steps.after`:
+
+```cue
+ci: provider: github: {
+	requirePinnedActions: true
+	pins: {
+		"actions/checkout":        {ref: "3d3c42e5aac5ba805825da76410c181273ba90b1", tag: "v7"}
+		"actions/upload-artifact": {ref: "cf430e030ddbb5b0abf93d22962f4752f3646cd9", tag: "v7"}
+	}
+	checkout: {
+		persistCredentials: false
+		fetchDepth:         0
+	}
+}
+
+tasks: "web.build": ci: github: {
+	checkout: ref: "${{ github.event.workflow_run.head_sha }}"
+	steps: after: [{
+		name: "Upload tested build"
+		if:   "always()"
+		uses: "actions/upload-artifact@v7"
+		with: {name: "web-dist", path: "apps/web/dist"}
+	}]
+}
+```
+
+`checkout` merges provider → pipeline → task settings in order. Each custom step
+must set exactly one of `uses` or `run`, and `pins` / `requirePinnedActions`
+apply to every emitted `uses:` step.
+
 ## Secrets in CI
 
 Use task-local secret refs when cuenv should resolve the value at runtime:

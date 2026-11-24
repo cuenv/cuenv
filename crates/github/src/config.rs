@@ -21,6 +21,12 @@ pub struct GitHubConfig {
     pub runners: Option<RunnerMapping>,
     /// Default job timeout in minutes (task-level timeoutMinutes wins)
     pub timeout_minutes: Option<u32>,
+    /// Configurable checkout step (provider, pipeline, task merged in that order)
+    pub checkout: Option<cuenv_core::ci::GitHubCheckoutConfig>,
+    /// Action pin overrides keyed by `<owner>/<repo>`
+    pub pins: Option<std::collections::BTreeMap<String, cuenv_core::ci::GitHubActionPin>>,
+    /// Fail sync if any emitted `uses:` step is not pinned to a full 40-char SHA
+    pub require_pinned_actions: Option<bool>,
     /// Cachix configuration for Nix caching
     pub cachix: Option<CachixConfig>,
     /// Hestia configuration for GitHub Actions-backed Nix caching
@@ -116,21 +122,44 @@ impl GitHubConfigExt for CI {
             .and_then(|v| serde_json::from_value::<GitHubConfig>(v.clone()).ok());
 
         match pipeline_config {
-            Some(pipeline) => GitHubConfig {
-                run_name: pipeline.run_name.clone().or(global.run_name),
-                runner: pipeline.runner.clone().or(global.runner),
-                runners: pipeline.runners.clone().or(global.runners),
-                timeout_minutes: pipeline.timeout_minutes.or(global.timeout_minutes),
-                cachix: pipeline.cachix.clone().or(global.cachix),
-                hestia: pipeline.hestia.clone().or(global.hestia),
-                namespace_cache: pipeline.namespace_cache.clone().or(global.namespace_cache),
-                artifacts: pipeline.artifacts.clone().or(global.artifacts),
-                trusted_publishing: pipeline
-                    .trusted_publishing
-                    .clone()
-                    .or(global.trusted_publishing),
-                permissions: pipeline.permissions.clone().or(global.permissions),
-            },
+            Some(pipeline) => {
+                let checkout = match (&global.checkout, &pipeline.checkout) {
+                    (Some(g), Some(p)) => Some(g.merge(p)),
+                    (None, Some(p)) => Some(p.clone()),
+                    (Some(g), None) => Some(g.clone()),
+                    (None, None) => None,
+                };
+                let pins = match (&global.pins, &pipeline.pins) {
+                    (Some(g), Some(p)) => {
+                        let mut merged = g.clone();
+                        merged.extend(p.clone());
+                        Some(merged)
+                    }
+                    (None, Some(p)) => Some(p.clone()),
+                    (Some(g), None) => Some(g.clone()),
+                    (None, None) => None,
+                };
+                GitHubConfig {
+                    run_name: pipeline.run_name.clone().or(global.run_name),
+                    runner: pipeline.runner.clone().or(global.runner),
+                    runners: pipeline.runners.clone().or(global.runners),
+                    timeout_minutes: pipeline.timeout_minutes.or(global.timeout_minutes),
+                    checkout,
+                    pins,
+                    require_pinned_actions: pipeline
+                        .require_pinned_actions
+                        .or(global.require_pinned_actions),
+                    cachix: pipeline.cachix.clone().or(global.cachix),
+                    hestia: pipeline.hestia.clone().or(global.hestia),
+                    namespace_cache: pipeline.namespace_cache.clone().or(global.namespace_cache),
+                    artifacts: pipeline.artifacts.clone().or(global.artifacts),
+                    trusted_publishing: pipeline
+                        .trusted_publishing
+                        .clone()
+                        .or(global.trusted_publishing),
+                    permissions: pipeline.permissions.clone().or(global.permissions),
+                }
+            }
             None => global,
         }
     }
