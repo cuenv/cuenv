@@ -27,6 +27,16 @@ impl CodegenSyncOptions {
     fn should_check(self) -> bool {
         self.check || self.diff
     }
+
+    /// How formatters treat generated files: `--check` and `--diff` only
+    /// inspect them, so neither may rewrite a file in place.
+    fn format_mode(self) -> FormatMode {
+        if self.should_check() {
+            FormatMode::Check
+        } else {
+            FormatMode::Fix
+        }
+    }
 }
 
 /// Request for syncing codegen for a single path.
@@ -231,11 +241,7 @@ async fn format_codegen_files(
         .await?
     };
 
-    let mode = if options.check {
-        FormatMode::Check
-    } else {
-        FormatMode::Fix
-    };
+    let mode = options.format_mode();
     let file_refs: Vec<&Path> = files.iter().map(PathBuf::as_path).collect();
     formatters::format_generated_files(
         &file_refs,
@@ -653,6 +659,26 @@ mod tests {
                 .collect::<HashMap<_, _>>(),
             context: serde_json::Value::Null,
         }
+    }
+
+    #[test]
+    fn diff_formats_in_check_mode_without_rewriting() {
+        let options = CodegenSyncOptions {
+            dry_run: DryRun::No,
+            check: false,
+            diff: true,
+        };
+        assert_eq!(options.format_mode(), FormatMode::Check);
+    }
+
+    #[test]
+    fn check_formats_in_check_mode() {
+        assert_eq!(options(&SyncMode::Check).format_mode(), FormatMode::Check);
+    }
+
+    #[test]
+    fn write_formats_in_fix_mode() {
+        assert_eq!(options(&SyncMode::Write).format_mode(), FormatMode::Fix);
     }
 
     #[test]

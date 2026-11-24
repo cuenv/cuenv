@@ -309,7 +309,12 @@ fn run_formatter_process(
 
     let mut cmd = Command::new(&resolved);
     cmd.args(&invocation.args)
-        .args(invocation.files)
+        .args(
+            invocation
+                .files
+                .iter()
+                .map(|file| formatter_path(file, context.project_root)),
+        )
         .envs(environment.iter())
         .current_dir(context.project_root);
 
@@ -322,6 +327,20 @@ fn run_formatter_process(
             invocation.program
         ))
     })
+}
+
+/// The path a formatter running in `project_root` receives for `file`.
+///
+/// Formatters run with `project_root` as their working directory, so a file
+/// under the project root is passed relative to it. Passing it unchanged
+/// breaks when the project root itself is relative (`--path examples/app`):
+/// the formatter would resolve `examples/app/main.go` against
+/// `examples/app` and find nothing.
+fn formatter_path<'path>(file: &'path Path, project_root: &Path) -> &'path Path {
+    match file.strip_prefix(project_root) {
+        Ok(relative) if !relative.as_os_str().is_empty() => relative,
+        _ => file,
+    }
 }
 
 /// Turn a non-zero formatter exit into an error.
@@ -591,6 +610,30 @@ pub(crate) mod test_support {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn formatter_path_is_relative_to_a_relative_project_root() {
+        assert_eq!(
+            formatter_path(Path::new("examples/app/main.go"), Path::new("examples/app")),
+            Path::new("main.go")
+        );
+    }
+
+    #[test]
+    fn formatter_path_is_relative_to_an_absolute_project_root() {
+        assert_eq!(
+            formatter_path(Path::new("/repo/app/src/lib.rs"), Path::new("/repo/app")),
+            Path::new("src/lib.rs")
+        );
+    }
+
+    #[test]
+    fn formatter_path_keeps_files_outside_the_project_root() {
+        assert_eq!(
+            formatter_path(Path::new("/elsewhere/lib.rs"), Path::new("/repo/app")),
+            Path::new("/elsewhere/lib.rs")
+        );
+    }
 
     // ============================================================================
     // Pattern Matching Tests
