@@ -158,7 +158,23 @@ tasks: check: {command: "sh", args: ["-c", "test \"$OBSERVED_EVENT\" = merge_gro
 }
 
 #[test]
-fn all_rejects_missing_projects_empty_pipelines_and_inline_tasks() -> TestResult {
+fn all_runs_an_inline_pipeline_task() -> TestResult {
+    let fixture = Fixture::new(
+        r#"package cuenv
+name: "fixture"
+ci: pipelines: verify: tasks: [{command: "sh", args: ["-c", "printf inline > inline-ran"], description: "announce"}]
+"#,
+    )?;
+    assert_success(&fixture.run(&["ci", "--pipeline", "verify", "--all"])?);
+    assert_eq!(
+        fs::read_to_string(fixture.directory.path().join("inline-ran"))?,
+        "inline"
+    );
+    Ok(())
+}
+
+#[test]
+fn all_rejects_missing_projects_empty_pipelines_and_clashing_inline_tasks() -> TestResult {
     let fixture =
         Fixture::new("package cuenv\nname: \"fixture\"\nci: pipelines: verify: tasks: []\n")?;
     let root = fixture.directory.path();
@@ -180,7 +196,7 @@ tasks: safe: {command: "true"}
     )?;
     let output = fixture.run(&["ci", "--pipeline", "verify", "--all"])?;
     assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("named task references"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("Inline pipeline task"));
     fs::write(root.join("env.cue"), "package cuenv\n")?;
     assert!(
         !fixture

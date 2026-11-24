@@ -160,6 +160,12 @@ fn get_example_expectations() -> Vec<ExampleExpectations> {
             has_env: false,
         },
         ExampleExpectations {
+            name: "ci-inline-task",
+            min_task_count: 1, // build; the pipeline's inline task is not a project task
+            has_hooks: false,
+            has_env: false,
+        },
+        ExampleExpectations {
             name: "test-fail",
             min_task_count: 0, // No tasks, just a failing hook
             has_hooks: true,

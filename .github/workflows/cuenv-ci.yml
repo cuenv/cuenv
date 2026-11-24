@@ -141,7 +141,7 @@ jobs:
     - name: Prepare Namespace Nix Cache
       run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi\nif [ \"$(uname -s)\" = Linux ] && [ ! -e /run/systemd/system ] && [ -d /nix ] && [ ! -w /nix ]; then\n\tsudo chown -R \"$(id -u):$(id -g)\" /nix\nfi"
     - name: Install Nix
-      uses: cachix/install-nix-action@v32
+      uses: cachix/install-nix-action@v31
       with:
         extra_nix_config: accept-flake-config = true
         install_url: https://releases.nixos.org/nix/nix-2.31.2/install
@@ -179,7 +179,7 @@ jobs:
     - name: Prepare Namespace Nix Cache
       run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi\nif [ \"$(uname -s)\" = Linux ] && [ ! -e /run/systemd/system ] && [ -d /nix ] && [ ! -w /nix ]; then\n\tsudo chown -R \"$(id -u):$(id -g)\" /nix\nfi"
     - name: Install Nix
-      uses: cachix/install-nix-action@v32
+      uses: cachix/install-nix-action@v31
       with:
         extra_nix_config: accept-flake-config = true
         install_url: https://releases.nixos.org/nix/nix-2.31.2/install
@@ -217,7 +217,7 @@ jobs:
     - name: Prepare Namespace Nix Cache
       run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi\nif [ \"$(uname -s)\" = Linux ] && [ ! -e /run/systemd/system ] && [ -d /nix ] && [ ! -w /nix ]; then\n\tsudo chown -R \"$(id -u):$(id -g)\" /nix\nfi"
     - name: Install Nix
-      uses: cachix/install-nix-action@v32
+      uses: cachix/install-nix-action@v31
       with:
         extra_nix_config: accept-flake-config = true
         install_url: https://releases.nixos.org/nix/nix-2.31.2/install
@@ -255,7 +255,7 @@ jobs:
     - name: Prepare Namespace Nix Cache
       run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi\nif [ \"$(uname -s)\" = Linux ] && [ ! -e /run/systemd/system ] && [ -d /nix ] && [ ! -w /nix ]; then\n\tsudo chown -R \"$(id -u):$(id -g)\" /nix\nfi"
     - name: Install Nix
-      uses: cachix/install-nix-action@v32
+      uses: cachix/install-nix-action@v31
       with:
         extra_nix_config: accept-flake-config = true
         install_url: https://releases.nixos.org/nix/nix-2.31.2/install
@@ -293,7 +293,7 @@ jobs:
     - name: Prepare Namespace Nix Cache
       run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi\nif [ \"$(uname -s)\" = Linux ] && [ ! -e /run/systemd/system ] && [ -d /nix ] && [ ! -w /nix ]; then\n\tsudo chown -R \"$(id -u):$(id -g)\" /nix\nfi"
     - name: Install Nix
-      uses: cachix/install-nix-action@v32
+      uses: cachix/install-nix-action@v31
       with:
         extra_nix_config: accept-flake-config = true
         install_url: https://releases.nixos.org/nix/nix-2.31.2/install
@@ -331,7 +331,7 @@ jobs:
     - name: Prepare Namespace Nix Cache
       run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi\nif [ \"$(uname -s)\" = Linux ] && [ ! -e /run/systemd/system ] && [ -d /nix ] && [ ! -w /nix ]; then\n\tsudo chown -R \"$(id -u):$(id -g)\" /nix\nfi"
     - name: Install Nix
-      uses: cachix/install-nix-action@v32
+      uses: cachix/install-nix-action@v31
       with:
         extra_nix_config: accept-flake-config = true
         install_url: https://releases.nixos.org/nix/nix-2.31.2/install
@@ -369,7 +369,7 @@ jobs:
     - name: Prepare Namespace Nix Cache
       run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi\nif [ \"$(uname -s)\" = Linux ] && [ ! -e /run/systemd/system ] && [ -d /nix ] && [ ! -w /nix ]; then\n\tsudo chown -R \"$(id -u):$(id -g)\" /nix\nfi"
     - name: Install Nix
-      uses: cachix/install-nix-action@v32
+      uses: cachix/install-nix-action@v31
       with:
         extra_nix_config: accept-flake-config = true
         install_url: https://releases.nixos.org/nix/nix-2.31.2/install
@@ -407,7 +407,7 @@ jobs:
     - name: Prepare Namespace Nix Cache
       run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi\nif [ \"$(uname -s)\" = Linux ] && [ ! -e /run/systemd/system ] && [ -d /nix ] && [ ! -w /nix ]; then\n\tsudo chown -R \"$(id -u):$(id -g)\" /nix\nfi"
     - name: Install Nix
-      uses: cachix/install-nix-action@v32
+      uses: cachix/install-nix-action@v31
       with:
         extra_nix_config: accept-flake-config = true
         install_url: https://releases.nixos.org/nix/nix-2.31.2/install
@@ -445,7 +445,7 @@ jobs:
     - name: Prepare Namespace Nix Cache
       run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi\nif [ \"$(uname -s)\" = Linux ] && [ ! -e /run/systemd/system ] && [ -d /nix ] && [ ! -w /nix ]; then\n\tsudo chown -R \"$(id -u):$(id -g)\" /nix\nfi"
     - name: Install Nix
-      uses: cachix/install-nix-action@v32
+      uses: cachix/install-nix-action@v31
       with:
         extra_nix_config: accept-flake-config = true
         install_url: https://releases.nixos.org/nix/nix-2.31.2/install
