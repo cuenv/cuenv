@@ -94,6 +94,14 @@ fn get_example_expectations() -> Vec<ExampleExpectations> {
             has_env: false,
         },
         ExampleExpectations {
+            // hello, plus greet, count, wave, table and report discovered
+            // from scripts/ (common.lib.sh is excluded).
+            name: "task-scripts",
+            min_task_count: 6,
+            has_hooks: false,
+            has_env: false,
+        },
+        ExampleExpectations {
             name: "task-basic",
             min_task_count: 5, // interpolate, propagate, greetAll, greetIndividual, shellExample
             has_hooks: false,
@@ -512,6 +520,35 @@ fn test_task_basic_specific_tasks() -> TestResult {
             "task-basic example missing expected task '{task_name}'",
         );
     }
+
+    Ok(())
+}
+
+#[test]
+fn test_task_scripts_example_discovers_scripts_for_tasks_and_ci() -> TestResult {
+    let examples_dir = get_examples_dir()?;
+    let manifest = load_named_example(&examples_dir, "task-scripts")?;
+
+    let mut names: Vec<&str> = manifest.tasks.keys().map(String::as_str).collect();
+    names.sort_unstable();
+    assert_eq!(
+        names,
+        ["count", "greet", "hello", "report", "table", "wave"],
+        "common.lib.sh is excluded and README.md is no script"
+    );
+
+    let pipeline: Vec<&str> = manifest
+        .ci
+        .as_ref()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "ci should exist"))?
+        .pipelines
+        .get("scripts")
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "scripts pipeline should exist"))?
+        .tasks
+        .iter()
+        .map(|task| task.task_name())
+        .collect();
+    assert_eq!(pipeline, ["greet", "hello"]);
 
     Ok(())
 }
