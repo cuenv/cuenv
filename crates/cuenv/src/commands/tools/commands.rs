@@ -116,15 +116,24 @@ pub async fn ensure_tools_downloaded_withheld(
         )
     })?;
 
-    let session = ToolDownloadSession::new(&lockfile, withheld_env);
-    session
-        .check_prerequisites(PrerequisitePolicy::BestEffortRuntime)
-        .await?;
+    // Cached tools finish well inside the activity's delay and stay silent;
+    // a download shows what is being fetched instead of a frozen terminal.
+    let activity = cuenv_events::Activity::new("Preparing tools runtime (cuenv.lock)");
+    activity
+        .track(async {
+            let session = ToolDownloadSession::new(&lockfile, withheld_env);
+            session
+                .check_prerequisites(PrerequisitePolicy::BestEffortRuntime)
+                .await?;
 
-    let mut reporter = RuntimeDownloadReporter;
-    let summary = session.download_missing(&mut reporter).await;
-    reporter.finished(&summary);
-    summary.ensure_success()
+            let mut reporter = RuntimeDownloadReporter {
+                activity: activity.clone(),
+            };
+            let summary = session.download_missing(&mut reporter).await;
+            reporter.finished(&summary);
+            summary.ensure_success()
+        })
+        .await
 }
 
 enum PrerequisitePolicy {
@@ -312,7 +321,11 @@ impl ToolDownloadReporter for CliDownloadReporter {
     }
 }
 
-struct RuntimeDownloadReporter;
+/// Reports downloads made while preparing a task's tools runtime as progress
+/// of that preparation's [`cuenv_events::Activity`].
+struct RuntimeDownloadReporter {
+    activity: cuenv_events::Activity,
+}
 
 impl ToolDownloadReporter for RuntimeDownloadReporter {
     fn unknown_provider(&mut self, provider_name: &str, tool_name: &str) {
@@ -329,6 +342,8 @@ impl ToolDownloadReporter for RuntimeDownloadReporter {
 
     fn download_started(&mut self, tool_name: &str, version: &str) {
         tracing::info!("Downloading {tool_name} v{version}...");
+        self.activity
+            .progress(&format!("downloading {tool_name} v{version}"));
     }
 
     fn download_finished(&mut self, tool_name: &str, fetched: &FetchedTool) {

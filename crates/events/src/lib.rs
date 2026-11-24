@@ -40,6 +40,7 @@
 #[doc(hidden)]
 #[path = "macro_helpers.rs"]
 pub mod __macro_helpers;
+pub mod activity;
 pub mod bus;
 mod console;
 pub mod event;
@@ -52,15 +53,16 @@ pub mod redaction;
 pub mod renderers;
 
 // Re-exports for convenience
+pub use activity::{Activity, ActivityLines};
 pub use bus::{
     EventBus, EventReceiver, EventSender, SendError, clear_global_sender, emit, emit_with_source,
     global_sender, set_global_sender,
 };
 pub use console::{eprint_redacted, eprintln_redacted, print_redacted, println_redacted};
 pub use event::{
-    CacheEvent, CacheSkipReason, CiEvent, CommandEvent, CuenvEvent, EventCategory, EventSource,
-    InteractiveEvent, OutputEvent, RestartReason, ServiceEvent, SkipReason, Stream, SystemEvent,
-    TaskEvent, TaskKind,
+    ActivityEvent, ActivityOutcome, CacheEvent, CacheSkipReason, CiEvent, CommandEvent, CuenvEvent,
+    EventCategory, EventSource, InteractiveEvent, OutputEvent, RestartReason, ServiceEvent,
+    SkipReason, Stream, SystemEvent, TaskEvent, TaskKind,
 };
 pub use layer::CuenvEventLayer;
 pub use metadata::{MetadataContext, correlation_id, set_correlation_id};

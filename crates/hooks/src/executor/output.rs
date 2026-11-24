@@ -12,6 +12,22 @@ use crate::{Error, Result};
 
 pub(super) const MAX_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
 
+/// A callback that receives each line a hook writes to stderr, as it is
+/// written, while the output is still captured in full.
+///
+/// Runtime activation uses it to show what `nix print-dev-env` is doing.
+pub type StderrLines = Arc<dyn Fn(&str) + Send + Sync>;
+
+/// How [`run_command_with`] runs a command.
+pub(super) struct RunCommandOptions<'run> {
+    /// Bytes written to the command's stdin.
+    pub(super) input: Option<&'run [u8]>,
+    /// Time limit for the command and its output.
+    pub(super) timeout: Duration,
+    /// Receives each stderr line as it is written.
+    pub(super) stderr_lines: Option<StderrLines>,
+}
+
 pub(super) struct OutputReaders {
     stdout: JoinHandle<Result<Vec<u8>>>,
     stderr: JoinHandle<Result<Vec<u8>>>,
@@ -19,7 +35,7 @@ pub(super) struct OutputReaders {
 }
 
 impl OutputReaders {
-    pub(super) fn new(child: &mut Child) -> Result<Self> {
+    pub(super) fn new(child: &mut Child, stderr_lines: Option<StderrLines>) -> Result<Self> {
         let stdout = child
             .stdout
             .take()
@@ -31,8 +47,8 @@ impl OutputReaders {
         let budget = Arc::new(AtomicUsize::new(0));
         let (sender, failures) = tokio::sync::mpsc::channel(2);
         Ok(Self {
-            stdout: spawn_reader(stdout, budget.clone(), sender.clone()),
-            stderr: spawn_reader(stderr, budget, sender),
+            stdout: spawn_reader(stdout, ReaderLimits::new(&budget, &sender), None),
+            stderr: spawn_reader(stderr, ReaderLimits::new(&budget, &sender), stderr_lines),
             failures,
         })
     }
@@ -67,12 +83,64 @@ impl Drop for OutputReaders {
     }
 }
 
-fn spawn_reader(
-    mut input: impl AsyncRead + Unpin + Send + 'static,
+/// The capture budget shared by a command's readers, and where a reader
+/// reports that it failed.
+struct ReaderLimits {
     budget: Arc<AtomicUsize>,
     failures: tokio::sync::mpsc::Sender<()>,
+}
+
+impl ReaderLimits {
+    fn new(budget: &Arc<AtomicUsize>, failures: &tokio::sync::mpsc::Sender<()>) -> Self {
+        Self {
+            budget: budget.clone(),
+            failures: failures.clone(),
+        }
+    }
+}
+
+/// Splits captured bytes into lines for a [`StderrLines`] callback.
+struct LineSplitter {
+    lines: StderrLines,
+    pending: Vec<u8>,
+}
+
+impl LineSplitter {
+    const fn new(lines: StderrLines) -> Self {
+        Self {
+            lines,
+            pending: Vec::new(),
+        }
+    }
+
+    /// Feed bytes; each completed line (ended by `\n` or `\r`) is passed on.
+    fn feed(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            if byte == b'\n' || byte == b'\r' {
+                self.flush();
+            } else {
+                self.pending.push(byte);
+            }
+        }
+    }
+
+    /// Pass on the final line when it has no line ending.
+    fn flush(&mut self) {
+        if !self.pending.is_empty() {
+            (self.lines)(&String::from_utf8_lossy(&self.pending));
+            self.pending.clear();
+        }
+    }
+}
+
+fn spawn_reader(
+    mut input: impl AsyncRead + Unpin + Send + 'static,
+    limits: ReaderLimits,
+    lines: Option<StderrLines>,
 ) -> JoinHandle<Result<Vec<u8>>> {
+    let ReaderLimits { budget, failures } = limits;
     tokio::spawn(async move {
+        let mut splitter = lines.map(LineSplitter::new);
         let result = async {
             let mut output = Vec::new();
             let mut buffer = [0_u8; 8192];
@@ -82,6 +150,9 @@ fn spawn_reader(
                     .await
                     .map_err(|_| Error::process("Cannot read hook output"))?;
                 if count == 0 {
+                    if let Some(splitter) = splitter.as_mut() {
+                        splitter.flush();
+                    }
                     return Ok(output);
                 }
                 budget
@@ -90,6 +161,9 @@ fn spawn_reader(
                             .filter(|total| *total <= MAX_OUTPUT_BYTES)
                     })
                     .map_err(|_| Error::process("Hook output exceeds the 16 MiB capture limit"))?;
+                if let Some(splitter) = splitter.as_mut() {
+                    splitter.feed(&buffer[..count]);
+                }
                 output.extend_from_slice(&buffer[..count]);
             }
         }
@@ -126,11 +200,32 @@ pub(super) async fn stop_child(child: &mut Child) -> Result<()> {
 }
 
 pub(super) async fn run_command(
-    mut command: Command,
+    command: Command,
     input: Option<&[u8]>,
     timeout: Duration,
 ) -> Result<Option<std::process::Output>> {
+    run_command_with(
+        command,
+        RunCommandOptions {
+            input,
+            timeout,
+            stderr_lines: None,
+        },
+    )
+    .await
+}
+
+pub(super) async fn run_command_with(
+    mut command: Command,
+    options: RunCommandOptions<'_>,
+) -> Result<Option<std::process::Output>> {
     use std::process::Stdio;
+
+    let RunCommandOptions {
+        input,
+        timeout,
+        stderr_lines,
+    } = options;
 
     command
         .stdout(Stdio::piped())
@@ -154,7 +249,7 @@ pub(super) async fn run_command(
         None
     };
     let input_abort = input_task.as_ref().map(JoinHandle::abort_handle);
-    let mut readers = OutputReaders::new(&mut child)?;
+    let mut readers = OutputReaders::new(&mut child, stderr_lines)?;
     let deadline = tokio::time::Instant::now() + timeout;
     let status = tokio::select! {
         status = child.wait() => status.map_err(|_| Error::process("Cannot wait for hook process"))?,

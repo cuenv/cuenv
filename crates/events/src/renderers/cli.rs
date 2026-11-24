@@ -2,6 +2,9 @@
 //!
 //! Renders events to stdout/stderr for terminal display.
 
+mod activity;
+#[cfg(feature = "spinner")]
+pub(crate) use activity::completion_line;
 mod ci;
 mod cli_renderer;
 mod command;

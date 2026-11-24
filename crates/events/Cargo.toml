@@ -33,7 +33,7 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
 # Async runtime
-tokio = { workspace = true, features = ["sync", "rt"] }
+tokio = { workspace = true, features = ["sync", "rt", "time", "macros"] }
 
 # Identifiers and time
 uuid = { workspace = true }

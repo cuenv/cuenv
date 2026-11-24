@@ -397,7 +397,15 @@ impl HookExecutor {
         let timeout = self.config.default_timeout_seconds;
 
         // No validation - users approved this config with cuenv allow
-        execute_hook_with_timeout(hook, timeout, &BTreeSet::new()).await
+        execute_hook_with_timeout(
+            hook,
+            HookCommandOptions {
+                timeout_seconds: timeout,
+                withheld_env: &BTreeSet::new(),
+                stderr_lines: None,
+            },
+        )
+        .await
     }
 }
 
@@ -858,7 +866,7 @@ async fn execute_reserved_hook(
             abort.abort();
         }
     };
-    let mut readers = super::output::OutputReaders::new(&mut child)?;
+    let mut readers = super::output::OutputReaders::new(&mut child, None)?;
     let (stdout_abort, stderr_abort) = readers.abort_handles();
     let mut timed_out = false;
     let status = loop {
@@ -990,12 +998,26 @@ async fn execute_reserved_hook(
     Ok(ReservedHookOutcome::Completed(result))
 }
 
+/// How [`execute_hook_with_timeout`] runs one hook command.
+pub(super) struct HookCommandOptions<'command> {
+    /// Time limit for the command.
+    pub(super) timeout_seconds: u64,
+    /// Variables withheld from the command.
+    pub(super) withheld_env: &'command BTreeSet<String>,
+    /// Receives each stderr line as it is written.
+    pub(super) stderr_lines: Option<super::output::StderrLines>,
+}
+
 /// Execute a single hook with timeout
 pub(super) async fn execute_hook_with_timeout(
     hook: Hook,
-    timeout_seconds: u64,
-    withheld_env: &BTreeSet<String>,
+    options: HookCommandOptions<'_>,
 ) -> Result<HookResult> {
+    let HookCommandOptions {
+        timeout_seconds,
+        withheld_env,
+        stderr_lines,
+    } = options;
     let start_time = Instant::now();
     debug!("Executing hook (source: {})", hook.source.unwrap_or(false));
 
@@ -1012,31 +1034,38 @@ pub(super) async fn execute_hook_with_timeout(
     }
     source_environment::remove_withheld_environment(&mut command, withheld_env);
 
-    let output =
-        match super::output::run_command(command, None, Duration::from_secs(timeout_seconds)).await
-        {
-            Ok(Some(output)) => output,
-            Ok(None) => {
-                warn!("Hook timed out after {} seconds", timeout_seconds);
-                return Ok(HookResult::timeout(HookTimeout {
-                    hook,
-                    stdout: String::new(),
-                    stderr: String::new(),
-                    timeout_seconds,
-                }));
-            }
-            Err(Error::ProcessStart) => {
-                return Ok(HookResult::failure(HookFailure {
-                    hook,
-                    exit_status: None,
-                    stdout: String::new(),
-                    stderr: String::new(),
-                    duration_ms: duration_millis(start_time.elapsed()),
-                    error: "Failed to execute command".to_string(),
-                }));
-            }
-            Err(error) => return Err(error),
-        };
+    let output = match super::output::run_command_with(
+        command,
+        super::output::RunCommandOptions {
+            input: None,
+            timeout: Duration::from_secs(timeout_seconds),
+            stderr_lines,
+        },
+    )
+    .await
+    {
+        Ok(Some(output)) => output,
+        Ok(None) => {
+            warn!("Hook timed out after {} seconds", timeout_seconds);
+            return Ok(HookResult::timeout(HookTimeout {
+                hook,
+                stdout: String::new(),
+                stderr: String::new(),
+                timeout_seconds,
+            }));
+        }
+        Err(Error::ProcessStart) => {
+            return Ok(HookResult::failure(HookFailure {
+                hook,
+                exit_status: None,
+                stdout: String::new(),
+                stderr: String::new(),
+                duration_ms: duration_millis(start_time.elapsed()),
+                error: "Failed to execute command".to_string(),
+            }));
+        }
+        Err(error) => return Err(error),
+    };
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     let duration_ms = duration_millis(start_time.elapsed());

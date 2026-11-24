@@ -13,6 +13,9 @@ type EnvironmentDelta = (HashMap<String, String>, Vec<String>);
 /// Inputs for capturing the environment produced by a source hook.
 #[derive(Clone, Copy)]
 pub struct SourceEnvironmentOptions<'source> {
+    /// Receives each line the hook command writes to stderr, as it is
+    /// written; `None` only captures it.
+    pub stderr_lines: Option<&'source super::output::StderrLines>,
     /// Prior variables carried into source evaluation.
     pub prior_env: &'source HashMap<String, String>,
     /// Time limit for each subprocess.
@@ -39,6 +42,7 @@ pub async fn capture_source_environment(
     capture_source_environment_with_options(
         hook,
         SourceEnvironmentOptions {
+            stderr_lines: None,
             prior_env,
             timeout_seconds,
             withheld_env: &BTreeSet::new(),
@@ -64,8 +68,11 @@ pub async fn capture_source_environment_with_options(
 
     let hook_result = super::hook_executor::execute_hook_with_timeout(
         hook,
-        options.timeout_seconds,
-        options.withheld_env,
+        super::hook_executor::HookCommandOptions {
+            timeout_seconds: options.timeout_seconds,
+            withheld_env: options.withheld_env,
+            stderr_lines: options.stderr_lines.cloned(),
+        },
     )
     .await?;
     if !hook_result.success {
@@ -124,6 +131,7 @@ pub async fn evaluate_shell_environment(
     evaluate_shell_environment_with_options(
         shell_script,
         SourceEnvironmentOptions {
+            stderr_lines: None,
             prior_env,
             timeout_seconds,
             withheld_env: &BTreeSet::new(),
@@ -140,6 +148,7 @@ async fn evaluate_shell_environment_with_options(
         prior_env,
         timeout_seconds,
         withheld_env,
+        ..
     } = options;
     if prior_env.keys().any(|key| !is_valid_environment_name(key)) {
         return Err(Error::configuration(

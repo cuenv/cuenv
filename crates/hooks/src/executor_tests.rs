@@ -1335,6 +1335,42 @@ async fn test_capture_source_environment_returns_resulting_env() {
 }
 
 #[tokio::test]
+async fn source_capture_streams_stderr_lines_and_keeps_stdout_clean() {
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let sink = seen.clone();
+    let stderr_lines: super::StderrLines = std::sync::Arc::new(move |line: &str| {
+        if let Ok(mut lines) = sink.lock() {
+            lines.push(line.to_string());
+        }
+    });
+    let hook = source_hook(
+        r"printf 'evaluating flake\nbuilding devshell\rcopying path' >&2
+printf '%s\n' 'export CUENV_STREAM_TEST=ready'",
+    );
+
+    let environment = source_environment::capture_source_environment_with_options(
+        hook,
+        super::SourceEnvironmentOptions {
+            stderr_lines: Some(&stderr_lines),
+            prior_env: &HashMap::new(),
+            timeout_seconds: 10,
+            withheld_env: &BTreeSet::new(),
+        },
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        environment.get("CUENV_STREAM_TEST"),
+        Some(&"ready".to_string())
+    );
+    assert_eq!(
+        *seen.lock().unwrap(),
+        vec!["evaluating flake", "building devshell", "copying path"]
+    );
+}
+
+#[tokio::test]
 async fn failed_source_capture_does_not_evaluate_printed_exports() {
     let temp_dir = private_temp_dir();
     let marker = temp_dir.path().join("unexpected-evaluation");
@@ -1794,6 +1830,7 @@ SCRIPT"#,
     let captured = source_environment::capture_source_environment_with_options(
         source,
         super::SourceEnvironmentOptions {
+            stderr_lines: None,
             prior_env: &prior_env,
             timeout_seconds: 10,
             withheld_env: &withheld_env,
