@@ -115,11 +115,12 @@ impl From<String> for OutputPath {
 
 impl fmt::Display for OutputPath {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write_label(formatter, &self.attribute, true)?;
+        write_label(formatter, &self.attribute)?;
         for step in &self.selector {
             match step {
                 PathStep::Attribute(name) | PathStep::Key(name) => {
-                    write_label(formatter, name, false)?;
+                    formatter.write_str(".")?;
+                    write_label(formatter, name)?;
                 }
                 PathStep::Index(index) => write!(formatter, "[{index}]")?,
             }
@@ -128,10 +129,7 @@ impl fmt::Display for OutputPath {
     }
 }
 
-fn write_label(formatter: &mut fmt::Formatter<'_>, name: &str, first: bool) -> fmt::Result {
-    if !first {
-        formatter.write_str(".")?;
-    }
+fn write_label(formatter: &mut fmt::Formatter<'_>, name: &str) -> fmt::Result {
     if super::is_identifier(name) {
         formatter.write_str(name)
     } else {
