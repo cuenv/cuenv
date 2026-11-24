@@ -25,8 +25,10 @@ const MAGIC_COOKIE_KEY: &str = "TF_PLUGIN_MAGIC_COOKIE";
 const MAGIC_COOKIE_VALUE: &str = "d602bf8f470bc67ca7faa0386276bbdd4330efaf76d1a219cb4d6991ca9872b2";
 
 /// Version string cuenv reports to providers during configuration.
-/// Providers gate behaviour on this, so report a modern Terraform.
-const TERRAFORM_VERSION: &str = "1.11.0";
+/// Providers gate behaviour on this, so report the newest Terraform whose
+/// protocol features cuenv implements: resource identity arrived in 1.12.
+/// A test ties it to [`RemoteProcedure::introduced_in`].
+const TERRAFORM_VERSION: &str = "1.12.0";
 
 /// Terraform raises gRPC message limits to 256 MiB; large provider schemas
 /// (AWS, Azure) exceed tonic's 4 MiB default.
@@ -87,6 +89,27 @@ enum RemoteProcedure {
 }
 
 impl RemoteProcedure {
+    /// The Terraform release that introduced the call, as (major, minor).
+    /// Every call must be matched, so a new one has to state its release.
+    #[cfg(test)]
+    const fn introduced_in(self) -> (u64, u64) {
+        match self {
+            Self::GetSchema
+            | Self::ValidateProviderConfiguration
+            | Self::Configure
+            | Self::ValidateResourceConfiguration
+            | Self::ValidateDataSourceConfiguration
+            | Self::UpgradeResourceState
+            | Self::ReadResource
+            | Self::ReadDataSource
+            | Self::ImportResourceState
+            | Self::PlanResourceChange
+            | Self::ApplyResourceChange
+            | Self::Stop => (0, 12),
+            Self::GetResourceIdentitySchemas | Self::UpgradeResourceIdentity => (1, 12),
+        }
+    }
+
     const fn path(self, protocol: Protocol) -> &'static str {
         match (protocol, self) {
             (Protocol::Version5, Self::GetSchema) => "/tfplugin5.Provider/GetSchema",
@@ -1519,6 +1542,36 @@ async fn connect_unix(address: &str) -> Result<Channel> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The reported Terraform version is the newest release whose calls
+    /// cuenv makes (issue 591), so a provider gating on it sees the
+    /// behaviour cuenv implements.
+    #[test]
+    fn the_reported_terraform_version_matches_the_newest_call_cuenv_makes() {
+        let all = [
+            RemoteProcedure::GetSchema,
+            RemoteProcedure::ValidateProviderConfiguration,
+            RemoteProcedure::Configure,
+            RemoteProcedure::ValidateResourceConfiguration,
+            RemoteProcedure::ValidateDataSourceConfiguration,
+            RemoteProcedure::UpgradeResourceState,
+            RemoteProcedure::ReadResource,
+            RemoteProcedure::ReadDataSource,
+            RemoteProcedure::ImportResourceState,
+            RemoteProcedure::PlanResourceChange,
+            RemoteProcedure::ApplyResourceChange,
+            RemoteProcedure::GetResourceIdentitySchemas,
+            RemoteProcedure::UpgradeResourceIdentity,
+            RemoteProcedure::Stop,
+        ];
+        let newest = all
+            .iter()
+            .map(|procedure| procedure.introduced_in())
+            .max()
+            .unwrap();
+        let reported = semver::Version::parse(TERRAFORM_VERSION).unwrap();
+        assert_eq!((reported.major, reported.minor), newest);
+    }
 
     #[test]
     fn data_source_procedures_use_the_negotiated_protocol_paths() {
