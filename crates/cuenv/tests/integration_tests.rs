@@ -124,7 +124,7 @@ fn create_git_test_env_with_schema_dependency(
         &module_file,
         format!(
             r#"module: "test.example/sync"
-language: version: "v0.14.1"
+language: version: "v0.18.0"
 deps: "github.com/cuenv/cuenv@v0": v: "v{version}"
 "#
         ),

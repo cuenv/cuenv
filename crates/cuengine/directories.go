@@ -16,6 +16,7 @@ const (
 	SkippedReasonTestdata     = "testdata"     // named "testdata"
 	SkippedReasonNestedModule = "nestedModule" // holds its own cue.mod
 	SkippedReasonUnreadable   = "unreadable"   // could not be listed
+	SkippedReasonExcluded     = "excluded"     // named in ExcludeDirectories
 )
 
 // Values accepted by ModuleEvalOptions.SkippedDirectories.
@@ -33,6 +34,29 @@ type SkippedDirectory struct {
 	Reason string `json:"reason"`
 }
 
+// directoryWalk describes one recursive directory walk.
+type directoryWalk struct {
+	root       string
+	moduleRoot string
+	// report lists left-out directories that hold CUE files.
+	report bool
+	// excluded holds module-root-relative, slash-separated directories the
+	// walk leaves out.
+	excluded map[string]bool
+}
+
+// excludedDirectories normalises ExcludeDirectories into a lookup set.
+func excludedDirectories(directories []string) map[string]bool {
+	excluded := make(map[string]bool, len(directories))
+	for _, directory := range directories {
+		cleaned := filepath.ToSlash(filepath.Clean(filepath.FromSlash(directory)))
+		if cleaned != "." && cleaned != "" {
+			excluded[cleaned] = true
+		}
+	}
+	return excluded
+}
+
 // recursiveDirectories lists the directories a recursive ("./...") load
 // visits below root, as "./"-relative load patterns ("." for root itself),
 // and the directories it leaves out.
@@ -47,9 +71,9 @@ type SkippedDirectory struct {
 // A left-out directory is reported only when it holds at least one .cue
 // file (at any depth), and only its topmost left-out ancestor is reported.
 // Reporting walks into left-out trees, so it runs only when
-// skippedDirectories is SkippedDirectoriesReport.
-func recursiveDirectories(root string, moduleRoot string, skippedDirectories string) ([]string, []SkippedDirectory) {
-	report := skippedDirectories == SkippedDirectoriesReport
+// walk.report is set.
+func recursiveDirectories(walk directoryWalk) ([]string, []SkippedDirectory) {
+	root, moduleRoot, report := walk.root, walk.moduleRoot, walk.report
 	patterns := []string{}
 	skipped := []SkippedDirectory{}
 	moduleDirectory := filepath.Join(root, "cue.mod")
@@ -73,7 +97,11 @@ func recursiveDirectories(root string, moduleRoot string, skippedDirectories str
 			return filepath.SkipDir
 		}
 		if path != root {
-			if reason := skippedReason(path, entry.Name()); reason != "" {
+			reason := skippedReason(path, entry.Name())
+			if reason == "" && walk.excluded[relativeSlashPath(moduleRoot, path)] {
+				reason = SkippedReasonExcluded
+			}
+			if reason != "" {
 				if report && containsCueFile(path) {
 					skipped = append(skipped, SkippedDirectory{Path: relativeSlashPath(moduleRoot, path), Reason: reason})
 				}

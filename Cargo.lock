@@ -1561,6 +1561,7 @@ version = "0.79.0"
 dependencies = [
  "criterion",
  "cuenv-core",
+ "cuenv-vcs",
  "libc",
  "proptest",
  "serde",

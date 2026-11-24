@@ -855,6 +855,9 @@ fn module_instances(module_root: &Path) -> Result<ModuleInstances, cuengine::Cue
         export_paths: vec![NAME_PATH.to_string()],
         presence_paths: vec![INFRASTRUCTURE_PATH.to_string()],
         skipped_directories: SkippedDirectories::Report,
+        exclude_directories: crate::commands::module_evaluation::gitignored_directories(
+            module_root,
+        ),
         ..Default::default()
     };
     let evaluation = cuengine::evaluate_module(module_root, "", Some(&options))?;
@@ -928,13 +931,17 @@ fn skipped_help(skipped: &SkippedDirectory) -> String {
             format!("it is inside '{path}', which holds its own cue.mod (another CUE module)")
         }
         SkippedReason::Unreadable => format!("its directory '{path}' cannot be read"),
+        SkippedReason::Excluded => {
+            format!("it is inside '{path}', which the repository's .gitignore files ignore")
+        }
         _ => format!("the loader skipped its directory '{path}'"),
     };
     format!(
         "The CUE loader leaves this project out when it loads every package of the module: \
          {why}. A project the loader leaves out cannot be checked for a duplicate name, so it \
          cannot manage infrastructure. Move it to a directory whose path has no component \
-         starting with '.' or '_', no 'testdata' and no nested CUE module{}.",
+         starting with '.' or '_', no 'testdata', no nested CUE module and no ignored \
+         directory{}.",
         if skipped.reason == SkippedReason::Unreadable {
             ", or make the directory readable"
         } else {

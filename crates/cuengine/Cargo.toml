@@ -29,6 +29,7 @@ tempfile = { workspace = true }
 proptest = { workspace = true }
 criterion = { workspace = true }
 cuenv-core = { workspace = true }
+cuenv-vcs = { workspace = true }
 
 [[bench]]
 name = "evaluation_benchmarks"

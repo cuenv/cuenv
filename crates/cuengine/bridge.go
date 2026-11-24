@@ -347,6 +347,11 @@ type ModuleEvalOptions struct {
 	// directories whose name starts with "." or "_", directories named
 	// "testdata", and directories holding their own cue.mod are not loaded.
 	SkippedDirectories string `json:"skippedDirectories"`
+	// ExcludeDirectories lists directories, relative to the module root and
+	// slash-separated, that a recursive evaluation does not load, together
+	// with everything below them. They are reported with
+	// SkippedReasonExcluded. The walk root itself is always loaded.
+	ExcludeDirectories []string `json:"excludeDirectories"`
 }
 
 // Values accepted by ModuleEvalOptions.PackageScope.
@@ -560,7 +565,12 @@ func evaluateModuleResponse(goModuleRoot string, goPackageName string, goOptions
 	var skippedDirectories []SkippedDirectory
 	if options.Recursive {
 		loadPattern = "./..."
-		loadPatterns, skippedDirectories = recursiveDirectories(evalDir, goModuleRoot, options.SkippedDirectories)
+		loadPatterns, skippedDirectories = recursiveDirectories(directoryWalk{
+			root:       evalDir,
+			moduleRoot: goModuleRoot,
+			report:     options.SkippedDirectories == SkippedDirectoriesReport,
+			excluded:   excludedDirectories(options.ExcludeDirectories),
+		})
 	}
 
 	// NOTE: We intentionally do NOT append ":packageName" to the load pattern.

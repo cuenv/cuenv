@@ -192,6 +192,69 @@ impl Rules {
     }
 }
 
+/// The directories below `root` that git leaves out of the checkout.
+///
+/// A directory is left out when the repository's `.gitignore` files ignore
+/// it and it holds no tracked file. Each is relative to `root`, and only the topmost one of an ignored
+/// tree is listed. Directories whose name starts with `.` or `_` are not
+/// entered, and symbolic links are not followed.
+///
+/// Empty when `root` lies outside a repository or inside an ignored
+/// directory, since a caller that names an ignored location asks for it.
+///
+/// # Errors
+///
+/// Fails when `root` cannot be resolved, or when the repository's index or a
+/// `.gitignore` on the way cannot be read.
+pub fn ignored_directories(root: &Path) -> Result<Vec<PathBuf>> {
+    let root = fs::canonicalize(root).map_err(|e| Error::io(e, root, "canonicalize"))?;
+    let Some(checkout) = Checkout::discover(&root)? else {
+        return Ok(Vec::new());
+    };
+    let Some(base) = checkout.relative(&root) else {
+        return Ok(Vec::new());
+    };
+    let checkout = Arc::new(checkout);
+    let Some(rules) = Rules::at(Arc::clone(&checkout), &base)? else {
+        return Ok(Vec::new());
+    };
+    let mut ignored = Vec::new();
+    let mut pending = vec![(base.clone(), rules)];
+    while let Some((directory, rules)) = pending.pop() {
+        let physical = checkout.root.join(&directory);
+        let Ok(entries) = fs::read_dir(&physical) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                continue;
+            }
+            let name = entry.file_name();
+            if name
+                .to_str()
+                .is_some_and(|name| name.starts_with('.') || name.starts_with('_'))
+            {
+                continue;
+            }
+            let child = directory.join(&name);
+            match rules.verdict(&child, Kind::Directory) {
+                Verdict::Keep => {
+                    let inner = rules.enter(&physical.join(&name), &child)?;
+                    pending.push((child, inner));
+                }
+                Verdict::TrackedOnly => pending.push((child, rules.tracked_only())),
+                Verdict::Skip => {
+                    if let Ok(relative) = child.strip_prefix(&base) {
+                        ignored.push(relative.to_path_buf());
+                    }
+                }
+            }
+        }
+    }
+    ignored.sort();
+    Ok(ignored)
+}
+
 fn slashed(path: &Path) -> String {
     path.components()
         .filter_map(|component| match component {
@@ -284,6 +347,53 @@ mod tests {
             inside.verdict(Path::new("vendor/lib/b.c"), Kind::File),
             Verdict::Skip
         );
+        Ok(())
+    }
+
+    #[test]
+    fn ignored_directories_lists_topmost_untracked_ignored_trees() -> Result<()> {
+        let tmp = tempfile::tempdir().map_err(|e| Error::io(e, "tmp", "tempdir"))?;
+        let root = tmp.path();
+        gix::init(root).map_err(|e| Error::repository(e.to_string()))?;
+        for directory in [
+            "target/debug",
+            "crates/app/target",
+            "crates/app/src",
+            "node_modules/pkg",
+            ".cache/inner",
+            "_scratch/target",
+        ] {
+            fs::create_dir_all(root.join(directory)).map_err(|e| Error::io(e, root, "mkdir"))?;
+        }
+        fs::write(root.join(".gitignore"), "target/\nnode_modules/\n")
+            .map_err(|e| Error::io(e, root, "write"))?;
+
+        assert_eq!(
+            ignored_directories(root)?,
+            [
+                PathBuf::from("crates/app/target"),
+                PathBuf::from("node_modules"),
+                PathBuf::from("target"),
+            ]
+        );
+        assert_eq!(
+            ignored_directories(&root.join("crates"))?,
+            [PathBuf::from("app/target")]
+        );
+        assert_eq!(
+            ignored_directories(&root.join("target"))?,
+            Vec::<PathBuf>::new()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn ignored_directories_outside_a_repository_is_empty() -> Result<()> {
+        let tmp = tempfile::tempdir().map_err(|e| Error::io(e, "tmp", "tempdir"))?;
+        fs::create_dir_all(tmp.path().join("target")).map_err(|e| Error::io(e, "tmp", "mkdir"))?;
+        fs::write(tmp.path().join(".gitignore"), "target/\n")
+            .map_err(|e| Error::io(e, "tmp", "write"))?;
+        assert_eq!(ignored_directories(tmp.path())?, Vec::<PathBuf>::new());
         Ok(())
     }
 }
