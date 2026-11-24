@@ -456,6 +456,13 @@ ci: pipelines: {
   `from` is the source task (which must have outputs), `to` is the target
   directory, and the optional `filter` glob selects which matrix variants to pull.
 
+GitHub Actions matrix jobs expand over the `arch` dimension only, one job per
+value named `<task>-<arch>`; `cuenv sync ci` refuses a matrix with any other
+dimension instead of emitting nothing. A task that depends on a matrix task
+(publish after per-arch builds, for example) needs every variant job, and
+`cuenv sync ci` refuses a workflow whose `needs` names a job it does not
+define.
+
 Provider-native matrix workflows are produced by `cuenv sync ci`. Local
 `cuenv ci` does not yet filter matrices (see the reserved flag below).
 

@@ -66,7 +66,7 @@ pub(super) fn emit_matrix_workflow(
         ir: &ir,
         emitter: &emitter,
         cuenv_setup,
-    });
+    })?;
     let mut jobs = built_jobs.jobs;
     implementation::inject_cuenv_bootstrap_jobs(
         &mut jobs,
@@ -76,6 +76,8 @@ pub(super) fn emit_matrix_workflow(
             bootstrap_consumers: &built_jobs.bootstrap_consumers,
         },
     );
+
+    require_known_needs(&jobs, &workflow_name)?;
 
     let filename = format!("{}.yml", sanitize_workflow_name(&workflow_name));
 
@@ -101,10 +103,13 @@ pub(super) fn emit_matrix_workflow(
 ///
 /// Uses `GitHubActionsEmitter` methods to build jobs, converting `PipelineTask`
 /// info to IR `Task` fields as needed.
-fn build_pipeline_jobs(request: &PipelineJobsRequest<'_>) -> BuiltPipelineJobs {
+fn build_pipeline_jobs(request: &PipelineJobsRequest<'_>) -> Result<BuiltPipelineJobs> {
     use indexmap::IndexMap;
 
     let mut jobs = IndexMap::new();
+    // The job ids each matrix task expanded into, by the id a dependency
+    // on the task names.
+    let mut matrix_variants: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut bootstrap_consumers = HashSet::new();
     let mut artifact_source_jobs: HashSet<String> = HashSet::new();
     let mut processed_task_names: HashSet<String> = HashSet::new();
@@ -186,6 +191,7 @@ fn build_pipeline_jobs(request: &PipelineJobsRequest<'_>) -> BuiltPipelineJobs {
                     }
                     jobs.insert(job_id, job);
                 } else {
+                    require_arch_only_matrix(task_name, matrix_task)?;
                     let ir_task = request.ctx.tasks.iter().find(|t| t.id == task_name);
                     let synthetic_task =
                         create_synthetic_matrix_task(task_name, matrix_task, ir_task);
@@ -217,6 +223,10 @@ fn build_pipeline_jobs(request: &PipelineJobsRequest<'_>) -> BuiltPipelineJobs {
                     );
 
                     for (id, job) in expanded_jobs {
+                        matrix_variants
+                            .entry(job_id.clone())
+                            .or_default()
+                            .push(id.clone());
                         artifact_source_jobs.insert(id.clone());
                         if implementation::consumes_cuenv_bootstrap(cuenv_setup, execution) {
                             bootstrap_consumers.insert(id.clone());
@@ -235,10 +245,74 @@ fn build_pipeline_jobs(request: &PipelineJobsRequest<'_>) -> BuiltPipelineJobs {
         build_context: &build_context,
     };
     add_transitive_dependency_jobs(&mut transitive_request);
-    BuiltPipelineJobs {
+    expand_matrix_needs(&mut jobs, &matrix_variants);
+    Ok(BuiltPipelineJobs {
         jobs,
         bootstrap_consumers,
+    })
+}
+
+/// Point a dependency on a matrix task at every job it expanded into: no
+/// job carries the task's own id, so `needs: [<task>]` would name nothing.
+fn expand_matrix_needs(
+    jobs: &mut indexmap::IndexMap<String, cuenv_github::workflow::schema::Job>,
+    matrix_variants: &BTreeMap<String, Vec<String>>,
+) {
+    let emitted: HashSet<String> = jobs.keys().cloned().collect();
+    for job in jobs.values_mut() {
+        let mut needs = Vec::with_capacity(job.needs.len());
+        let mut seen = HashSet::new();
+        for need in std::mem::take(&mut job.needs) {
+            let variants = matrix_variants
+                .get(&need)
+                .filter(|_| !emitted.contains(&need));
+            match variants {
+                Some(variants) => {
+                    for variant in variants {
+                        if seen.insert(variant.clone()) {
+                            needs.push(variant.clone());
+                        }
+                    }
+                }
+                None => {
+                    if seen.insert(need.clone()) {
+                        needs.push(need);
+                    }
+                }
+            }
+        }
+        job.needs = needs;
     }
+}
+
+/// GitHub rejects a workflow whose `needs` names a job it does not define,
+/// and only once it is pushed: refuse to write one.
+fn require_known_needs(
+    jobs: &indexmap::IndexMap<String, cuenv_github::workflow::schema::Job>,
+    workflow_name: &str,
+) -> Result<()> {
+    for (id, job) in jobs {
+        if let Some(missing) = job.needs.iter().find(|need| !jobs.contains_key(*need)) {
+            return Err(cuenv_core::Error::configuration(format!(
+                "workflow {workflow_name}: job {id} needs {missing}, which the workflow does not define"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Matrix jobs are expanded over `arch` only; any other dimension would
+/// be dropped silently.
+fn require_arch_only_matrix(
+    task_name: &str,
+    matrix_task: &cuenv_core::ci::MatrixTask,
+) -> Result<()> {
+    if let Some(dimension) = matrix_task.matrix.keys().find(|key| key.as_str() != "arch") {
+        return Err(cuenv_core::Error::configuration(format!(
+            "matrix task {task_name}: GitHub Actions matrix jobs support only the `arch` dimension, not `{dimension}`"
+        )));
+    }
+    Ok(())
 }
 
 fn add_transitive_dependency_jobs(request: &mut TransitiveDependencyJobRequest<'_>) {

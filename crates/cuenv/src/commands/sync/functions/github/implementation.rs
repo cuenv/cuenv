@@ -1430,6 +1430,89 @@ mod tests {
         Ok(())
     }
 
+    fn arch_matrix(
+        task: &str,
+        matrix: BTreeMap<String, Vec<String>>,
+    ) -> cuenv_core::ci::PipelineTask {
+        cuenv_core::ci::PipelineTask::Matrix(cuenv_core::ci::MatrixTask {
+            task_type: None,
+            task: cuenv_core::ci::TaskRef::from_name(task),
+            matrix,
+            artifacts: None,
+            params: None,
+        })
+    }
+
+    /// Issue 633: no job carries a matrix task's own id, so a dependent
+    /// needs every variant it expanded into.
+    #[test]
+    fn a_dependent_of_a_matrix_task_needs_every_variant() -> cuenv_core::Result<()> {
+        let mut tasks = make_bootstrap_ir().tasks;
+        tasks.push(make_regular_task("build"));
+        let mut publish = make_regular_task("publish");
+        publish.depends_on = vec!["build".into()];
+        tasks.push(publish);
+        let mut announce = make_regular_task("announce");
+        announce.depends_on = vec!["publish".into(), "build".into()];
+        tasks.push(announce);
+        let mut ctx = make_pipeline_context(cuenv_manifest::config::CuenvSource::Nix, tasks);
+        ctx.pipeline_tasks = vec![
+            arch_matrix(
+                "build",
+                BTreeMap::from([(
+                    "arch".into(),
+                    vec!["linux-x64".into(), "linux-arm64".into()],
+                )]),
+            ),
+            cuenv_core::ci::PipelineTask::Simple(cuenv_core::ci::TaskRef::from_name("publish")),
+        ];
+
+        let workflows = matrix::emit_matrix_workflow("release", &ctx)?;
+        let document: serde_yaml::Value =
+            serde_yaml::from_str(&workflows[0].1).expect("valid matrix workflow");
+        let jobs = &document["jobs"];
+        assert!(jobs.get("build").is_none());
+        let needs = |job: &str| -> Vec<String> {
+            jobs[job]["needs"].as_sequence().map_or_default(|needs| {
+                needs
+                    .iter()
+                    .filter_map(|need| need.as_str().map(str::to_string))
+                    .collect()
+            })
+        };
+        // A direct pipeline task.
+        let publish_needs = needs("publish");
+        assert!(publish_needs.contains(&"build-linux-arm64".to_string()));
+        assert!(publish_needs.contains(&"build-linux-x64".to_string()));
+        assert!(!publish_needs.contains(&"build".to_string()));
+        // A transitive dependency job.
+        assert_eq!(
+            needs("announce")
+                .into_iter()
+                .filter(|need| need != "build-cuenv")
+                .collect::<Vec<_>>(),
+            ["publish", "build-linux-arm64", "build-linux-x64"]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_matrix_dimension_other_than_arch_is_refused() {
+        let mut tasks = make_bootstrap_ir().tasks;
+        tasks.push(make_regular_task("test"));
+        let mut ctx = make_pipeline_context(cuenv_manifest::config::CuenvSource::Nix, tasks);
+        ctx.pipeline_tasks = vec![arch_matrix(
+            "test",
+            BTreeMap::from([("node".into(), vec!["20".into(), "22".into()])]),
+        )];
+
+        let error = matrix::emit_matrix_workflow("ci", &ctx).unwrap_err();
+        assert!(
+            error.to_string().contains("only the `arch` dimension"),
+            "{error}"
+        );
+    }
+
     #[test]
     fn bootstrap_injection_targets_only_orchestrated_runner_consumers() {
         let ir = make_bootstrap_ir();
