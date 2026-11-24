@@ -263,7 +263,15 @@ package schema
 	shellOptions?: #ShellOptions
 
 	// An executable task has exactly one execution mode.
-	({command!: string, script?: _|_} | {script!: string, command?: _|_})
+	// An executable task runs a command or a script, not both. This is a
+	// value check, not a disjunction and not a comprehension: a comprehension
+	// in a task (`if`, `for`) would leave a disjunction unresolved so plain
+	// `cue export` reports an incomplete value, and any `if` in this struct
+	// makes a reference to the task (`dependsOn: [tasks.build]`) lose the
+	// task's name. A task with neither is refused when cuenv loads it.
+	_hasCommand: command != _|_
+	_hasScript:  script != _|_
+	_mode:       [_hasCommand, _hasScript] & ([true, false] | [false, true] | [false, false])
 
 	// Environment variables
 	// Host HOME is never passed through by a task env marker. A non-hermetic

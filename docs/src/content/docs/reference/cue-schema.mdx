@@ -547,8 +547,10 @@ schema.#Project & {
 | `outputFiles`    | `#TaskOutputFilesRef`                             | Auto     | This task's declared `outputs`, as another task's input (reserved) |
 | `cuenvRef`       | `{kind, project, name}`                           | Auto     | What the task is and which project it belongs to (reserved) |
 
-Exactly one of `command` or `script` must be set. `cuenv` rejects tasks that
-omit both or provide both.
+Exactly one of `command` or `script` must be set. CUE evaluation rejects a
+task that provides both, and `cuenv` rejects one that omits both when it loads
+the project. A task can set fields with `if` and `for` comprehensions, such as
+`if true {env: A: "1"}`, and plain `cue export` still evaluates it.
 
 :::caution[Execution policy status]
 The task-level `timeout`, `retry`, and `continueOnError` fields (marked † above)
