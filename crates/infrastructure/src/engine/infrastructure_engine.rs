@@ -2019,13 +2019,12 @@ impl InfrastructureEngine {
         self.configuration_evaluation
             .as_ref()
             .is_some_and(|binding| {
-                binding
-                    .evaluator
-                    .declared_outputs()
-                    .iter()
-                    .any(|identity| match &identity.source {
-                        SourceAddress::Resource(source) => source == address,
-                        SourceAddress::DataSource(_) => false,
+                binding.evaluator.verifies_outputs()
+                    && binding.evaluator.declared_outputs().iter().any(|identity| {
+                        match &identity.source {
+                            SourceAddress::Resource(source) => source == address,
+                            SourceAddress::DataSource(_) => false,
+                        }
                     })
             })
     }
@@ -2066,7 +2065,11 @@ impl InfrastructureEngine {
     /// analysis cannot prove an unmodelled expression independent of every value,
     /// but this needs no such proof: it evaluates the values that actually exist.
     async fn verify_outputs(&self, input: &OutputVerification<'_>) -> Result<()> {
-        let Some(binding) = &self.configuration_evaluation else {
+        let Some(binding) = self
+            .configuration_evaluation
+            .as_ref()
+            .filter(|binding| binding.evaluator.verifies_outputs())
+        else {
             return Ok(());
         };
         let mut sources = BTreeMap::new();

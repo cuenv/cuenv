@@ -49,18 +49,19 @@ import "strings"
 // is not affected by its own module's language version. The Rust engine
 // repeats the checks for projects that do not unify with this schema.
 //
-// Primitive resource and data-source arguments, including nested object and
-// ordered collection elements, can refer to a primitive output of another
-// resource or data source with a native selector through its `outputs`
-// namespace, including a field or element inside a list or object output
-// such as `outputs.result[0].id`. Selecting an element the provider did not
-// return fails the plan. Sets and write-only fields
-// do not support output references.
-// A sensitive source attribute may be referenced: plans mask the containing
-// argument and identify nested reference paths as (sensitive), with map keys
-// hidden. Known sensitive strings of at least four characters are registered
-// for output redaction; numeric and boolean values are only masked.
-// Use `dependsOn` when only ordering is needed.
+// Output references: every field of a resource's or data source's `outputs`
+// is a concrete reference descriptor (#OutputReference) naming that output.
+// Copy one into a primitive resource or data-source argument, including a
+// nested object, map or list element, and cuenv puts the real value there
+// when planning, or plans the argument as known after apply. CUE never sees
+// the real value, so the configuration exports with plain `cue export`.
+// Compute a value from outputs with #Format, #Sha256, #Base64 and #Join, and
+// read inside a list or object output with #Select. Interpolation,
+// arithmetic and builtins cannot read an output: they fail in CUE. Sets,
+// write-only fields and provider configuration do not take references.
+// A sensitive source attribute may be referenced: plans mask the receiving
+// argument, and a string computed from it is registered for redaction too.
+// References infer dependencies; use `dependsOn` when only ordering is needed.
 //
 // Secrets: a string argument of a resource or data source, including a
 // nested object, map or list element (not a set element, a number, a bool,
@@ -111,7 +112,9 @@ import "strings"
 	// supplies its complete provider, resource and data source set: nothing is
 	// inherited from top-level `providers`, `resources`, `data` or `providerEnvironment`.
 	// The common state backend remains above the environment selection.
-	environments?: [#InfrastructureName]: {#InfrastructureConfiguration}
+	environments?: [#InfrastructureName]~(environment,_): #InfrastructureConfiguration & {
+		#environment: environment
+	}
 
 	// CI workflows that `cuenv sync ci` emits for this infrastructure, for
 	// the project's `ci.providers`. Only the top-level configuration is
@@ -176,6 +179,11 @@ import "strings"
 // semantic check below reads only this configuration's own maps, so each
 // configuration is checked on its own.
 #InfrastructureConfiguration: {
+	// The environment this configuration belongs to: "" at the top level.
+	// Output references carry it, so a reference cannot cross from one
+	// configuration into another.
+	#environment: *"" | string
+
 	// Provider plugins keyed by local name. Resource types default to the
 	// provider named by their prefix (`random_pet` → `random`). The field is
 	// always present (an empty struct when no provider is declared), so the
@@ -187,11 +195,17 @@ import "strings"
 	// Every `dependsOn` entry must name a resource in this configuration, and
 	// the resource's provider (explicit, or the type prefix) must be declared
 	// in this configuration's `providers`.
-	resources?: [#InfrastructureName]: {#ManagedResource}
+	resources?: [#InfrastructureName]~(label,_): {
+		#ManagedResource
+		#address: {namespace: "resources", name: label, environment: #environment}
+	}
 
 	// Read-only provider lookups. Results are read for each plan/apply and
 	// are never persisted as managed resource state.
-	data?: [#InfrastructureName]: {#DataSource}
+	data?: [#InfrastructureName]~(label,_): {
+		#DataSource
+		#address: {namespace: "data", name: label, environment: #environment}
+	}
 
 	// What provider processes inherit from the cuenv process environment.
 	//
@@ -487,14 +501,24 @@ _s3LoopbackEndpoint:  "^(?i:http)://((?i:localhost)|\(_tursoLoopback4)|\\[::1\\]
 	// Resources that must be applied before this one (and destroyed after).
 	dependsOn?: [...#InfrastructureName]
 
-	// Abstract provider outputs. Generated provider types declare the
-	// available attributes; untyped resources declare each selected attribute
-	// explicitly, for example `outputs: id: string`. A list or object output is
-	// declared down to the scalars it selects, with a list narrowed to the
-	// elements read, for example `outputs: result: [{id: string}]` for
-	// `outputs.result[0].id`. Values come from provider state at runtime and are
-	// never sent as provider configuration.
-	outputs?: {[string]: #InfrastructureOutput}
+	// Where this declaration lives, stamped by #InfrastructureConfiguration
+	// from its name. Output references are built from it.
+	#address: #OutputAddress
+
+	// Selectable provider outputs, each a concrete #OutputReference.
+	// Generated provider types fill in every attribute; untyped resources
+	// declare each output they read by its type, for example
+	// `outputs: id: type: "string"`, or `type: "list"` for a list read with
+	// #Select. Never sent to the provider.
+	outputs?: [string]~(output,_): {
+		cuenvOutput: {
+			namespace:   #address.namespace
+			name:        #address.name
+			environment: #address.environment
+			path:        [output]
+		}
+		type: #OutputType
+	}
 
 	// Resource arguments, validated by the provider's schema. A generated
 	// `#Resource` types them with its `#Configuration`.
@@ -507,6 +531,76 @@ _s3LoopbackEndpoint:  "^(?i:http)://((?i:localhost)|\(_tursoLoopback4)|\\[::1\\]
 	#ManagedResource
 }
 
-// One output a resource or data source declares: a scalar, or a list or
-// object whose scalar fields and elements a native selector can read.
-#InfrastructureOutput: string | number | bool | [...#InfrastructureOutput] | {[string]: #InfrastructureOutput}
+// Where a resource or data source is declared.
+#OutputAddress: {
+	namespace:   "resources" | "data"
+	name:        string
+	environment: string
+}
+
+// The type of an output: a scalar, or a list or object read with #Select.
+#OutputType: "string" | "number" | "bool" | "list" | "object"
+
+// A reference to one provider output: a concrete value cuenv replaces with
+// the output's real value when it plans. Take it from a declaration's
+// `outputs`, for example `infrastructure.resources.bucket.outputs.id`.
+#OutputReference: {
+	cuenvOutput: {
+		namespace:   "resources" | "data"
+		name:        string
+		environment: string
+		path:        [string, ...(string | int)]
+	}
+	type: #OutputType
+}
+
+// Values a string, number or bool argument accepts besides a literal: an
+// output reference of that type, or a function computing one.
+#StringExpression: (#OutputReference & {type: "string"}) | (#Select & {type: "string"}) | #Format | #Sha256 | #Base64 | #Join
+#NumberExpression: (#OutputReference & {type: "number"}) | (#Select & {type: "number"})
+#BoolExpression:   (#OutputReference & {type: "bool"}) | (#Select & {type: "bool"})
+
+// Concatenate strings, numbers, bools and expressions, in place of string
+// interpolation: `#Format & {parts: ["app-", infrastructure.resources.bucket.outputs.id]}`.
+#Format: {
+	cuenvFunction: "format"
+	parts:         [...(string | number | bool | #StringExpression | #NumberExpression | #BoolExpression)]
+	type:          "string"
+}
+
+// The SHA-256 digest of a string, as lowercase hex (default) or standard
+// base64. `hex.Encode(sha256.Sum256(x))` becomes `#Sha256 & {of: x}`.
+#Sha256: {
+	cuenvFunction: "sha256"
+	of:            string | #StringExpression
+	encoding:      *"hex" | "base64"
+	type:          "string"
+}
+
+// A string in base64: "standard" (RFC 4648, padded, the default) or "url"
+// (the URL-safe alphabet, padded).
+#Base64: {
+	cuenvFunction: "base64"
+	of:            string | #StringExpression
+	encoding:      *"standard" | "url"
+	type:          "string"
+}
+
+// Strings and string expressions joined with a separator. Each output it
+// reads is a scalar: take list elements with #Select.
+#Join: {
+	cuenvFunction: "join"
+	items:         [...(string | #StringExpression)]
+	separator:     string
+	type:          "string"
+}
+
+// A scalar inside a list or object output, in place of a selector such as
+// `outputs.result[0].id`:
+// `#Select & {from: infrastructure.data.groups.outputs.result, path: [0, "id"], type: "string"}`.
+#Select: {
+	cuenvFunction: "select"
+	from:          #OutputReference & {type: "list" | "object"}
+	path:          [string | int, ...(string | int)]
+	type:          "string" | "number" | "bool"
+}

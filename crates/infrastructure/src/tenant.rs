@@ -228,7 +228,7 @@ mod tests {
 
     #[test]
     fn parses_module_path_from_module_cue() {
-        let contents = "module: \"github.com/acme/infrastructure@v0\"\nlanguage: {\n\tversion: \"v0.14.1\"\n}\n";
+        let contents = "module: \"github.com/acme/infrastructure@v0\"\nlanguage: {\n\tversion: \"v0.18.0\"\n}\n";
         assert_eq!(
             parse_module_path(contents).as_deref(),
             Some("github.com/acme/infrastructure@v0")
@@ -237,7 +237,7 @@ mod tests {
 
     #[test]
     fn ignores_nested_or_missing_module_fields() {
-        assert_eq!(parse_module_path("language: {version: \"v0.14.1\"}"), None);
+        assert_eq!(parse_module_path("language: {version: \"v0.18.0\"}"), None);
         assert_eq!(parse_module_path("module: \"\""), None);
     }
 

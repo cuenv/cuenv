@@ -1,5 +1,5 @@
 use super::{CommandExecutor, convert_engine_error, env_file, schema_compat};
-use cuengine::{InstanceFailures, ModuleEvalOptions};
+use cuengine::{InstanceFailures, InstanceText, ModuleEvalOptions};
 use cuenv_ci::discovery::EvaluationMetadataBuilder;
 
 use cuenv_core::module::TASK_FIELD;
@@ -30,6 +30,33 @@ pub(super) struct PathEvaluation<'request> {
 /// Returns an error when no CUE module contains the directory, evaluation
 /// fails, or the directory has no instance of the package.
 pub(super) fn evaluate_path(request: PathEvaluation<'_>) -> Result<ModuleEvaluation> {
+    evaluate_path_as(request, InstanceText::Parsed).map(|exact| exact.module)
+}
+
+/// An evaluation of one directory, with the JSON text of each instance.
+pub(super) struct ExactModuleEvaluation {
+    /// The evaluation.
+    pub(super) module: ModuleEvaluation,
+    /// The exported JSON of each instance exactly as CUE wrote it, keyed by
+    /// path relative to the module root like the instances. Numbers in it
+    /// are exact, where the parsed instances round a decimal that does not
+    /// fit an `f64`.
+    pub(super) text: HashMap<String, Box<serde_json::value::RawValue>>,
+}
+
+/// [`evaluate_path`], keeping the exported text of each instance.
+///
+/// # Errors
+///
+/// As [`evaluate_path`].
+pub(super) fn evaluate_path_exactly(request: PathEvaluation<'_>) -> Result<ExactModuleEvaluation> {
+    evaluate_path_as(request, InstanceText::Kept)
+}
+
+fn evaluate_path_as(
+    request: PathEvaluation<'_>,
+    instance_text: InstanceText,
+) -> Result<ExactModuleEvaluation> {
     let PathEvaluation {
         target_path,
         package,
@@ -54,6 +81,7 @@ pub(super) fn evaluate_path(request: PathEvaluation<'_>) -> Result<ModuleEvaluat
         concrete_paths,
         export_paths,
         task_field: Some(TASK_FIELD.to_string()),
+        instance_text,
         ..Default::default()
     };
 
@@ -75,6 +103,17 @@ pub(super) fn evaluate_path(request: PathEvaluation<'_>) -> Result<ModuleEvaluat
     let mut instances = HashMap::new();
     let mut projects = Vec::new();
     let mut metadata = EvaluationMetadataBuilder::default();
+    let text = raw
+        .instance_text
+        .into_iter()
+        .map(|(path, text)| {
+            if path == "." {
+                (target_rel_path.clone(), text)
+            } else {
+                (path, text)
+            }
+        })
+        .collect();
 
     for (path_str, value) in raw.instances {
         let rel_path = if path_str == "." {
@@ -102,12 +141,15 @@ pub(super) fn evaluate_path(request: PathEvaluation<'_>) -> Result<ModuleEvaluat
         metadata.insert(adjusted_key, meta_value);
     }
 
-    Ok(ModuleEvaluation::from_raw_parts(ModuleEvaluationInput {
-        root: module_root,
-        raw_instances: instances,
-        project_paths: projects,
-        metadata: metadata.finish(),
-    }))
+    Ok(ExactModuleEvaluation {
+        module: ModuleEvaluation::from_raw_parts(ModuleEvaluationInput {
+            root: module_root,
+            raw_instances: instances,
+            project_paths: projects,
+            metadata: metadata.finish(),
+        }),
+        text,
+    })
 }
 
 impl CommandExecutor {

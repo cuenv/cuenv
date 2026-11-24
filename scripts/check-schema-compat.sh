@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Evaluate the working tree as a published schema at language v0.18.0.
-# Compare accepted exports by value across configured CUE releases, and check
+# Compare accepted exports by value across configured CUE releases (each must
+# also pass `cue eval -c`), and check
 # rejected fixtures for their `// want: TEXT` diagnostics.
 #
 # Fixtures live under `testdata` so that CUE and cuenv's module-wide
@@ -154,25 +155,33 @@ consumer() {
 # fields that come from imported definitions, and cuenv deserialises objects
 # by key, so field order is not part of the schema contract.
 #
+# Every cuenv project must work with plain `cue export` and `cue eval`, so an
+# accepted evaluation passes both: `cue eval -c` too, which fails on any
+# value that is not concrete.
+#
 # Evaluations that exceed eval_timeout fail with a timeout diagnostic.
 evaluate() {
-	local bin="$1" dir="$2" file="$3" out="$4" status=0
-	(
-		cd "$dir"
-		if [[ -n "$file" ]]; then
-			cp rules.cue.txt rules.cue
-			exec timeout "$eval_timeout" "$bin" export --out json rules.cue
-		else
-			exec timeout "$eval_timeout" "$bin" export --out json .
+	local bin="$1" dir="$2" file="$3" out="$4" status=0 command
+	for command in export eval; do
+		(
+			cd "$dir"
+			local args=(--out json)
+			[[ "$command" == eval ]] && args=(-c)
+			if [[ -n "$file" ]]; then
+				cp rules.cue.txt rules.cue
+				exec timeout "$eval_timeout" "$bin" "$command" "${args[@]}" rules.cue
+			else
+				exec timeout "$eval_timeout" "$bin" "$command" "${args[@]}" .
+			fi
+		) >"$out.$command" 2>"$out.err" || status=$?
+		if [[ "$status" -eq 124 ]]; then
+			printf 'timed out after %ss (CUENV_SCHEMA_COMPAT_TIMEOUT): the schema makes this evaluation explode\n' \
+				"$eval_timeout" >"$out.err"
+			return 1
 		fi
-	) >"$out.raw" 2>"$out.err" || status=$?
-	if [[ "$status" -eq 124 ]]; then
-		printf 'timed out after %ss (CUENV_SCHEMA_COMPAT_TIMEOUT): the schema makes this evaluation explode\n' \
-			"$eval_timeout" >"$out.err"
-		return 1
-	fi
-	[[ "$status" -eq 0 ]] || return 1
-	jq -S . <"$out.raw" >"$out"
+		[[ "$status" -eq 0 ]] || return 1
+	done
+	jq -S . <"$out.export" >"$out"
 }
 
 # A fixture that imports another package of the cuenv module by its module

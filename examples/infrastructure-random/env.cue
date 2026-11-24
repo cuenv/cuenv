@@ -34,6 +34,9 @@ infrastructure: {
 				length:    2
 				separator: "-"
 			}
+			// Declared outputs can be read by other resources. The type
+			// tells cuenv what the provider will return.
+			outputs: id: type: "string"
 		}
 		database_password: {
 			type: "random_password"
@@ -43,12 +46,15 @@ infrastructure: {
 			}
 		}
 		port: {
-			type:      "random_integer"
-			dependsOn: ["pet"]
+			type: "random_integer"
 			configuration: {
 				min: 8000
 				max: 8999
-				keepers: pet: "rotate-with-pet"
+				// Rotates whenever the pet's name changes. The reference is
+				// resolved at plan time; plain `cue export` sees a descriptor.
+				keepers: pet: schema.#Format & {
+					parts: ["rotate-with-", infrastructure.resources.pet.outputs.id]
+				}
 			}
 		}
 	}

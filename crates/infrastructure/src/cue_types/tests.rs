@@ -205,38 +205,35 @@ import "list"
 }
 
 #Configuration: {
-	keepers?: {[string]: string | #Secret}
+	keepers?: {[string]: string | #Secret | #String}
 	// The length (in words) of the pet name.
-	length?: number
+	length?: number | #Number
 	// Deprecated: Use `separator`.
-	prefix?: string | #Secret
+	prefix?: string | #Secret | #String
 	rule!: [...{
 		"for"?: {
-			cidr!: string | #Secret
-			ports!: [number, number]
+			cidr!: string | #Secret | #String
+			ports!: [number | #Number, number | #Number]
 		}
-		port!: number
+		port!: number | #Number
 	}] & list.MinItems(1) & list.MaxItems(3)
 	// The provider chooses a value when this is not set.
-	separator?: string | #Secret
+	separator?: string | #Secret | #String
 	// Write-only: requires a secret; bump the companion version manually.
 	token?: #Value & #WriteOnly
 }
 
-// #Outputs contains selectable provider outputs: scalars, and lists and objects whose
-// scalar fields and elements can be selected, such as result[0].id. Narrow a list to
-// the elements you select, for example `outputs: result: [_]`, so CUE can index it.
+// #Outputs names the provider outputs a configuration can reference. The cuenv
+// schema makes each one a concrete reference to this declaration's output; read
+// inside a list or object output with `schema.#Select`.
 #Outputs: {
-	id: string
-	length: number
-	owners: [...{
-		id: string
-		scopes: [...string]
-	}]
-	prefix: string
+	id: {type: "string", ...}
+	length: {type: "number", ...}
+	owners: {type: "list", ...}
+	prefix: {type: "string", ...}
 	// Sensitive: plans mask receiving arguments; strings of at least four characters are redacted.
-	secret: string
-	separator: string
+	secret: {type: "string", ...}
+	separator: {type: "string", ...}
 }
 
 // #Secret is a cuenv secret, such as `schema.#OnePasswordRef & {ref: "..."}`.
@@ -245,8 +242,17 @@ import "list"
 // write-only arguments are shown as (write-only) and stay out of state.
 #Secret: {
 	resolver!: string & !=""
+	cuenvOutput?: _|_
+	cuenvFunction?: _|_
 	...
 }
+
+// #String, #Number and #Bool are output references and functions of that
+// type, such as `infrastructure.resources.NAME.outputs.id` or
+// `schema.#Format & {...}`. cuenv puts in the real value when it plans.
+#String: {type: "string", cuenvOutput: {...}, cuenvFunction?: _|_, resolver?: _|_, ...} | {type: "string", cuenvFunction: string, cuenvOutput?: _|_, resolver?: _|_, ...}
+#Number: {type: "number", cuenvOutput: {...}, cuenvFunction?: _|_, resolver?: _|_, ...} | {type: "number", cuenvFunction: string, cuenvOutput?: _|_, resolver?: _|_, ...}
+#Bool: {type: "bool", cuenvOutput: {...}, cuenvFunction?: _|_, resolver?: _|_, ...} | {type: "bool", cuenvFunction: string, cuenvOutput?: _|_, resolver?: _|_, ...}
 
 #Value: string | #Secret
 #WriteOnly: #Secret & {writeOnly: true}
@@ -316,7 +322,7 @@ fn only_resource_and_data_source_strings_accept_a_secret() {
     package.configuration(&block);
     assert_eq!(
         package.body,
-        "#Configuration: {\n\tlisted?: [...string | #Secret]\n\tnested_unordered?: [...{\n\t\ttoken!: string\n\t}]\n\tunordered?: [...string]\n\tunordered_block?: [...{\n\t\ttoken!: string\n\t}]\n\tunordered_objects?: [...{\n\t\ttoken!: string\n\t}]\n}\n"
+        "#Configuration: {\n\tlisted?: [...string | #Secret | #String]\n\tnested_unordered?: [...{\n\t\ttoken!: string\n\t}]\n\tunordered?: [...string]\n\tunordered_block?: [...{\n\t\ttoken!: string\n\t}]\n\tunordered_objects?: [...{\n\t\ttoken!: string\n\t}]\n}\n"
     );
 }
 
@@ -442,13 +448,20 @@ fn descriptions_do_not_change_the_digest_but_shapes_do() {
 }
 
 #[test]
-fn providers_without_data_sources_preserve_the_legacy_digest() {
+fn digests_name_the_output_reference_contract() {
     let mut schema = provider_schema();
     schema.provider.block = Block::default();
     schema.resources.clear();
-    assert_eq!(
-        super::schema_digest(&schema),
+    let digest = super::schema_digest(&schema);
+    // The digest of these types before outputs became concrete references:
+    // generated types from then are refused until they are regenerated.
+    assert_ne!(
+        digest,
         "sha256:8775c20fa4583efb231215871e3fcf84df44b1103e89c720418f980f6e4848f8"
+    );
+    assert_eq!(
+        digest,
+        "sha256:a80d6f127aa64698f477063abc3d7bbcc1282d101ac860fcdd9b115315755744"
     );
 }
 
@@ -577,7 +590,7 @@ fn generated_cue_module(types: &GeneratedTypes) -> TestResult<tempfile::TempDir>
     std::fs::create_dir_all(directory.path().join("cue.mod"))?;
     std::fs::write(
         directory.path().join("cue.mod/module.cue"),
-        "module: \"example.com/generated-provider-tests\"\nlanguage: version: \"v0.14.1\"\n",
+        "module: \"example.com/generated-provider-tests\"\nlanguage: version: \"v0.18.0\"\n",
     )?;
     for (path, contents) in &types.files {
         let path = directory.path().join(&types.directory).join(path);
@@ -807,7 +820,7 @@ fn generated_configurations_reject_descriptors_at_nested_scalar_leaves() -> Test
 
 #[test]
 #[ignore = "requires the CUE command"]
-fn generated_native_selectors_keep_nested_scalar_configuration_typed() -> TestResult {
+fn generated_arguments_take_output_references_of_their_own_type() -> TestResult {
     let types = generated_shape_types()?;
     let directory = generated_cue_module(&types)?;
     let resource_import = types.resource_import("example_shapes");
@@ -830,6 +843,10 @@ fn generated_native_selectors_keep_nested_scalar_configuration_typed() -> TestRe
                 nested_sequence_block: [{token: resourceProducer.outputs.output_token, sibling: "ordinary"}]
                 nested_mapping_block: {key: {token: dataProducer.outputs.output_token, sibling: "ordinary"}}
             }"#,
+                true,
+            ),
+            (
+                r#"{string_argument: {cuenvFunction: "sha256", of: resourceProducer.outputs.output_token, encoding: "hex", type: "string"}}"#,
                 true,
             ),
             (
@@ -865,7 +882,13 @@ fn generated_native_selectors_keep_nested_scalar_configuration_typed() -> TestRe
                 r#"{nested_object: {token: "literal", sibling: "ordinary", write_only: resourceProducer.outputs.output_token}}"#,
                 false,
             ),
+            (
+                "{unordered_strings: [resourceProducer.outputs.output_token]}",
+                false,
+            ),
         ] {
+            // The cuenv schema fills in each output's reference; this stands
+            // in for it.
             std::fs::write(
                 directory.path().join("test.cue"),
                 format!(
@@ -875,13 +898,18 @@ import (
     resource {resource_import}
     data {data_import}
 )
+_reference: {{
+    #namespace: string
+    #output: string
+    cuenvOutput: {{namespace: #namespace, name: "producer", environment: "", path: [#output]}}
+}}
 resourceProducer: resource.#Resource & {{
     configuration: {{}}
-    outputs: {{output_token: "resource-output", output_count: 2, output_enabled: true}}
+    outputs: [string]~(output,_): _reference & {{#namespace: "resources", #output: output}}
 }}
 dataProducer: data.#DataSource & {{
     configuration: {{}}
-    outputs: {{output_token: "data-output", output_count: 3, output_enabled: false}}
+    outputs: [string]~(output,_): _reference & {{#namespace: "data", #output: output}}
 }}
 consumer: {consumer} & {{configuration: {configuration}}}
 value: consumer.configuration
@@ -895,60 +923,33 @@ value: consumer.configuration
                 "{consumer} {configuration}: {}",
                 String::from_utf8_lossy(&output.stderr)
             );
-            if accepted {
+            if accepted && configuration.contains("nested_mapping_block") {
                 let value: serde_json::Value = serde_json::from_slice(&output.stdout)?;
-                assert_eq!(value["string_argument"], "resource-output");
-                assert_eq!(value["number_argument"], 3);
-                assert_eq!(value["boolean_argument"], true);
-                assert_eq!(value["sequence"][0], "resource-output");
-                assert_eq!(value["sequence"][1], "data-output");
-                assert_eq!(value["pair"][1], 3);
-                assert_eq!(value["object"]["sibling"], true);
-                assert_eq!(value["nested_sequence"][0]["token"], "data-output");
-                assert_eq!(value["nested_mapping_block"]["key"]["token"], "data-output");
+                let reference = |namespace: &str, output: &str, kind: &str| {
+                    serde_json::json!({
+                        "cuenvOutput": {"namespace": namespace, "name": "producer", "environment": "", "path": [output]},
+                        "type": kind,
+                    })
+                };
+                assert_eq!(
+                    value["string_argument"],
+                    reference("resources", "output_token", "string")
+                );
+                assert_eq!(
+                    value["number_argument"],
+                    reference("data", "output_count", "number")
+                );
+                assert_eq!(
+                    value["boolean_argument"],
+                    reference("resources", "output_enabled", "bool")
+                );
+                assert_eq!(
+                    value["nested_mapping_block"]["key"]["token"],
+                    reference("data", "output_token", "string")
+                );
             }
         }
     }
-    Ok(())
-}
-
-#[test]
-#[ignore = "requires the CUE command"]
-fn generated_native_selectors_allow_unresolved_output_values() -> TestResult {
-    let types = generated_shape_types()?;
-    let directory = generated_cue_module(&types)?;
-    let resource_import = types.resource_import("example_shapes");
-    let data_import = types.data_source_import("example_shapes");
-    std::fs::write(
-        directory.path().join("test.cue"),
-        format!(
-            r#"
-package test
-import (
-    resource {resource_import}
-    data {data_import}
-)
-producer: resource.#Resource & {{configuration: {{}}}}
-consumer: data.#DataSource & {{configuration: {{
-    sequence: [producer.outputs.output_token]
-    nested_sequence: [{{token: producer.outputs.output_token, sibling: "ordinary"}}]
-}}}}
-value: consumer.configuration
-"#
-        ),
-    )?;
-    let output = std::process::Command::new("cue")
-        .args(["eval", ".", "-e", "value"])
-        .current_dir(directory.path())
-        .output()?;
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let value = String::from_utf8(output.stdout)?;
-    assert!(value.contains("string"), "{value}");
-    assert!(value.contains("nested_sequence"), "{value}");
     Ok(())
 }
 
@@ -1079,7 +1080,7 @@ fn generated_write_only_arguments_keep_native_names_for_every_provider() -> Test
         )?;
         let content = &types.files[&PathBuf::from("resources/fake_write_only/resource.cue")];
         assert!(
-            content.contains("\tvalue?: string | #Secret\n"),
+            content.contains("\tvalue?: string | #Secret | #String\n"),
             "{content}"
         );
         assert!(
@@ -1087,7 +1088,7 @@ fn generated_write_only_arguments_keep_native_names_for_every_provider() -> Test
             "{content}"
         );
         assert!(
-            content.contains("\tvalue_wo_version?: number\n"),
+            content.contains("\tvalue_wo_version?: number | #Number\n"),
             "{content}"
         );
         assert!(
@@ -1101,7 +1102,7 @@ fn generated_write_only_arguments_keep_native_names_for_every_provider() -> Test
             .split('}')
             .next()
             .ok_or("missing outputs body")?;
-        assert!(outputs.contains("\tvalue: string"));
+        assert!(outputs.contains("\tvalue: {type: \"string\", ..."));
         assert!(!outputs.contains("value_wo:"));
         assert!(!outputs.contains("token:"));
     }
