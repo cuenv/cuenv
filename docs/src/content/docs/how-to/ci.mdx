@@ -616,6 +616,36 @@ ci: pipelines: deploy: {
 that job verbatim and rejects any required scope on the task or its emitted
 phase steps.
 
+### GitHub triggers (`pullRequest`, `mergeGroup`, `workflowRun`)
+
+`when.pullRequest` accepts either `true` (inheriting pipeline `branch` and
+derived paths) or a `#PullRequestTrigger` object with explicit `types`,
+`branches` (omitted means no branch filter), `paths` (overrides `derivePaths`),
+and `pathsIgnore`:
+
+```cue
+ci: pipelines: {
+	ci: when: {
+		pullRequest: {
+			branches: ["main"]
+			types: ["opened", "edited", "synchronize", "reopened"]
+		}
+		// Emits `on.merge_group: { types: [checks_requested] }`.
+		// Derived path filters are never applied to `merge_group`, and default
+		// concurrency isolates each queue entry by `merge_group.head_sha`.
+		mergeGroup: true
+	}
+	deploy: when: workflowRun: {
+		workflows: ["CI"]
+		types: ["completed"]
+		branches: ["main"]
+	}
+}
+```
+
+Derived `paths` filters are never applied to `merge_group` or `workflow_run`
+because GitHub Actions does not support path filters on those events.
+
 ## Secrets in CI
 
 Use task-local secret refs when cuenv should resolve the value at runtime:

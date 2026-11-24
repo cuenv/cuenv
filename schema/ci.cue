@@ -12,8 +12,38 @@ package schema
 // Workflow dispatch inputs map
 #WorkflowDispatchInputs: [string]: #WorkflowDispatchInput
 
+// Pull request trigger configuration (detailed form)
+#PullRequestTrigger: {
+	// Activity types to trigger on (e.g., ["opened", "edited", "synchronize", "reopened"])
+	types?: [...string]
+	// Target branches to filter on (omitted means no branch filter)
+	branches?: [...string]
+	// Explicit path filters (overrides derivePaths when set)
+	paths?: [...string]
+	// Paths to ignore (cannot be combined with paths)
+	pathsIgnore?: [...string]
+}
+
+// Merge queue trigger configuration (detailed form)
+#MergeGroupTrigger: {
+	// Activity types to trigger on (defaults to ["checks_requested"])
+	types?: [...string]
+}
+
+// Workflow run trigger configuration (chain after upstream workflow)
+#WorkflowRunTrigger: {
+	// Names of upstream workflows that trigger this pipeline
+	workflows!: [...string]
+	// Activity types to trigger on (defaults to ["completed"])
+	types?: [...string]
+	// Optional branch filter
+	branches?: [...string]
+}
+
 #PipelineCondition: {
-	pullRequest?: bool
+	pullRequest?: bool | #PullRequestTrigger
+	mergeGroup?:  bool | #MergeGroupTrigger
+	workflowRun?: #WorkflowRunTrigger
 	branch?: string | [...string]
 	tag?: string | [...string]
 	defaultBranch?:                  bool

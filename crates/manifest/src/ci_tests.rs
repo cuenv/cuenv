@@ -464,3 +464,44 @@ fn test_pipeline_concurrency_variants() {
     let explicit_empty: TaskGitHubConfig = serde_json::from_str(r#"{"permissions": {}}"#).unwrap();
     assert_eq!(explicit_empty.permissions, Some(BTreeMap::new()));
 }
+
+#[test]
+fn test_pull_request_merge_group_and_workflow_run_triggers() {
+    use super::{MergeGroupTrigger, PullRequestTrigger};
+
+    let bool_pr: PipelineCondition = serde_json::from_str(r#"{"pullRequest": true}"#).unwrap();
+    assert_eq!(
+        bool_pr.pull_request,
+        Some(PullRequestTrigger::Enabled(true))
+    );
+
+    let detailed_pr: PipelineCondition = serde_json::from_str(
+        r#"{"pullRequest": {"types": ["opened", "edited"], "pathsIgnore": ["docs/**"]}}"#,
+    )
+    .unwrap();
+    let cfg = detailed_pr
+        .pull_request
+        .as_ref()
+        .and_then(PullRequestTrigger::as_detailed)
+        .unwrap();
+    assert_eq!(cfg.types, vec!["opened", "edited"]);
+    assert_eq!(cfg.branches, None);
+    assert_eq!(cfg.paths_ignore, vec!["docs/**"]);
+
+    let mg_bool: PipelineCondition = serde_json::from_str(r#"{"mergeGroup": true}"#).unwrap();
+    assert_eq!(
+        mg_bool
+            .merge_group
+            .as_ref()
+            .and_then(MergeGroupTrigger::resolved_types),
+        Some(vec!["checks_requested".to_string()])
+    );
+
+    let wr: PipelineCondition =
+        serde_json::from_str(r#"{"workflowRun": {"workflows": ["CI"], "branches": ["main"]}}"#)
+            .unwrap();
+    let wr_cfg = wr.workflow_run.unwrap();
+    assert_eq!(wr_cfg.workflows, vec!["CI"]);
+    assert_eq!(wr_cfg.branches, vec!["main"]);
+    assert_eq!(wr_cfg.types, Vec::<String>::new());
+}

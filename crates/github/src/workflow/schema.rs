@@ -66,6 +66,14 @@ pub struct WorkflowTriggers {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pull_request: Option<PullRequestTrigger>,
 
+    /// Trigger on merge queue events
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub merge_group: Option<MergeGroupTrigger>,
+
+    /// Trigger after upstream workflow runs
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workflow_run: Option<WorkflowRunTrigger>,
+
     /// Trigger on release events
     #[serde(skip_serializing_if = "Option::is_none")]
     pub release: Option<ReleaseTrigger>,
@@ -111,6 +119,33 @@ pub struct PullRequestTrigger {
     /// Path patterns that must be matched to trigger
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub paths: Vec<String>,
+
+    /// Path patterns to ignore
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub paths_ignore: Vec<String>,
+}
+
+/// Merge queue (`merge_group`) event trigger configuration.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct MergeGroupTrigger {
+    /// Activity types to trigger on (e.g., "checks_requested")
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub types: Vec<String>,
+}
+
+/// Workflow run (`workflow_run`) event trigger configuration.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct WorkflowRunTrigger {
+    /// Upstream workflow names
+    pub workflows: Vec<String>,
+
+    /// Activity types to trigger on (e.g., "completed")
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub types: Vec<String>,
+
+    /// Branch patterns to filter on
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub branches: Vec<String>,
 }
 
 /// Release event trigger configuration.

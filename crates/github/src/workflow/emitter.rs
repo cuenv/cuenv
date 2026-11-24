@@ -3,9 +3,9 @@
 //! Transforms cuenv IR into GitHub Actions workflow YAML files.
 
 use crate::workflow::schema::{
-    CancelInProgress, Concurrency, Environment, Job, PermissionLevel, Permissions,
-    PullRequestTrigger, PushTrigger, ReleaseTrigger, RunsOn, ScheduleTrigger, Step, Workflow,
-    WorkflowDispatchTrigger, WorkflowInput, WorkflowTriggers,
+    CancelInProgress, Concurrency, Environment, Job, MergeGroupTrigger, PermissionLevel,
+    Permissions, PullRequestTrigger, PushTrigger, ReleaseTrigger, RunsOn, ScheduleTrigger, Step,
+    Workflow, WorkflowDispatchTrigger, WorkflowInput, WorkflowRunTrigger, WorkflowTriggers,
 };
 use crate::workflow::stage_renderer::GitHubStageRenderer;
 use cuenv_ci::emitter::{Emitter, EmitterError, EmitterResult};
@@ -378,12 +378,28 @@ impl GitHubActionsEmitter {
     pub const DEFAULT_CONCURRENCY_GROUP: &'static str =
         "${{ github.workflow }}-${{ github.head_ref || github.ref }}";
 
+    /// Default GitHub workflow concurrency group when `merge_group` is enabled,
+    /// isolating each merge-queue entry by its `head_sha` so queued runs do not
+    /// cancel one another.
+    pub const MERGE_GROUP_CONCURRENCY_GROUP: &'static str = "${{ github.workflow }}-${{ github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.head_ref || github.ref }}";
+
     /// Build workflow-level concurrency from IR pipeline metadata.
     #[must_use]
     pub fn build_workflow_concurrency(ir: &IntermediateRepresentation) -> Concurrency {
+        let default_group = if ir
+            .pipeline
+            .trigger
+            .as_ref()
+            .is_some_and(|t| t.merge_group.is_some())
+        {
+            Self::MERGE_GROUP_CONCURRENCY_GROUP
+        } else {
+            Self::DEFAULT_CONCURRENCY_GROUP
+        };
+
         let Some(cfg) = ir.pipeline.concurrency.as_ref() else {
             return Concurrency {
-                group: Self::DEFAULT_CONCURRENCY_GROUP.to_string(),
+                group: default_group.to_string(),
                 cancel_in_progress: Some(CancelInProgress::Bool(true)),
             };
         };
@@ -391,7 +407,7 @@ impl GitHubActionsEmitter {
         let group = cfg
             .group
             .clone()
-            .unwrap_or_else(|| Self::DEFAULT_CONCURRENCY_GROUP.to_string());
+            .unwrap_or_else(|| default_group.to_string());
         let cancel_in_progress = cfg
             .cancel_in_progress
             .as_ref()
@@ -895,6 +911,8 @@ impl GitHubActionsEmitter {
         WorkflowTriggers {
             push: Self::build_push_trigger(trigger, workflow_filename),
             pull_request: Self::build_pr_trigger(trigger, workflow_filename),
+            merge_group: Self::build_merge_group_trigger(trigger),
+            workflow_run: Self::build_workflow_run_trigger(trigger),
             release: Self::build_release_trigger(trigger),
             workflow_dispatch: Self::build_manual_trigger(trigger),
             schedule: Self::build_schedule_trigger(trigger),
@@ -931,7 +949,31 @@ impl GitHubActionsEmitter {
         let trigger = trigger?;
 
         // Only emit PR trigger if explicitly enabled - never default to running on PRs
-        if trigger.pull_request == Some(true) {
+        if trigger.pull_request != Some(true) {
+            return None;
+        }
+
+        if let Some(cfg) = trigger.pull_request_config.as_ref() {
+            let branches = cfg.branches.clone().unwrap_or_default();
+            let (paths, paths_ignore) = if let Some(explicit_paths) = cfg.paths.as_ref() {
+                (explicit_paths.clone(), cfg.paths_ignore.clone())
+            } else if !cfg.paths_ignore.is_empty() {
+                // GitHub forbids combining `paths` and `paths-ignore` on the same trigger.
+                (Vec::new(), cfg.paths_ignore.clone())
+            } else {
+                (
+                    Self::build_trigger_paths(&trigger.paths, workflow_filename),
+                    Vec::new(),
+                )
+            };
+
+            Some(PullRequestTrigger {
+                branches,
+                types: cfg.types.clone(),
+                paths,
+                paths_ignore,
+            })
+        } else {
             let paths = Self::build_trigger_paths(&trigger.paths, workflow_filename);
 
             Some(PullRequestTrigger {
@@ -939,9 +981,36 @@ impl GitHubActionsEmitter {
                 paths,
                 ..Default::default()
             })
-        } else {
-            None
         }
+    }
+
+    /// Build merge queue (`merge_group`) trigger from IR trigger condition.
+    ///
+    /// Derived `paths` filters are never applied because GitHub does not
+    /// support path filters on `merge_group`.
+    fn build_merge_group_trigger(trigger: Option<&TriggerCondition>) -> Option<MergeGroupTrigger> {
+        let mg = trigger?.merge_group.as_ref()?;
+        Some(MergeGroupTrigger {
+            types: mg.types.clone(),
+        })
+    }
+
+    /// Build upstream workflow (`workflow_run`) trigger from IR trigger condition.
+    ///
+    /// Derived `paths` filters are never applied because GitHub does not
+    /// support path filters on `workflow_run`.
+    fn build_workflow_run_trigger(
+        trigger: Option<&TriggerCondition>,
+    ) -> Option<WorkflowRunTrigger> {
+        let wr = trigger?.workflow_run.as_ref()?;
+        if wr.workflows.is_empty() {
+            return None;
+        }
+        Some(WorkflowRunTrigger {
+            workflows: wr.workflows.clone(),
+            types: wr.types.clone(),
+            branches: wr.branches.clone(),
+        })
     }
 
     /// Build release trigger from IR trigger condition

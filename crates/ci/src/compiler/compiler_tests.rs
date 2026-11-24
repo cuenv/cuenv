@@ -32,6 +32,8 @@ fn trigger_paths_for_project(project_path: &str, inputs: &[&str]) -> Vec<String>
         when: Some(PipelineCondition {
             branch: Some(StringOrVec::String("main".to_string())),
             pull_request: None,
+            merge_group: None,
+            workflow_run: None,
             tag: None,
             default_branch: None,
             scheduled: None,
