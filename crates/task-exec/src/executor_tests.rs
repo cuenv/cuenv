@@ -1102,6 +1102,101 @@ async fn test_cache_hit_replays_task_output_events() {
     );
 }
 
+/// Issue 460: an output reference is keyed on the value it resolves to,
+/// so a change of the upstream output is never served from the cache.
+#[tokio::test]
+async fn an_output_reference_keys_the_cache_on_its_resolved_value() {
+    let workspace = TempDir::new().unwrap();
+    let cache_root = TempDir::new().unwrap();
+    std::fs::write(workspace.path().join("input.txt"), "unchanged").unwrap();
+    std::fs::write(workspace.path().join("version.txt"), "v1").unwrap();
+
+    let cache = TaskCacheConfig {
+        cas: Arc::new(LocalCas::open(cache_root.path()).unwrap()),
+        action_cache: Arc::new(LocalActionCache::open(cache_root.path()).unwrap()),
+        vcs_hasher: Arc::new(WalkHasher::new(workspace.path())),
+        vcs_hasher_root: workspace.path().to_path_buf(),
+        action_semantics_version: 1,
+        runtime_identity_properties: BTreeMap::new(),
+        cache_disabled_reason: None,
+        secret_salt: Some("test-salt".to_string()),
+        mode_override: None,
+        cache_root: cache_root.path().to_path_buf(),
+        publisher: None,
+    };
+    let executor = TaskExecutor::new(ExecutorConfig {
+        environment: host_path_environment(),
+        capture_output: OutputCapture::Capture,
+        project_root: workspace.path().to_path_buf(),
+        cache: Some(cache),
+        ..Default::default()
+    });
+
+    let mut tasks = Tasks::new();
+    // Reads a file it does not declare, so it runs every time and its
+    // output changes while the consumer's inputs do not.
+    tasks.tasks.insert(
+        "version".into(),
+        TaskNode::Task(Box::new(Task {
+            command: "cat".into(),
+            args: vec!["version.txt".into()],
+            hermetic: unisolated_hermeticity(),
+            ..Default::default()
+        })),
+    );
+    tasks.tasks.insert(
+        "stamp".into(),
+        TaskNode::Task(Box::new(Task {
+            command: "sh".into(),
+            args: vec![
+                "-c".into(),
+                "printf 'stamped %s' \"$1\"".into(),
+                "sh".into(),
+                "cuenv:ref:version:stdout".into(),
+            ],
+            depends_on: vec![TaskDependency::from_name("version")],
+            inputs: vec![super::super::Input::Path("input.txt".to_string())],
+            hermetic: unisolated_hermeticity(),
+            cache: Some(super::super::TaskCachePolicy {
+                mode: super::super::TaskCacheMode::ReadWrite,
+                max_age: None,
+            }),
+            ..Default::default()
+        })),
+    );
+    let mut graph = TaskGraph::new();
+    graph.build_for_task("stamp", &tasks).unwrap();
+    let stamp = |results: &[TaskResult]| {
+        results
+            .iter()
+            .find(|result| result.name == "stamp")
+            .map(|result| result.stdout.trim().to_string())
+            .unwrap()
+    };
+
+    let first = executor.execute_graph(&graph).await.unwrap();
+    assert_eq!(stamp(&first), "stamped v1");
+
+    std::fs::write(workspace.path().join("version.txt"), "v2").unwrap();
+    let second = executor.execute_graph(&graph).await.unwrap();
+    assert_eq!(
+        stamp(&second),
+        "stamped v2",
+        "a stale cached result was served"
+    );
+
+    // Unchanged upstream output: the consumer is served from the cache, so
+    // the miss above came from the resolved value, not from no caching.
+    let third = executor.execute_graph(&graph).await.unwrap();
+    assert_eq!(stamp(&third), "stamped v2");
+    assert!(
+        third
+            .iter()
+            .any(|result| result.name == "stamp" && result.from_cache),
+        "the unchanged consumer should be a cache hit"
+    );
+}
+
 #[test]
 fn test_summarize_task_failure_with_exit_code() {
     let result = TaskResult {
