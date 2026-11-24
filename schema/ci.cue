@@ -131,6 +131,27 @@ package schema
 	after?: [...#GitHubStep]
 }
 
+// Plain-CUE helper for cross-job output references.
+// Use `(#GitHubJobOutput & {job: "plan", output: "matrix"}).ref` to emit
+// `"${{ needs.plan.outputs.matrix }}"` while staying compatible with `cue export`.
+#GitHubJobOutput: {
+	job!:    string
+	output!: string
+	ref:     "${{ needs.\(job).outputs.\(output) }}"
+}
+
+// Job-level dynamic or static matrix strategy configuration.
+#GitHubDynamicMatrix: {
+	// Static matrix entries or an expression / job output reference (wrapped in `fromJSON(...)`).
+	include!: [...{[string]: _}] | string
+	// Cancel in-progress matrix jobs when one fails (emits `strategy.fail-fast`).
+	failFast?: bool
+	// Maximum number of concurrent matrix jobs (emits `strategy.max-parallel`).
+	maxParallel?: int & >0
+	// Runner label(s) or expression string (e.g., `"${{ matrix.runner }}"`).
+	runsOn?: string | [...string]
+}
+
 // Task and contributor-step GitHub configuration.
 #TaskCI: {
 	github?: {
@@ -160,6 +181,12 @@ package schema
 		checkout?: #GitHubCheckoutConfig
 		// Custom steps injected before and/or after the task's own step.
 		steps?: #GitHubTaskSteps
+		// Output names written to $GITHUB_OUTPUT and exposed as `jobs.<id>.outputs.<name>`.
+		outputs?: [...string]
+		// Optional explicit step `id` for the task's step (defaults to sanitized task ID).
+		stepId?: string
+		// Dynamic or static job-level matrix strategy (`fromJSON` include, fail-fast, max-parallel, runs-on).
+		matrix?: #GitHubDynamicMatrix
 	}
 }
 

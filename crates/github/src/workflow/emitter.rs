@@ -3,10 +3,10 @@
 //! Transforms cuenv IR into GitHub Actions workflow YAML files.
 
 use crate::workflow::schema::{
-    CancelInProgress, Concurrency, Environment, Job, JobContainer, JobDefaults, MergeGroupTrigger,
-    PermissionLevel, Permissions, PullRequestTrigger, PushTrigger, ReleaseTrigger, RunDefaults,
-    RunsOn, ScheduleTrigger, Step, Workflow, WorkflowDispatchTrigger, WorkflowInput,
-    WorkflowRunTrigger, WorkflowTriggers,
+    CancelInProgress, Concurrency, Environment, Job, JobContainer, JobDefaults, Matrix,
+    MatrixInclude, MergeGroupTrigger, PermissionLevel, Permissions, PullRequestTrigger,
+    PushTrigger, ReleaseTrigger, RunDefaults, RunsOn, ScheduleTrigger, Step, Strategy, Workflow,
+    WorkflowDispatchTrigger, WorkflowInput, WorkflowRunTrigger, WorkflowTriggers,
 };
 use crate::workflow::stage_renderer::GitHubStageRenderer;
 use cuenv_ci::emitter::{Emitter, EmitterError, EmitterResult};
@@ -533,6 +533,92 @@ impl GitHubActionsEmitter {
         if let Some(if_expr) = &cfg.if_condition {
             job.if_condition = Some(if_expr.clone());
         }
+
+        if !cfg.outputs.is_empty() {
+            let step_id = Self::task_step_id(task).unwrap_or_else(|| sanitize_job_id(&task.id));
+            for output_name in &cfg.outputs {
+                job.outputs.insert(
+                    output_name.clone(),
+                    format!("${{{{ steps.{step_id}.outputs.{output_name} }}}}"),
+                );
+            }
+        }
+
+        if let Some(matrix_cfg) = &cfg.matrix {
+            let include = match &matrix_cfg.include {
+                Some(cuenv_core::ci::TaskGitHubMatrixInclude::Static(entries)) => {
+                    MatrixInclude::Static(
+                        entries
+                            .iter()
+                            .map(|entry| {
+                                entry
+                                    .iter()
+                                    .map(|(k, v)| {
+                                        (
+                                            k.clone(),
+                                            serde_yaml::to_value(v)
+                                                .unwrap_or(serde_yaml::Value::Null),
+                                        )
+                                    })
+                                    .collect()
+                            })
+                            .collect(),
+                    )
+                }
+                Some(cuenv_core::ci::TaskGitHubMatrixInclude::Expression(expr)) => {
+                    MatrixInclude::Expression(Self::format_dynamic_matrix_include(expr))
+                }
+                None => MatrixInclude::Static(Vec::new()),
+            };
+            job.strategy = Some(Strategy {
+                matrix: Matrix { include },
+                fail_fast: matrix_cfg.fail_fast,
+                max_parallel: matrix_cfg.max_parallel,
+            });
+            if runner_policy == RunnerOverridePolicy::Apply
+                && cfg.runner.is_none()
+                && let Some(runs_on) = &matrix_cfg.runs_on
+            {
+                job.runs_on = match runs_on {
+                    cuenv_core::ci::StringOrVec::String(label) => RunsOn::Label(label.clone()),
+                    cuenv_core::ci::StringOrVec::Vec(labels) => RunsOn::Labels(labels.clone()),
+                };
+            }
+        }
+    }
+
+    /// Resolve the step `id` for a task step when outputs or explicit `stepId` are configured.
+    #[must_use]
+    pub(super) fn task_step_id(task: &cuenv_ci::ir::Task) -> Option<String> {
+        let cfg = task.github_job.as_ref()?;
+        if let Some(step_id) = &cfg.step_id {
+            Some(step_id.clone())
+        } else if !cfg.outputs.is_empty() {
+            Some(sanitize_job_id(&task.id))
+        } else {
+            None
+        }
+    }
+
+    /// Format a dynamic `matrix.include` expression, wrapping job output references in `fromJSON(...)`.
+    #[must_use]
+    fn format_dynamic_matrix_include(expr: &str) -> String {
+        let trimmed = expr.trim();
+        let inner = trimmed
+            .strip_prefix("${{")
+            .and_then(|rest| rest.strip_suffix("}}"))
+            .map(str::trim);
+        if let Some(inner_expr) = inner {
+            if inner_expr.to_ascii_lowercase().starts_with("fromjson(") {
+                trimmed.to_string()
+            } else {
+                format!("${{{{ fromJSON({inner_expr}) }}}}")
+            }
+        } else if trimmed.to_ascii_lowercase().starts_with("fromjson(") {
+            format!("${{{{ {trimmed} }}}}")
+        } else {
+            format!("${{{{ fromJSON({trimmed}) }}}}")
+        }
     }
 
     /// Default GitHub workflow concurrency group expression.
@@ -943,6 +1029,7 @@ impl GitHubActionsEmitter {
             runs_on: self.runner_as_runs_on(),
             needs: Vec::new(),
             if_condition: command.job_if.map(str::to_string),
+            outputs: IndexMap::new(),
             strategy: None,
             environment: environment.map(Environment::Name),
             container: None,
@@ -966,6 +1053,7 @@ impl GitHubActionsEmitter {
                     runs_on: self.runner_as_runs_on(),
                     needs: vec![main_job.clone()],
                     if_condition: Some(follow_up.if_condition.to_string()),
+                    outputs: IndexMap::new(),
                     strategy: None,
                     environment: None,
                     container: None,
@@ -1490,6 +1578,106 @@ impl GitHubActionsEmitter {
         Ok(())
     }
 
+    /// Validate that every `needs.<job>.outputs.<name>` reference in `workflow`
+    /// points to a job in the workflow that declares `<name>` in its `outputs`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EmitterError::InvalidIR`] if any reference names an unknown job
+    /// or an undeclared output.
+    pub fn validate_job_output_references(workflow: &Workflow) -> EmitterResult<()> {
+        for (consumer_id, job) in &workflow.jobs {
+            for text in Self::collect_job_expression_strings(job) {
+                for (target_job, output_name) in Self::extract_needs_output_refs(text) {
+                    let Some(upstream) = workflow.jobs.get(target_job) else {
+                        return Err(EmitterError::InvalidIR(format!(
+                            "job '{consumer_id}' references output '{output_name}' from unknown job '{target_job}'"
+                        )));
+                    };
+                    if !upstream.outputs.contains_key(output_name) {
+                        return Err(EmitterError::InvalidIR(format!(
+                            "job '{consumer_id}' references undeclared output '{output_name}' from job '{target_job}'"
+                        )));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn collect_job_expression_strings(job: &Job) -> Vec<&str> {
+        let mut texts = Vec::new();
+        if let Some(cond) = job.if_condition.as_deref() {
+            texts.push(cond);
+        }
+        match &job.runs_on {
+            RunsOn::Label(label) => texts.push(label.as_str()),
+            RunsOn::Labels(labels) => texts.extend(labels.iter().map(String::as_str)),
+        }
+        if let Some(strategy) = &job.strategy
+            && let MatrixInclude::Expression(expr) = &strategy.matrix.include
+        {
+            texts.push(expr.as_str());
+        }
+        if let Some(env_cfg) = &job.environment {
+            match env_cfg {
+                Environment::Name(name) => texts.push(name.as_str()),
+                Environment::WithUrl { name, url } => {
+                    texts.push(name.as_str());
+                    texts.push(url.as_str());
+                }
+            }
+        }
+        if let Some(concurrency) = &job.concurrency {
+            texts.push(concurrency.group.as_str());
+            if let Some(CancelInProgress::Expression(expr)) = &concurrency.cancel_in_progress {
+                texts.push(expr.as_str());
+            }
+        }
+        texts.extend(job.env.values().map(String::as_str));
+        for step in &job.steps {
+            if let Some(cond) = step.if_condition.as_deref() {
+                texts.push(cond);
+            }
+            if let Some(run) = step.run.as_deref() {
+                texts.push(run);
+            }
+            texts.extend(step.env.values().map(String::as_str));
+            for val in step.with_inputs.values() {
+                if let Some(s) = val.as_str() {
+                    texts.push(s);
+                }
+            }
+        }
+        texts
+    }
+
+    fn extract_needs_output_refs(text: &str) -> Vec<(&str, &str)> {
+        let mut refs = Vec::new();
+        let mut rest = text;
+        while let Some(idx) = rest.find("needs.") {
+            let after_needs = &rest[idx + "needs.".len()..];
+            let job_len = after_needs
+                .bytes()
+                .take_while(|b| b.is_ascii_alphanumeric() || *b == b'-' || *b == b'_')
+                .count();
+            if job_len > 0 {
+                let job_id = &after_needs[..job_len];
+                if let Some(after_outputs) = after_needs[job_len..].strip_prefix(".outputs.") {
+                    let out_len = after_outputs
+                        .bytes()
+                        .take_while(|b| b.is_ascii_alphanumeric() || *b == b'-' || *b == b'_')
+                        .count();
+                    if out_len > 0 {
+                        refs.push((job_id, &after_outputs[..out_len]));
+                    }
+                }
+            }
+            rest = after_needs;
+        }
+        refs
+    }
+
     /// Serialize a workflow to YAML, applying configured action pins, enforcing
     /// `requirePinnedActions`, and preserving `# <tag>` trailing comments.
     ///
@@ -1497,8 +1685,10 @@ impl GitHubActionsEmitter {
     ///
     /// Returns [`EmitterError::InvalidIR`] if `requirePinnedActions` is enabled
     /// and any non-local `uses:` step is not pinned to a 40-character hex SHA,
+    /// if a job references an undeclared upstream job output,
     /// or [`EmitterError::Serialization`] if YAML serialization fails.
     pub fn serialize_workflow_with_pins(&self, workflow: &Workflow) -> EmitterResult<String> {
+        Self::validate_job_output_references(workflow)?;
         let mut pinned = workflow.clone();
         let mut tag_comments: Vec<(String, String)> = Vec::new();
 

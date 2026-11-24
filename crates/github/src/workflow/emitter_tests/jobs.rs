@@ -744,3 +744,114 @@ fn checkout_custom_steps_and_action_pins_compose_end_to_end() {
     let invalid_ir = super::make_ir(vec![invalid_task]);
     assert!(emitter.emit_expanded(&invalid_ir).is_err());
 }
+
+#[test]
+fn job_outputs_cross_job_references_and_dynamic_matrix() {
+    use cuenv_ci::emitter::Emitter;
+    use cuenv_core::ci::{
+        StringOrVec, TaskGitHubDynamicMatrix, TaskGitHubJobConfig, TaskGitHubMatrixInclude,
+    };
+    use std::collections::BTreeMap;
+
+    let emitter = GitHubActionsEmitter::new()
+        .with_runner("ubuntu-24.04")
+        .without_nix()
+        .without_cuenv_build();
+
+    let mut plan = super::make_task("release-plan", &["scripts/plan.sh"]);
+    plan.github_job = Some(TaskGitHubJobConfig {
+        outputs: vec!["matrix".to_string(), "web_digest".to_string()],
+        step_id: Some("plan".to_string()),
+        ..Default::default()
+    });
+
+    let mut build = super::make_task("release.build", &["scripts/build.sh"]);
+    build.depends_on = vec!["release-plan".to_string()];
+    build.env.insert(
+        "TESTED_DIGEST".to_string(),
+        "${{ needs.release-plan.outputs.web_digest }}".to_string(),
+    );
+    build.github_job = Some(TaskGitHubJobConfig {
+        if_condition: Some("needs.release-plan.outputs.matrix != '[]'".to_string()),
+        matrix: Some(TaskGitHubDynamicMatrix {
+            include: Some(TaskGitHubMatrixInclude::Expression(
+                "${{ needs.release-plan.outputs.matrix }}".to_string(),
+            )),
+            fail_fast: Some(false),
+            max_parallel: Some(4),
+            runs_on: Some(StringOrVec::String("${{ matrix.runner }}".to_string())),
+        }),
+        ..Default::default()
+    });
+
+    let mut static_matrix = super::make_task("smoke", &["scripts/smoke.sh"]);
+    static_matrix.github_job = Some(TaskGitHubJobConfig {
+        matrix: Some(TaskGitHubDynamicMatrix {
+            include: Some(TaskGitHubMatrixInclude::Static(vec![BTreeMap::from([
+                ("target".to_string(), serde_json::json!("x86_64-linux")),
+                ("runner".to_string(), serde_json::json!("ubuntu-24.04")),
+            ])])),
+            fail_fast: Some(true),
+            max_parallel: Some(2),
+            runs_on: Some(StringOrVec::String("${{ matrix.runner }}".to_string())),
+        }),
+        ..Default::default()
+    });
+
+    let ir = super::make_ir(vec![plan, build, static_matrix]);
+    let yaml = emitter.emit_expanded(&ir).expect("emit expanded workflow");
+    let doc: serde_yaml::Value = serde_yaml::from_str(&yaml).expect("parse workflow yaml");
+
+    let plan_job = &doc["jobs"]["release-plan"];
+    assert_eq!(
+        plan_job["outputs"]["matrix"].as_str(),
+        Some("${{ steps.plan.outputs.matrix }}")
+    );
+    assert_eq!(
+        plan_job["outputs"]["web_digest"].as_str(),
+        Some("${{ steps.plan.outputs.web_digest }}")
+    );
+    assert_eq!(plan_job["steps"][1]["id"].as_str(), Some("plan"));
+
+    let build_job = &doc["jobs"]["release-build"];
+    assert_eq!(build_job["runs-on"].as_str(), Some("${{ matrix.runner }}"));
+    assert_eq!(
+        build_job["if"].as_str(),
+        Some("needs.release-plan.outputs.matrix != '[]'")
+    );
+    assert_eq!(
+        build_job["strategy"]["matrix"]["include"].as_str(),
+        Some("${{ fromJSON(needs.release-plan.outputs.matrix) }}")
+    );
+    assert_eq!(build_job["strategy"]["fail-fast"].as_bool(), Some(false));
+    assert_eq!(build_job["strategy"]["max-parallel"].as_u64(), Some(4));
+
+    let smoke_job = &doc["jobs"]["smoke"];
+    assert_eq!(
+        smoke_job["strategy"]["matrix"]["include"][0]["target"].as_str(),
+        Some("x86_64-linux")
+    );
+    assert_eq!(smoke_job["strategy"]["fail-fast"].as_bool(), Some(true));
+    assert_eq!(smoke_job["strategy"]["max-parallel"].as_u64(), Some(2));
+
+    // Referencing an undeclared output from an upstream job fails validation.
+    let mut bad_consumer = super::make_task("deploy", &["scripts/deploy.sh"]);
+    bad_consumer.depends_on = vec!["release-plan".to_string()];
+    bad_consumer.env.insert(
+        "BAD".to_string(),
+        "${{ needs.release-plan.outputs.undeclared }}".to_string(),
+    );
+    let mut plan_only = super::make_task("release-plan", &["scripts/plan.sh"]);
+    plan_only.github_job = Some(TaskGitHubJobConfig {
+        outputs: vec!["matrix".to_string()],
+        ..Default::default()
+    });
+    let bad_ir = super::make_ir(vec![plan_only, bad_consumer]);
+    let err = emitter
+        .emit_expanded(&bad_ir)
+        .expect_err("undeclared job output reference must fail");
+    assert!(
+        err.to_string().contains("undeclared output 'undeclared'"),
+        "unexpected error: {err}"
+    );
+}

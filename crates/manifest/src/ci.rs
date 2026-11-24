@@ -884,6 +884,34 @@ pub struct TaskGitHubSteps {
     pub after: Vec<TaskGitHubStep>,
 }
 
+/// Value for `tasks.<t>.ci.github.matrix.include`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum TaskGitHubMatrixInclude {
+    /// Static list of matrix entry objects.
+    Static(Vec<BTreeMap<String, serde_json::Value>>),
+    /// GitHub Actions expression or job output reference (emitted via `fromJSON(...)`).
+    Expression(String),
+}
+
+/// Dynamic or static job-level matrix strategy configuration (`#GitHubDynamicMatrix`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskGitHubDynamicMatrix {
+    /// Static matrix entries or expression/output reference.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub include: Option<TaskGitHubMatrixInclude>,
+    /// Cancel in-progress matrix jobs when one fails.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fail_fast: Option<bool>,
+    /// Maximum number of concurrent matrix jobs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_parallel: Option<u32>,
+    /// Runner label(s) or expression string (e.g., `"${{ matrix.runner }}"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runs_on: Option<StringOrVec>,
+}
+
 /// Job-level GitHub Actions settings lowered from `#TaskCI.github` into the IR.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "camelCase")]
@@ -915,6 +943,15 @@ pub struct TaskGitHubJobConfig {
     /// Custom steps injected before and/or after the task's own step.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub steps: Option<TaskGitHubSteps>,
+    /// Output names written to `$GITHUB_OUTPUT` and exposed as `jobs.<id>.outputs.<name>`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub outputs: Vec<String>,
+    /// Optional explicit step `id` for the task's step (defaults to sanitized task ID).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step_id: Option<String>,
+    /// Dynamic or static job-level matrix strategy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matrix: Option<TaskGitHubDynamicMatrix>,
 }
 
 impl TaskGitHubJobConfig {
@@ -930,6 +967,9 @@ impl TaskGitHubJobConfig {
             && self.if_condition.is_none()
             && self.checkout.is_none()
             && self.steps.is_none()
+            && self.outputs.is_empty()
+            && self.step_id.is_none()
+            && self.matrix.is_none()
     }
 }
 

@@ -959,6 +959,7 @@ mod tests {
             runs_on,
             needs: Vec::new(),
             if_condition: None,
+            outputs: IndexMap::new(),
             strategy: None,
             environment: None,
             container: None,

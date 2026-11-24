@@ -69,6 +69,7 @@ pub fn build_hestia_gc_workflow() -> Workflow {
             "github.event_name == 'schedule' || github.ref_name == github.event.repository.default_branch"
                 .to_string(),
         ),
+        outputs: IndexMap::new(),
         strategy: None,
         environment: None,
         container: None,
