@@ -17,11 +17,14 @@ gpui = "0.2.2"
 gpui-component = "0.5.1"
 libc = "0.2.189"
 notify = "8"
+regex = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+url = "2"
 # Public Rust terminal core: the upstream PTY lifecycle fix plus one commit that keeps
-# the OSC 133 marks around command output. Return to upstream once that is merged there.
-rio-vt = { git = "https://github.com/rawkode/rio", rev = "200e78994355481c7e06cd840fbcaeb8a1e6b519" }
+# OSC 133 output marks and complete OSC 8 destinations. Return to upstream once
+# equivalent command-output tracking is available there.
+rio-vt = { git = "https://github.com/rawkode/rio", rev = "2d3da2dabe066a8b7aff590cd2d7bcbf79ec5778" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Compile shaders when GPUI starts so builds don't require Xcode's Metal toolchain.

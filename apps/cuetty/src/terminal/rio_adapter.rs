@@ -134,14 +134,22 @@ fn square_to_cell<U: EventListener>(
     {
         text.extend(extras.zerowidth.iter());
     }
-    cell_from_observation(SquareObservation {
+    let mut cell = cell_from_observation(SquareObservation {
         text,
         occupancy: occupancy_of(square),
         foreground: semantic_color(style.fg),
         background: semantic_color(style.bg),
         underline_color: style.underline_color.map(semantic_color),
         style: style_of(style.flags),
-    })
+    });
+    cell.hyperlink = square
+        .has_hyperlink()
+        .then(|| square.extras_id_checked())
+        .flatten()
+        .and_then(|id| terminal.grid.extras_table.get(id))
+        .and_then(|extras| extras.hyperlink.as_ref())
+        .map(|link| link.uri().to_owned());
+    cell
 }
 
 #[derive(Debug, Clone)]
@@ -161,6 +169,7 @@ fn cell_from_observation(observation: SquareObservation) -> TerminalCell {
         CellOccupancy::LeadingSpacer | CellOccupancy::TrailingSpacer => (None, CellWidth::Narrow),
     };
     TerminalCell {
+        hyperlink: None,
         text,
         width,
         occupancy: observation.occupancy,
@@ -267,6 +276,21 @@ mod tests {
             0,
             32,
         )
+    }
+
+    #[test]
+    fn osc8_destination_survives_parser_and_frame_sampling() {
+        let mut terminal = terminal();
+        Processor::default().advance(
+            &mut terminal,
+            b"\x1b]8;;https://example.org/a;b?x=1\x07link\x1b]8;;\x07!",
+        );
+        let frame = snapshot(&terminal, SamplingToken(1));
+        assert_eq!(
+            frame.rows[0].cells[0].hyperlink.as_deref(),
+            Some("https://example.org/a;b?x=1")
+        );
+        assert_eq!(frame.rows[0].cells[4].hyperlink, None);
     }
 
     #[test]

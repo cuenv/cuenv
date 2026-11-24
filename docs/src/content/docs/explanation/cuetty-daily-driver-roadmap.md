@@ -135,9 +135,8 @@ implemented in source, but M0 has **not** passed:
   separately from style IDs. Every copied row is conservatively dirty; no
   stable content revision is invented.
 - Session capability metadata advertises the implemented bracketed-paste
-  encoder, not general Rio protocol support. Scrollback access, mouse
-  reporting and hyperlink destinations remain unsupported in the host
-  contract even where Rio's core exposes the underlying state.
+  encoder, not general Rio protocol support. The host exposes scrollback and hyperlink destinations; application mouse
+  reporting is limited to wheel events.
 - `TerminalCell::text` preserves the complete backend-declared cluster.
   GPUI shaping, selection/copy, and literal search consume the full text;
   search results still address physical cells, not combining-mark fragments.
@@ -216,8 +215,8 @@ contracts before product-shell work depends on them.
 
 - [ ] Qualify the new renderer-neutral `TerminalCell::text` cluster model.
   Source now preserves cell width, continuation state, styles, wrapping, and
-  cursor position without leaking Rio types into GPUI; hyperlink destinations
-  and executable/macOS acceptance are still outstanding.
+  cursor position and hyperlink destinations without leaking Rio types into GPUI;
+  executable/macOS acceptance is still outstanding.
 - [x] Give scrollback one authoritative owner. The renderer should receive a
   viewport over terminal history, not reconstruct a second transcript from
   painted frames. This is essential for alternate screens, reflow, selection,

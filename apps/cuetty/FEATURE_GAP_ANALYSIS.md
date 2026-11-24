@@ -63,7 +63,7 @@ behind replaceable traits.
 
 1. Replace `TerminalCell::codepoint` with a renderer-neutral text/span model:
    grapheme or cell text, width, continuation/placeholder state, style, and
-   optional hyperlink metadata.
+   OSC 8 hyperlink metadata.
 2. Add Rio adapter tests for combining marks, wide CJK, emoji, soft wraps,
    cursor positions, and explicit background/foreground semantics. Keep Rio
    types behind the adapter.

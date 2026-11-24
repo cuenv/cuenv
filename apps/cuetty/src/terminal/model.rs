@@ -64,6 +64,8 @@ pub enum CellOccupancy {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TerminalCell {
+    /// The OSC 8 destination associated with this cell, if present.
+    pub hyperlink: Option<String>,
     /// Complete backend-declared cluster text. `None` is reserved for spacers.
     pub text: Option<String>,
     pub width: CellWidth,
@@ -77,6 +79,7 @@ pub struct TerminalCell {
 impl TerminalCell {
     pub fn narrow(codepoint: char) -> Self {
         Self {
+            hyperlink: None,
             text: Some(codepoint.to_string()),
             width: CellWidth::Narrow,
             occupancy: CellOccupancy::Narrow,
@@ -355,7 +358,7 @@ impl TerminalCapabilities {
             title_actions: Capability::Unsupported,
             bell_actions: Capability::Unsupported,
             combining_clusters: Capability::Supported,
-            hyperlink_destinations: Capability::Unsupported,
+            hyperlink_destinations: Capability::Supported,
             cursor_shape: Capability::Supported,
             cursor_visibility: Capability::Supported,
             bracketed_paste_mode: Capability::Unsupported,
@@ -377,7 +380,7 @@ impl TerminalCapabilities {
             title_actions: Capability::Supported,
             bell_actions: Capability::Supported,
             combining_clusters: Capability::Supported,
-            hyperlink_destinations: Capability::Unsupported,
+            hyperlink_destinations: Capability::Supported,
             cursor_shape: Capability::Supported,
             cursor_visibility: Capability::Supported,
             bracketed_paste_mode: Capability::Supported,
@@ -618,7 +621,7 @@ mod tests {
         let capabilities = TerminalCapabilities::rio_pinned();
         let mut modes = TerminalModes::default();
         assert_eq!(capabilities.scrollback, Capability::Supported);
-        assert_eq!(capabilities.hyperlink_destinations, Capability::Unsupported);
+        assert_eq!(capabilities.hyperlink_destinations, Capability::Supported);
         assert_eq!(
             modes.declare(
                 &capabilities,

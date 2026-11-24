@@ -10,7 +10,7 @@ semantic render frames.
 
 The direct-`rio-vt` revision is:
 
-`200e78994355481c7e06cd840fbcaeb8a1e6b519` of the
+`2d3da2dabe066a8b7aff590cd2d7bcbf79ec5778` of the
 [rawkode/rio](https://github.com/rawkode/rio) fork
 
 That pin is intentional. It is upstream
@@ -18,8 +18,9 @@ That pin is intentional. It is upstream
 [Rio PR #1930](https://github.com/raphamorim/rio/pull/1930) to preserve
 final PTY output under terminal-lock contention and give Unix child teardown
 an ownership-safe shutdown/reap contract, plus one `rio-vt` commit that keeps
-the OSC 133 marks a shell leaves around a command's output and its exit status.
-Cuetty returns to an upstream revision once that commit is merged there. It uses
+the OSC 133 marks a shell leaves around a command's output and its exit status,
+and a fix retaining semicolons in OSC 8 destinations. Cuetty returns to an
+upstream revision once equivalent output tracking is available there. It uses
 public APIs available at this revision rather than private renderer or embedding APIs.
 The recorded macOS qualification applies to an earlier fork revision;
 qualification of this pin remains pending.
@@ -625,3 +626,5 @@ paths keep stack protection without depending on the unmaintained
 `proc-macro-error2` crate. The adapter covers GPUI's default-feature use; it
 does not implement the removed `derive-visitor` feature. Its deep-recursion
 and recursive-drop tests run with the Cuetty workspace tests.
+
+Cuetty opens OSC 8 links and printed HTTP(S) URLs with Ctrl-click on Linux or Cmd-click on macOS. Hovering previews the destination; dragging continues to select text.
