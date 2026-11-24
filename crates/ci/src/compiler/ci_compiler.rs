@@ -136,6 +136,11 @@ impl Compiler {
         self.compile_tasks(&self.project.tasks, &mut ir)?;
         self.compile_inline_tasks(&mut ir)?;
 
+        // Apply pipeline-level per-label parallelism limits (#631)
+        if let Some(ref pipeline) = self.options.pipeline {
+            self.apply_pipeline_limits(pipeline, &mut ir);
+        }
+
         // Fix artifact download paths to use actual upstream task outputs
         // (artifact_downloads are initially created with paths derived from task names,
         // but should use the actual output paths from the upstream tasks)
@@ -155,5 +160,47 @@ impl Compiler {
         })?;
 
         Ok(ir)
+    }
+
+    /// Lower `#Pipeline.limits` (`label -> cap`) into round-robin concurrency slots
+    /// (`<label>-0`..`<label>-<cap-1>`, `cancelInProgress: false`) for matching
+    /// labelled tasks that do not already declare an explicit concurrency group.
+    fn apply_pipeline_limits(
+        &self,
+        pipeline: &cuenv_core::ci::Pipeline,
+        ir: &mut IntermediateRepresentation,
+    ) {
+        use cuenv_core::ci::{CancelInProgressConfig, PipelineConcurrency, TaskGitHubJobConfig};
+
+        for (label, &cap) in &pipeline.limits {
+            if cap == 0 {
+                continue;
+            }
+            let mut slot_index: u32 = 0;
+            for ir_task in &mut ir.tasks {
+                if ir_task.phase.is_some() || ir_task.concurrency_group.is_some() {
+                    continue;
+                }
+                let has_label = self
+                    .find_task(&ir_task.id)
+                    .is_some_and(|t| t.labels.iter().any(|l| l == label));
+                if !has_label {
+                    continue;
+                }
+                let slot = slot_index % cap;
+                slot_index = slot_index.saturating_add(1);
+                let group = format!("{label}-{slot}");
+                ir_task.concurrency_group = Some(group.clone());
+                let job = ir_task
+                    .github_job
+                    .get_or_insert_with(TaskGitHubJobConfig::default);
+                if job.concurrency.is_none() {
+                    job.concurrency = Some(PipelineConcurrency {
+                        group: Some(group),
+                        cancel_in_progress: Some(CancelInProgressConfig::Bool(false)),
+                    });
+                }
+            }
+        }
     }
 }

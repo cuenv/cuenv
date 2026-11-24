@@ -220,6 +220,8 @@ impl ReleaseWorkflowBuilder {
                 max_parallel: None,
             }),
             environment: None,
+            container: None,
+            defaults: None,
             env: IndexMap::new(),
             concurrency: None,
             continue_on_error: None,
@@ -312,6 +314,8 @@ impl ReleaseWorkflowBuilder {
             needs: vec!["build".to_string()],
             if_condition: None,
             strategy: None,
+            container: None,
+            defaults: None,
             environment: Some(Environment::Name(
                 ir.pipeline
                     .environment
@@ -499,6 +503,7 @@ mod tests {
             github_permissions: std::collections::BTreeMap::new(),
             github_permissions_mode: cuenv_ci::ir::GitHubPermissionsMode::Inferred,
             github_execution: None,
+            github_job: None,
             provider_hints: Some(serde_json::json!({
                 "github_action": {
                     "uses": fixture.uses,

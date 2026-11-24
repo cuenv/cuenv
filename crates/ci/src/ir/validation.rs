@@ -228,6 +228,7 @@ mod tests {
             github_permissions: std::collections::BTreeMap::new(),
             github_permissions_mode: crate::ir::GitHubPermissionsMode::Inferred,
             github_execution: None,
+            github_job: None,
             provider_hints: None,
             external_dependencies: Vec::new(),
         }

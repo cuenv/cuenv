@@ -71,6 +71,8 @@ pub fn build_hestia_gc_workflow() -> Workflow {
         ),
         strategy: None,
         environment: None,
+        container: None,
+        defaults: None,
         env: IndexMap::new(),
         concurrency: None,
         continue_on_error: None,

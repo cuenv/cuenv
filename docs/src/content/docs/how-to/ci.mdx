@@ -646,6 +646,33 @@ ci: pipelines: {
 Derived `paths` filters are never applied to `merge_group` or `workflow_run`
 because GitHub Actions does not support path filters on those events.
 
+### Per-job GitHub settings and parallelism limits
+
+In expanded and matrix pipelines, individual tasks can configure GitHub job
+fields under `ci.github`:
+
+```cue
+tasks: "deploy.docs": {
+	command: "bun"
+	args: ["run", "deploy"]
+	ci: github: {
+		runner: ["namespace-profile-builder"] // string, expression, or label list
+		concurrency: {group: "deploy-prod", cancelInProgress: false}
+		timeoutMinutes: 45                    // overrides provider.github.timeoutMinutes
+		environment: {name: "production", url: "https://docs.example.com"}
+		container: {image: "mcr.microsoft.com/playwright:v1.64.1-noble@sha256:...", options: "--ipc=host"}
+		defaults: run: {workingDirectory: "docs", shell: "bash"}
+		if: "!cancelled() && needs.changes.outputs.docs == 'true'"
+	}
+}
+```
+
+At the pipeline level, `limits: {heavy: 2}` caps simultaneous jobs carrying the
+`heavy` label by assigning them round-robin to `heavy-0`…`heavy-1` concurrency
+groups with `cancel-in-progress: false`. For job-level `if` conditions, GitHub
+applies an implicit `success()` unless the expression calls a status function
+such as `always()`, `failure()`, or `!cancelled()`.
+
 ## Secrets in CI
 
 Use task-local secret refs when cuenv should resolve the value at runtime:

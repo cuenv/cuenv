@@ -356,6 +356,14 @@ pub struct Job {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub environment: Option<Environment>,
 
+    /// Container image or config to run job steps in
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub container: Option<JobContainer>,
+
+    /// Default settings applied to run steps in this job
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub defaults: Option<JobDefaults>,
+
     /// Job-level environment variables
     #[serde(skip_serializing_if = "IndexMap::is_empty")]
     pub env: IndexMap<String, String>,
@@ -374,6 +382,48 @@ pub struct Job {
 
     /// Job steps (executed sequentially)
     pub steps: Vec<Step>,
+}
+
+/// Container configuration for a GitHub Actions job.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum JobContainer {
+    /// Image reference shorthand (emitted when only `image` is set)
+    Image(String),
+    /// Full container configuration with options, env, or volumes
+    Config {
+        /// Container image reference (supports digest pins)
+        image: String,
+        /// Additional Docker container create options (e.g., `--ipc=host`)
+        #[serde(skip_serializing_if = "Option::is_none")]
+        options: Option<String>,
+        /// Environment variables set in the container
+        #[serde(skip_serializing_if = "IndexMap::is_empty")]
+        env: IndexMap<String, String>,
+        /// Volume mounts for the container
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        volumes: Vec<String>,
+    },
+}
+
+/// Default settings for steps in a GitHub Actions job.
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
+pub struct JobDefaults {
+    /// Default settings for `run` steps
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run: Option<RunDefaults>,
+}
+
+/// Default settings for `run` steps in a GitHub Actions job.
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub struct RunDefaults {
+    /// Default working directory for `run` steps
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub working_directory: Option<String>,
+    /// Default shell for `run` steps
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shell: Option<String>,
 }
 
 /// Runner specification for where a job runs.
@@ -574,6 +624,8 @@ mod tests {
             if_condition: None,
             strategy: None,
             environment: None,
+            container: None,
+            defaults: None,
             env: IndexMap::new(),
             concurrency: None,
             continue_on_error: None,

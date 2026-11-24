@@ -276,6 +276,8 @@ impl GitHubActionsEmitter {
             if_condition: None,
             strategy: None,
             environment: None,
+            container: None,
+            defaults: None,
             env: IndexMap::new(),
             concurrency: None,
             continue_on_error: None,
@@ -497,23 +499,31 @@ impl GitHubActionsEmitter {
             steps.push(upload_step);
         }
 
-        Job {
+        let mut job = Job {
             permissions: self.job_permissions_option(
                 task,
                 &Self::emitted_phase_tasks(ir, options.execution, options.cuenv_setup),
             ),
             name: Some(task.id.clone()),
-            runs_on: RunsOn::Label(self.runner.clone()),
+            runs_on: self.runner_as_runs_on(),
             needs: Vec::new(),
             if_condition: None,
             strategy: None,
             environment,
+            container: None,
+            defaults: None,
             env: IndexMap::new(),
             concurrency: None,
             continue_on_error: None,
             timeout_minutes: None,
             steps,
-        }
+        };
+        self.apply_task_github_job(
+            task,
+            &mut job,
+            crate::workflow::emitter::RunnerOverridePolicy::Apply,
+        );
+        job
     }
 
     /// Build an artifact aggregation job from an IR task with `artifact_downloads`.
@@ -610,23 +620,31 @@ impl GitHubActionsEmitter {
         let environment = self.task_job_environment(task, ir, Some(&mut task_step));
         steps.push(task_step);
 
-        Job {
+        let mut job = Job {
             permissions: self.job_permissions_option(
                 task,
                 &Self::emitted_phase_tasks(ir, TaskExecution::Orchestrated, options.cuenv_setup),
             ),
             name: Some(task.id.clone()),
-            runs_on: RunsOn::Label(self.runner.clone()),
+            runs_on: self.runner_as_runs_on(),
             needs: options.previous_jobs.to_vec(),
             if_condition: None,
             strategy: None,
             environment,
+            container: None,
+            defaults: None,
             env: IndexMap::new(),
             concurrency: None,
             continue_on_error: None,
             timeout_minutes: Some(30),
             steps,
-        }
+        };
+        self.apply_task_github_job(
+            task,
+            &mut job,
+            crate::workflow::emitter::RunnerOverridePolicy::Apply,
+        );
+        job
     }
 
     /// Build matrix-expanded jobs from an IR task with `matrix` configuration.
@@ -756,26 +774,36 @@ impl GitHubActionsEmitter {
                     steps.push(upload_step);
                 }
 
-                jobs.insert(
-                    job_id,
-                    Job {
-                        permissions: self.job_permissions_option(
-                            task,
-                            &Self::emitted_phase_tasks(ir, options.execution, options.cuenv_setup),
-                        ),
-                        name: Some(format!("{} ({arch})", task.id)),
-                        runs_on: RunsOn::Label(runner),
-                        needs: options.previous_jobs.to_vec(),
-                        if_condition: None,
-                        strategy: None,
-                        environment,
-                        env: IndexMap::new(),
-                        concurrency: None,
-                        continue_on_error: None,
-                        timeout_minutes: Some(60),
-                        steps,
-                    },
-                );
+                let has_arch_runner = options
+                    .arch_runners
+                    .and_then(|runners| runners.get(arch))
+                    .is_some();
+                let mut job = Job {
+                    permissions: self.job_permissions_option(
+                        task,
+                        &Self::emitted_phase_tasks(ir, options.execution, options.cuenv_setup),
+                    ),
+                    name: Some(format!("{} ({arch})", task.id)),
+                    runs_on: RunsOn::Label(runner),
+                    needs: options.previous_jobs.to_vec(),
+                    if_condition: None,
+                    strategy: None,
+                    environment,
+                    container: None,
+                    defaults: None,
+                    env: IndexMap::new(),
+                    concurrency: None,
+                    continue_on_error: None,
+                    timeout_minutes: Some(60),
+                    steps,
+                };
+                let runner_policy = if has_arch_runner {
+                    crate::workflow::emitter::RunnerOverridePolicy::PreserveExisting
+                } else {
+                    crate::workflow::emitter::RunnerOverridePolicy::Apply
+                };
+                self.apply_task_github_job(task, &mut job, runner_policy);
+                jobs.insert(job_id, job);
             }
         }
 
