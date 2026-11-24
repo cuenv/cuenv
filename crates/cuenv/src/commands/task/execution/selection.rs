@@ -201,6 +201,22 @@ fn apply_task_arguments(
         ));
     };
 
+    // A discovered script parses its own arguments: they follow its path as
+    // given, one argument each, never interpolated.
+    if task.script_file.is_some() {
+        let mut forwarded = (*task).clone();
+        forwarded.args.extend(
+            crate::commands::task::arguments::script_arguments(input.task_args)
+                .iter()
+                .cloned(),
+        );
+        tasks_in_scope.tasks.insert(
+            display_task_name.to_string(),
+            TaskNode::Task(Box::new(forwarded)),
+        );
+        return Ok(());
+    }
+
     let resolved_args =
         crate::commands::task::arguments::resolve_task_args(task.params.as_ref(), input.task_args)?;
     tracing::debug!("Resolved task args: {:?}", resolved_args);

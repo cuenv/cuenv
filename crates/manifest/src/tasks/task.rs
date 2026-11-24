@@ -11,6 +11,7 @@ use super::hermetic::{Hermetic, Sandbox};
 use super::inputs::{Input, InputPattern, SourceLocation, TaskDirectory, TaskOutput};
 use super::params::TaskParams;
 use super::retry::RetryConfig;
+use super::script_file::ScriptFile;
 use super::shell::{ScriptShell, Shell, ShellOptions};
 
 fn default_hermetic() -> Hermetic {
@@ -177,6 +178,15 @@ pub struct Task {
     /// Resolves relative to the task definition, caller, or module root.
     #[serde(default, rename = "dir", skip_serializing_if = "Option::is_none")]
     pub directory: Option<TaskDirectory>,
+
+    /// The file this task was discovered from, when a project's
+    /// `taskScripts` declared it rather than CUE. Written by cuenv.
+    #[serde(
+        default,
+        rename = "_cuenvScript",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub script_file: Option<ScriptFile>,
 }
 
 // Custom deserialization for Task to ensure either command or script is present.
@@ -239,6 +249,8 @@ impl<'de> serde::Deserialize<'de> for Task {
             caller_source: Option<SourceLocation>,
             #[serde(default, rename = "dir")]
             directory: Option<TaskDirectory>,
+            #[serde(default, rename = "_cuenvScript")]
+            script_file: Option<ScriptFile>,
         }
 
         let helper = TaskHelper::deserialize(deserializer)?;
@@ -287,6 +299,7 @@ impl<'de> serde::Deserialize<'de> for Task {
             source: helper.source,
             caller_source: helper.caller_source,
             directory: helper.directory,
+            script_file: helper.script_file,
         })
     }
 }
@@ -319,6 +332,7 @@ impl Default for Task {
             source: None,
             caller_source: None,
             directory: None,
+            script_file: None,
         }
     }
 }

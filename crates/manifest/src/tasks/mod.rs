@@ -21,6 +21,7 @@ mod node;
 mod params;
 mod resolver;
 mod retry;
+mod script_file;
 mod shell;
 mod task;
 
@@ -36,5 +37,6 @@ pub use inputs::{
 pub use node::{TaskNode, Tasks};
 pub use params::{ParamDef, ParamType, ResolvedArgs, TaskParams};
 pub use retry::RetryConfig;
+pub use script_file::ScriptFile;
 pub use shell::{ScriptShell, Shell, ShellOptionToggle, ShellOptions};
 pub use task::Task;

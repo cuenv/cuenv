@@ -147,7 +147,7 @@ impl<'de> serde::Deserialize<'de> for TaskRef {
             type Value = TaskRef;
 
             fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-                formatter.write_str("an object with _name field (task reference)")
+                formatter.write_str("an object with a _name or taskScript field (task reference)")
             }
 
             fn visit_map<M>(self, map: M) -> Result<Self::Value, M::Error>
@@ -158,8 +158,11 @@ impl<'de> serde::Deserialize<'de> for TaskRef {
                 let value: serde_json::Value =
                     serde::Deserialize::deserialize(de::value::MapAccessDeserializer::new(map))?;
 
+                // A discovered script task has no CUE value to reference, so
+                // a pipeline names it with `{taskScript: "<name>"}`.
                 let name = value
                     .get("_name")
+                    .or_else(|| value.get("taskScript"))
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| de::Error::missing_field("_name"))?
                     .to_string();

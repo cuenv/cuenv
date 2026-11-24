@@ -148,6 +148,46 @@ package schema
 }
 
 // =============================================================================
+// Discovered Script Tasks
+// =============================================================================
+
+// An interpreter cuenv runs a discovered script with. "python" also accepts
+// a versioned program such as "python3" from a shebang.
+#TaskScriptInterpreter: "bash" | "sh" | "fish" | "nu" | "python" | "python3" | "bun"
+
+// A directory whose script files become tasks. Only files directly inside it
+// are read, never in subdirectories; dotfiles, excluded names and links that
+// leave the project are skipped. A file's interpreter is its entry in
+// `interpreters`, else its shebang, else an extension only one interpreter
+// uses (.bash, .fish, .nu, .py). A `.sh`, JavaScript or TypeScript file needs
+// a shebang or an entry. The task is `prefix` + the file name without its
+// extension, runs from the project directory with the command line's
+// arguments after the script path, and has the script as an input.
+#TaskScriptDirectory: {
+	// The directory, relative to the project.
+	path!: #AnchoredPath
+	// Prepended to each file name to name its task.
+	prefix?: string & =~"^[A-Za-z0-9_-]*$"
+	// File-name globs that never become tasks, such as "*.lib.sh".
+	exclude?: [...string]
+	// Interpreters by file name, over the shebang and the extension.
+	interpreters?: [string]: #TaskScriptInterpreter
+	// Discovered tasks run in the workspace and are never cached unless the
+	// directory opts into hermetic execution, with the inputs, outputs and
+	// cache policy that needs.
+	hermetic?: bool | #Hermetic
+	inputs?: [...#Input]
+	outputs?: [...string]
+	cache?: #TaskCachePolicy
+}
+
+// A discovered script task named in a CI pipeline: `{taskScript: "release"}`.
+// Discovered tasks have no CUE value to reference.
+#TaskScriptRef: {
+	taskScript!: string & =~"^[A-Za-z0-9_-]+$"
+}
+
+// =============================================================================
 // Single Executable Task
 // =============================================================================
 

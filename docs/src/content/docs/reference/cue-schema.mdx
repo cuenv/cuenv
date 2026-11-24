@@ -713,6 +713,39 @@ tasks: {
 
 A sequence is simply an array of `#TaskNode` - the tasks execute in array order.
 
+### #TaskScriptDirectory
+
+A directory whose script files become tasks, listed in `taskScripts` on
+`#Project`. Nothing is scanned unless a directory is listed.
+
+```cue
+taskScripts: [{
+    path:     "scripts"              // relative to the project
+    prefix:   "s-"                   // optional, prepended to each task name
+    exclude:  ["*.lib.sh"]           // file-name globs that are never tasks
+    interpreters: "deploy.ts": "bun" // over the shebang and the extension
+    hermetic: false                  // default; true opts into the sandbox and cache
+    inputs:   []                     // added to the script itself when hermetic
+    outputs:  []
+}]
+```
+
+Only files directly in the directory are read. The interpreter is the
+`interpreters` entry, else the shebang, else an unambiguous extension (`.bash`,
+`.fish`, `.nu`, `.py`). See [Task scripts](/how-to/task-scripts/) for the full
+rules.
+
+### #TaskScriptInterpreter
+
+`"bash" | "sh" | "fish" | "nu" | "python" | "python3" | "bun"`: the
+interpreters a discovered script can run with.
+
+### #TaskScriptRef
+
+Names a discovered script task in a CI pipeline, where it has no CUE value to
+reference: `{taskScript: "release"}`. Accepted wherever `#PipelineTask` is, and
+as `task` of a `#MatrixTask`.
+
 ### #TaskCapture
 
 Extracts a named value from a task's output stream with a regex. After the task

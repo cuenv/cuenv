@@ -162,6 +162,15 @@ pub fn resolve_task_args(params: Option<&TaskParams>, cli_args: &[String]) -> Re
     Ok(resolved)
 }
 
+/// The arguments a discovered script receives: everything after the task
+/// name, without the `--` that may separate them from cuenv's own.
+pub fn script_arguments(cli_args: &[String]) -> &[String] {
+    match cli_args.split_first() {
+        Some((first, rest)) if first == "--" => rest,
+        _ => cli_args,
+    }
+}
+
 /// Apply resolved arguments to a task, interpolating placeholders in command and args
 pub fn apply_args_to_task(task: &Task, resolved_args: &ResolvedArgs) -> Task {
     let mut new_task = task.clone();
@@ -180,6 +189,17 @@ mod tests {
     use super::*;
     use cuenv_core::tasks::ParamDef;
     use std::collections::HashMap;
+
+    #[test]
+    fn script_arguments_drop_only_a_leading_separator() {
+        let args = |values: &[&str]| values.iter().map(ToString::to_string).collect::<Vec<_>>();
+        assert_eq!(
+            script_arguments(&args(&["--", "--version", "1.2 3", "--"])),
+            args(&["--version", "1.2 3", "--"])
+        );
+        assert_eq!(script_arguments(&args(&["-v", "x"])), args(&["-v", "x"]));
+        assert_eq!(script_arguments(&[]), &[] as &[String]);
+    }
 
     #[test]
     fn test_looks_like_flag() {
