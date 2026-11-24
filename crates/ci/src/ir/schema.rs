@@ -45,6 +45,8 @@ impl IntermediateRepresentation {
                 project_path: None,
                 trigger: None,
                 concurrency: None,
+                gate: None,
+                changes: None,
                 pipeline_tasks: Vec::new(),
                 pipeline_task_defs: Vec::new(),
             },
@@ -129,6 +131,14 @@ pub struct PipelineMetadata {
     /// Workflow-level concurrency configuration
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub concurrency: Option<cuenv_core::ci::PipelineConcurrency>,
+
+    /// Single required check gate job configuration
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate: Option<cuenv_core::ci::PipelineGate>,
+
+    /// Per-lane change detection job configuration
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub changes: Option<cuenv_core::ci::PipelineChanges>,
 
     /// Task IDs that this pipeline runs (for contributor filtering)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

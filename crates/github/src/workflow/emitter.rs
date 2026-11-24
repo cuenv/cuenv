@@ -1079,7 +1079,7 @@ impl GitHubActionsEmitter {
             Self::build_workflow_concurrency(ir)
         };
 
-        let workflow = Workflow {
+        let mut workflow = Workflow {
             name: workflow_name,
             run_name: self.run_name.clone(),
             on: triggers,
@@ -1088,6 +1088,7 @@ impl GitHubActionsEmitter {
             env: IndexMap::new(),
             jobs,
         };
+        self.apply_pipeline_gate(ir, &mut workflow);
 
         self.serialize_workflow_with_pins(&workflow)
     }
@@ -1138,7 +1139,7 @@ impl GitHubActionsEmitter {
         let triggers = self.build_triggers(ir, &workflow_filename);
         let jobs = self.build_jobs(ir);
 
-        Ok(Workflow {
+        let mut workflow = Workflow {
             name: workflow_name.to_string(),
             run_name: self.run_name.clone(),
             on: triggers,
@@ -1146,7 +1147,249 @@ impl GitHubActionsEmitter {
             permissions: self.workflow_permissions(),
             env: IndexMap::new(),
             jobs,
-        })
+        };
+        self.apply_pipeline_changes(ir, &mut workflow);
+        self.apply_pipeline_gate(ir, &mut workflow);
+
+        Ok(workflow)
+    }
+
+    /// Inject a per-lane change detection job (`#Pipeline.changes`) and wire
+    /// downstream lane jobs to `needs: [<changes_job>]` and `if: needs.<changes_job>.outputs.<lane> == 'true'`
+    /// unless the task overrides `if`.
+    pub fn apply_pipeline_changes(&self, ir: &IntermediateRepresentation, workflow: &mut Workflow) {
+        let Some(changes) = &ir.pipeline.changes else {
+            return;
+        };
+        if changes.lanes.is_empty() {
+            return;
+        }
+
+        let job_name = changes.job.as_deref().unwrap_or("changes");
+        let changes_job_id = sanitize_job_id(job_name);
+
+        let mut outputs = IndexMap::new();
+        for lane_name in changes.lanes.keys() {
+            outputs.insert(
+                lane_name.clone(),
+                format!("${{{{ steps.detect.outputs.{lane_name} }}}}"),
+            );
+        }
+
+        let mut detect_step = if let Some(script) = &changes.script {
+            Step::run(script).with_name("Detect changed lanes")
+        } else {
+            use std::fmt::Write as _;
+
+            let mut script = String::from(
+                "set -eu\n\
+                 BASE_REF=\"\"\n\
+                 case \"$GITHUB_EVENT_NAME\" in\n\
+                   merge_group) BASE_REF=\"$MERGE_GROUP_BASE_SHA\" ;;\n\
+                   pull_request|pull_request_target) BASE_REF=\"$PR_BASE_SHA\" ;;\n\
+                   push)\n\
+                     if [ -n \"$PUSH_BEFORE_SHA\" ] && [ \"$PUSH_BEFORE_SHA\" != \"0000000000000000000000000000000000000000\" ]; then\n\
+                       BASE_REF=\"$PUSH_BEFORE_SHA\"\n\
+                     fi\n\
+                     ;;\n\
+                 esac\n\
+                 if [ -z \"$BASE_REF\" ]; then\n",
+            );
+            for lane_name in changes.lanes.keys() {
+                let _ = writeln!(script, "  echo \"{lane_name}=true\" >> \"$GITHUB_OUTPUT\"");
+            }
+            let _ = writeln!(
+                script,
+                "  exit 0\n\
+                 fi\n\
+                 if AFFECTED=$(cuenv ci --pipeline '{}' --affected --dry-run --from \"$BASE_REF\"); then\n\
+                   lane_hit() {{\n\
+                     for t in \"$@\"; do\n\
+                       if printf '%s\\n' \"$AFFECTED\" | grep -Fq -- \"$t\"; then\n\
+                         echo \"true\"\n\
+                         return 0\n\
+                       fi\n\
+                     done\n\
+                     echo \"false\"\n\
+                   }}",
+                ir.pipeline.name.replace('\'', "'\\''")
+            );
+            for (lane_name, lane) in &changes.lanes {
+                let args = lane
+                    .tasks
+                    .iter()
+                    .map(|t| format!("'{}'", t.replace('\'', "'\\''")))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let _ = writeln!(
+                    script,
+                    "  echo \"{lane_name}=$(lane_hit {args})\" >> \"$GITHUB_OUTPUT\""
+                );
+            }
+            script.push_str("else\n");
+            for lane_name in changes.lanes.keys() {
+                let _ = writeln!(script, "  echo \"{lane_name}=true\" >> \"$GITHUB_OUTPUT\"");
+            }
+            script.push_str("fi");
+
+            let mut step = Step::run(&script).with_name("Detect changed lanes");
+            step.shell = Some("sh".to_string());
+            step.env.insert(
+                "GITHUB_EVENT_NAME".to_string(),
+                "${{ github.event_name }}".to_string(),
+            );
+            step.env.insert(
+                "MERGE_GROUP_BASE_SHA".to_string(),
+                "${{ github.event.merge_group.base_sha }}".to_string(),
+            );
+            step.env.insert(
+                "PR_BASE_SHA".to_string(),
+                "${{ github.event.pull_request.base.sha }}".to_string(),
+            );
+            step.env.insert(
+                "PUSH_BEFORE_SHA".to_string(),
+                "${{ github.event.before }}".to_string(),
+            );
+            step
+        };
+        detect_step.id = Some("detect".to_string());
+
+        let runs_on = match &changes.runner {
+            Some(cuenv_core::ci::StringOrVec::String(label)) => RunsOn::Label(label.clone()),
+            Some(cuenv_core::ci::StringOrVec::Vec(labels)) => RunsOn::Labels(labels.clone()),
+            None => self.runner_as_runs_on(),
+        };
+
+        let permissions = Some(self.apply_configured_permissions(Permissions {
+            contents: Some(PermissionLevel::Read),
+            ..Default::default()
+        }));
+
+        let changes_job = Job {
+            permissions,
+            name: Some(job_name.to_string()),
+            runs_on,
+            needs: Vec::new(),
+            if_condition: None,
+            outputs,
+            strategy: None,
+            environment: None,
+            container: None,
+            defaults: None,
+            env: IndexMap::new(),
+            concurrency: None,
+            continue_on_error: None,
+            timeout_minutes: Some(10),
+            steps: vec![self.build_checkout_step(None, Some(0)), detect_step],
+        };
+
+        for (lane_name, lane) in &changes.lanes {
+            for task_id in &lane.tasks {
+                let sanitized = sanitize_job_id(task_id);
+                let variant_prefix = format!("{sanitized}-");
+                for (job_id, job) in &mut workflow.jobs {
+                    if job_id == &sanitized || job_id.starts_with(&variant_prefix) {
+                        if !job.needs.contains(&changes_job_id) {
+                            job.needs.push(changes_job_id.clone());
+                        }
+                        if job.if_condition.is_none() {
+                            job.if_condition = Some(format!(
+                                "needs.{changes_job_id}.outputs.{lane_name} == 'true'"
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
+        let existing = std::mem::take(&mut workflow.jobs);
+        workflow.jobs.insert(changes_job_id, changes_job);
+        for (id, job) in existing {
+            workflow.jobs.insert(id, job);
+        }
+    }
+
+    /// Inject a configurable gate job (`#Pipeline.gate`) that aggregates every
+    /// other job in the workflow into a single stable required check.
+    pub fn apply_pipeline_gate(&self, ir: &IntermediateRepresentation, workflow: &mut Workflow) {
+        use std::fmt::Write as _;
+
+        let Some(gate) = &ir.pipeline.gate else {
+            return;
+        };
+
+        let gate_job_id = sanitize_job_id(&gate.name);
+        let needs: Vec<String> = workflow
+            .jobs
+            .keys()
+            .filter(|id| *id != &gate_job_id)
+            .cloned()
+            .collect();
+        let required: std::collections::HashSet<String> =
+            gate.required.iter().map(|id| sanitize_job_id(id)).collect();
+
+        let mut script = String::from(
+            "status=0\n\
+             check_required() {\n\
+               case \"$2\" in\n\
+                 success) ;;\n\
+                 *) echo \"FAIL: required job '$1' finished with '$2'\" >&2; status=1 ;;\n\
+               esac\n\
+             }\n\
+             check_optional() {\n\
+               case \"$2\" in\n\
+                 success|skipped) ;;\n\
+                 *) echo \"FAIL: job '$1' finished with '$2'\" >&2; status=1 ;;\n\
+               esac\n\
+             }\n",
+        );
+
+        let mut env = IndexMap::new();
+        for (idx, need_id) in needs.iter().enumerate() {
+            let var_name = format!("NEED_RESULT_{idx}");
+            env.insert(
+                var_name.clone(),
+                format!("${{{{ needs.{need_id}.result }}}}"),
+            );
+            let helper = if required.contains(need_id) {
+                "check_required"
+            } else {
+                "check_optional"
+            };
+            let escaped = need_id.replace('\'', "'\\''");
+            let _ = writeln!(script, "{helper} '{escaped}' \"${var_name}\"");
+        }
+        script.push_str("exit \"$status\"");
+
+        let mut gate_step = Step::run(&script).with_name(format!("Check {}", gate.name));
+        gate_step.shell = Some("sh".to_string());
+        gate_step.env = env;
+
+        let runs_on = match &gate.runner {
+            Some(cuenv_core::ci::StringOrVec::String(label)) => RunsOn::Label(label.clone()),
+            Some(cuenv_core::ci::StringOrVec::Vec(labels)) => RunsOn::Labels(labels.clone()),
+            None => self.runner_as_runs_on(),
+        };
+
+        let gate_job = Job {
+            permissions: Some(Permissions::default()),
+            name: Some(gate.name.clone()),
+            runs_on,
+            needs,
+            if_condition: Some("always()".to_string()),
+            outputs: IndexMap::new(),
+            strategy: None,
+            environment: None,
+            container: None,
+            defaults: None,
+            env: IndexMap::new(),
+            concurrency: None,
+            continue_on_error: None,
+            timeout_minutes: Some(gate.timeout_minutes.unwrap_or(5)),
+            steps: vec![gate_step],
+        };
+
+        workflow.jobs.insert(gate_job_id, gate_job);
     }
 
     /// Build workflow triggers from IR

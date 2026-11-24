@@ -539,6 +539,50 @@ pub struct PipelineConcurrency {
     pub cancel_in_progress: Option<CancelInProgressConfig>,
 }
 
+/// Single required check job that aggregates every other job in a pipeline (`#PipelineGate`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PipelineGate {
+    /// Required stable check name (emitted as job `name` and sanitized job ID).
+    pub name: String,
+    /// Job IDs that must finish with `success` (all other jobs may be `success` or `skipped`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required: Vec<String>,
+    /// Optional runner override for the gate job.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runner: Option<StringOrVec>,
+    /// Optional timeout in minutes for the gate job (defaults to 5).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_minutes: Option<u32>,
+}
+
+/// A lane in `#PipelineChanges`: true when any listed task is affected.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PipelineChangeLane {
+    /// Task IDs guarded by this lane.
+    #[serde(default)]
+    pub tasks: Vec<String>,
+}
+
+/// Per-lane change detection job configuration (`#PipelineChanges`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PipelineChanges {
+    /// Emitted detection job ID/name (defaults to `"changes"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job: Option<String>,
+    /// Named lanes mapped to the pipeline tasks they guard.
+    #[serde(default)]
+    pub lanes: BTreeMap<String, PipelineChangeLane>,
+    /// Optional custom shell script replacing the default detection step.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub script: Option<String>,
+    /// Optional runner override for the detection job.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runner: Option<StringOrVec>,
+}
+
 /// A named CI pipeline: trigger conditions plus the tasks it runs.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
@@ -574,6 +618,12 @@ pub struct Pipeline {
     /// Per-label job parallelism caps in expanded pipelines (e.g., `heavy: 2`).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub limits: BTreeMap<String, u32>,
+    /// Single required check job that aggregates every other job in this pipeline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate: Option<PipelineGate>,
+    /// Per-lane change detection job exposed as job outputs for job-level `if` conditions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub changes: Option<PipelineChanges>,
     /// Whether to derive trigger paths from task inputs.
     /// Defaults to true for branch/PR triggers, false for scheduled-only.
     pub derive_paths: Option<bool>,

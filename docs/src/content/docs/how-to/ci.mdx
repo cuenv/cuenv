@@ -745,6 +745,40 @@ to a temp file or pass fallback environment variables directly when testing
 output-producing tasks locally, and note that dynamic GitHub matrix fan-out only
 expands on GitHub Actions.
 
+### Gate jobs and per-lane change detection
+
+For branch rulesets that require a single stable check name alongside conditional
+lanes, configure `changes` and `gate` on a pipeline:
+
+```cue
+ci: pipelines: main: {
+	mode: "expanded"
+	changes: {
+		job: "changes"
+		lanes: {
+			rust: tasks: ["check.rust", "test.rust"]
+			web:  tasks: ["check.web"]
+		}
+		// Optional: replace default `cuenv ci --affected` detection with a custom script
+		// script: "./scripts/detect-lanes.sh"
+	}
+	gate: {
+		name:     "ci-ok"
+		required: ["changes"]
+	}
+}
+```
+
+- `changes` emits a front-loaded detection job whose `outputs.<lane>` booleans
+  are computed from `cuenv ci --affected --dry-run` across `push`, `pull_request`,
+  and `merge_group` (`base_sha`), failing closed to `true` when no base ref is
+  available. Each task in a lane automatically receives `needs: [changes]` and
+  `if: needs.changes.outputs.<lane> == 'true'` unless the task defines its own `if`.
+- `gate` emits a single `if: always()`, `permissions: {}` job that depends on
+  every other job in the workflow (thin, expanded, or matrix) and runs a
+  dependency-free POSIX `sh` check: any `failure` or `cancelled` job fails the
+  gate, while `skipped` jobs pass unless listed in `gate.required`.
+
 ## Secrets in CI
 
 Use task-local secret refs when cuenv should resolve the value at runtime:

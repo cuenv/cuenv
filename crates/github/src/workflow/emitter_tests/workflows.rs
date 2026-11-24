@@ -671,3 +671,169 @@ fn workflow_concurrency_supports_bool_expression_and_per_event_map() {
         Some(false)
     );
 }
+
+#[test]
+fn pipeline_gate_and_changes_emit_and_verify_truth_table() {
+    use cuenv_core::ci::{PipelineChangeLane, PipelineChanges, PipelineGate, TaskGitHubJobConfig};
+    use std::collections::BTreeMap;
+
+    let emitter = GitHubActionsEmitter::new()
+        .without_nix()
+        .without_cuenv_build();
+
+    let rust_task = super::make_task("check.rust", &["cargo", "check"]);
+    let web_task = super::make_task("check.web", &["bun", "test"]);
+    let mut always_task = super::make_task("pr-title", &["scripts/pr-title.sh"]);
+    always_task.github_job = Some(TaskGitHubJobConfig {
+        if_condition: Some("github.event_name == 'pull_request'".to_string()),
+        ..Default::default()
+    });
+
+    let mut ir = super::make_ir(vec![rust_task, web_task, always_task]);
+    ir.pipeline.changes = Some(PipelineChanges {
+        job: Some("changes".to_string()),
+        lanes: BTreeMap::from([
+            (
+                "rust".to_string(),
+                PipelineChangeLane {
+                    tasks: vec!["check.rust".to_string()],
+                },
+            ),
+            (
+                "web".to_string(),
+                PipelineChangeLane {
+                    tasks: vec!["check.web".to_string(), "pr-title".to_string()],
+                },
+            ),
+        ]),
+        script: None,
+        runner: None,
+    });
+    ir.pipeline.gate = Some(PipelineGate {
+        name: "ci-ok".to_string(),
+        required: vec!["changes".to_string()],
+        runner: None,
+        timeout_minutes: Some(5),
+    });
+
+    // 1. Expanded workflow: changes job + lane ifs + custom if preserved + gate job.
+    let expanded_yaml = emitter.emit_expanded(&ir).expect("emit expanded workflow");
+    let doc: serde_yaml::Value = serde_yaml::from_str(&expanded_yaml).expect("parse expanded yaml");
+
+    let changes_job = &doc["jobs"]["changes"];
+    assert_eq!(
+        changes_job["outputs"]["rust"].as_str(),
+        Some("${{ steps.detect.outputs.rust }}")
+    );
+    assert_eq!(
+        changes_job["outputs"]["web"].as_str(),
+        Some("${{ steps.detect.outputs.web }}")
+    );
+    let detect_step = &changes_job["steps"][1];
+    assert_eq!(detect_step["id"].as_str(), Some("detect"));
+    let detect_run = detect_step["run"].as_str().expect("detect run script");
+    assert!(detect_run.contains("merge_group)"));
+    assert!(detect_run.contains("pull_request|pull_request_target)"));
+    assert!(detect_run.contains("push)"));
+    assert_eq!(
+        detect_step["env"]["MERGE_GROUP_BASE_SHA"].as_str(),
+        Some("${{ github.event.merge_group.base_sha }}")
+    );
+    assert_eq!(
+        detect_step["env"]["PR_BASE_SHA"].as_str(),
+        Some("${{ github.event.pull_request.base.sha }}")
+    );
+    assert_eq!(
+        detect_step["env"]["PUSH_BEFORE_SHA"].as_str(),
+        Some("${{ github.event.before }}")
+    );
+
+    assert_eq!(
+        doc["jobs"]["check-rust"]["if"].as_str(),
+        Some("needs.changes.outputs.rust == 'true'")
+    );
+    assert_eq!(
+        doc["jobs"]["check-web"]["if"].as_str(),
+        Some("needs.changes.outputs.web == 'true'")
+    );
+    // Explicit task `if` overrides automatic lane `if`.
+    assert_eq!(
+        doc["jobs"]["pr-title"]["if"].as_str(),
+        Some("github.event_name == 'pull_request'")
+    );
+
+    let gate_job = &doc["jobs"]["ci-ok"];
+    assert_eq!(gate_job["name"].as_str(), Some("ci-ok"));
+    assert_eq!(gate_job["if"].as_str(), Some("always()"));
+    assert_eq!(
+        gate_job["permissions"]
+            .as_mapping()
+            .map(serde_yaml::Mapping::len),
+        Some(0)
+    );
+    let gate_needs: Vec<&str> = gate_job["needs"]
+        .as_sequence()
+        .expect("gate needs")
+        .iter()
+        .filter_map(serde_yaml::Value::as_str)
+        .collect();
+    assert_eq!(
+        gate_needs,
+        vec!["changes", "check-rust", "check-web", "pr-title"]
+    );
+
+    // Execute the generated dependency-free POSIX sh gate script against the pass/skip/fail/cancel truth table.
+    let gate_script = gate_job["steps"][0]["run"]
+        .as_str()
+        .expect("gate run script");
+    let cases = [
+        // (changes[req], check-rust, check-web, pr-title, expected_pass)
+        ("success", "success", "success", "success", true),
+        ("success", "skipped", "skipped", "skipped", true),
+        ("skipped", "success", "success", "success", false),
+        ("failure", "success", "success", "success", false),
+        ("cancelled", "success", "success", "success", false),
+        ("success", "failure", "skipped", "success", false),
+        ("success", "skipped", "cancelled", "success", false),
+    ];
+    for (r0, r1, r2, r3, expected_pass) in cases {
+        let status = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(gate_script)
+            .env("NEED_RESULT_0", r0)
+            .env("NEED_RESULT_1", r1)
+            .env("NEED_RESULT_2", r2)
+            .env("NEED_RESULT_3", r3)
+            .status()
+            .expect("run POSIX sh gate script");
+        assert_eq!(
+            status.success(),
+            expected_pass,
+            "gate truth table mismatch for ({r0}, {r1}, {r2}, {r3})"
+        );
+    }
+
+    // 2. Thin workflow also emits the gate job needing the main thin job.
+    let thin_yaml = emitter.emit_thin(&ir).expect("emit thin workflow");
+    let thin_doc: serde_yaml::Value = serde_yaml::from_str(&thin_yaml).expect("parse thin yaml");
+    assert_eq!(thin_doc["jobs"]["ci-ok"]["if"].as_str(), Some("always()"));
+    assert_eq!(
+        thin_doc["jobs"]["ci-ok"]["needs"][0].as_str(),
+        Some("test-pipeline")
+    );
+
+    // 3. Custom detection script hook replaces the default detection step.
+    let mut custom_ir = ir;
+    if let Some(changes) = custom_ir.pipeline.changes.as_mut() {
+        changes.script = Some("./scripts/detect-lanes.sh".to_string());
+    }
+    let custom_yaml = emitter
+        .emit_expanded(&custom_ir)
+        .expect("emit custom changes script");
+    let custom_doc: serde_yaml::Value =
+        serde_yaml::from_str(&custom_yaml).expect("parse custom yaml");
+    assert_eq!(
+        custom_doc["jobs"]["changes"]["steps"][1]["run"].as_str(),
+        Some("./scripts/detect-lanes.sh")
+    );
+}

@@ -86,7 +86,7 @@ pub(super) fn emit_matrix_workflow(
 
     let filename = format!("{}.yml", sanitize_workflow_name(&workflow_name));
 
-    let workflow = Workflow {
+    let mut workflow = Workflow {
         name: workflow_name.clone(),
         run_name: emitter.run_name.clone(),
         on: emitter.build_triggers(&ir, &filename),
@@ -97,6 +97,8 @@ pub(super) fn emit_matrix_workflow(
         env: indexmap::IndexMap::new(),
         jobs,
     };
+    emitter.apply_pipeline_changes(&ir, &mut workflow);
+    emitter.apply_pipeline_gate(&ir, &mut workflow);
     let yaml = emitter
         .serialize_workflow_with_pins(&workflow)
         .map_err(|e| {
