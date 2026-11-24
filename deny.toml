@@ -37,6 +37,15 @@ ignore = [
     # rsa timing side-channel (Marvin Attack) - transitive dep from octocrab->jsonwebtoken
     # Used only for GitHub API JWT auth, not for cryptographic operations we control
     "RUSTSEC-2023-0071",
+    # Same exceptions as .cargo/audit.toml, which names each blocking chain:
+    # crypto-bigint 0.5 (dev-only via pgp) and unmaintained jwt,
+    # unsafe-libyaml, pin-utils, humantime and chrono.
+    "RUSTSEC-2026-0387",
+    "RUSTSEC-2016-0007",
+    "RUSTSEC-2024-0449",
+    "RUSTSEC-2026-0441",
+    "RUSTSEC-2026-0542",
+    "RUSTSEC-2026-0543",
 ]
 [sources]
 # Lint level for what to happen when a crate from a crate registry that is

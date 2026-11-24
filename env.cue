@@ -185,6 +185,20 @@ schema.#Project & {
 				tasks: [_t.checks]
 			}
 
+			// `checks.audit` audits against the RustSec database pinned in
+			// flake.lock, so it stays reproducible and never catches an advisory
+			// published after the pin. This pipeline audits against the live
+			// database every day and on every push to main, so a new advisory
+			// turns main red the day it lands instead of whenever the pin moves.
+			advisories: {
+				when: {
+					branch:    "main"
+					scheduled: "17 6 * * *"
+					manual:    true
+				}
+				tasks: [_t.security.audit]
+			}
+
 			// Pull requests validate x86_64 Linux only. macOS checks run after
 			// merge, and on demand for a branch that needs them sooner:
 			//   gh workflow run cuenv-darwin.yml --ref <branch>
@@ -559,9 +573,11 @@ schema.#Project & {
 					find "$audit_db" -name '*.md' -exec sed -E -i.bak '/^cvss = "CVSS:4\\.0\\//d' {} +
 					find "$audit_db" -name '*.bak' -delete
 
-					cargo audit --db "$audit_db" --no-fetch --deny warnings --ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2025-0134 --ignore RUSTSEC-2026-0037
+					# Ignores live in .cargo/audit.toml, shared with the pinned
+					# `checks.audit` flake check.
+					cargo audit --db "$audit_db" --no-fetch --deny warnings
 					"""
-				inputs: list.Concat([_baseInputs, ["Cargo.lock"]])
+				inputs: list.Concat([_baseInputs, [".cargo/audit.toml"]])
 			}
 		}
 

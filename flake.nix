@@ -882,38 +882,17 @@
           cargoArtifacts = null;
           cargoVendorDir = null;
           doInstallCargoArtifacts = false;
-          # Ignore triage (2026-07-02). Each entry is blocked by an upstream
-          # dependency chain; drop the group when the named root cause is fixed.
-          #
-          # rsa (Marvin timing sidechannel, no upstream fix released):
-          #   via octocrab -> jsonwebtoken -> rsa 0.9
-          #     RUSTSEC-2023-0071
-          # wasmtime 41.x (pinned by extism 1.21; patches only in 36.x/42.0.2+/43.0.1+):
-          #     RUSTSEC-2026-0085 0086 0087 0088 0089 0091 0092 0093 0094 0095 0096 0114
+          # Ignores live in .cargo/audit.toml, shared with the live-database
+          # `security.audit` task, each with the dependency chain that blocks it.
           buildPhaseCargoCommand = ''
-            # Yanked releases were already ignored; avoid querying a registry
-            # index that is unavailable in this offline derivation.
-            if [ -e .cargo/audit.toml ]; then
-              echo "Update the audit derivation to account for .cargo/audit.toml" >&2
-              exit 1
-            fi
+            # Yanked releases are checked by the live-database task; this
+            # offline derivation has no registry index to query.
             mkdir -p .cargo
-            printf '[yanked]\nenabled = false\n' > .cargo/audit.toml
+            cp ${./.cargo/audit.toml} .cargo/audit.toml
+            chmod u+w .cargo/audit.toml
+            printf '\n[yanked]\nenabled = false\n' >> .cargo/audit.toml
 
-            cargo audit --db ${rustsec-advisory-db} --no-fetch --deny warnings \
-              --ignore RUSTSEC-2023-0071 \
-              --ignore RUSTSEC-2026-0085 \
-              --ignore RUSTSEC-2026-0086 \
-              --ignore RUSTSEC-2026-0087 \
-              --ignore RUSTSEC-2026-0088 \
-              --ignore RUSTSEC-2026-0089 \
-              --ignore RUSTSEC-2026-0091 \
-              --ignore RUSTSEC-2026-0092 \
-              --ignore RUSTSEC-2026-0093 \
-              --ignore RUSTSEC-2026-0094 \
-              --ignore RUSTSEC-2026-0095 \
-              --ignore RUSTSEC-2026-0096 \
-              --ignore RUSTSEC-2026-0114
+            cargo audit --db ${rustsec-advisory-db} --no-fetch --deny warnings
 
             # Verify that disabling the index check does not disable advisories.
             cat > "$TMPDIR/vulnerable.lock" <<'EOF'
