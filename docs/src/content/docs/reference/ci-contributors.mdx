@@ -43,6 +43,24 @@ representation (IR).
 Project + Pipeline + Contributors -> CI compiler -> IR -> workflow
 ```
 
+### Contributor task secrets
+
+A contributor task's `secrets` map an environment variable to a CI secret
+name. In GitHub Actions each one becomes an `env` entry on that task's own
+step, so no other step sees it:
+
+```cue
+tasks: [{
+	id:     "probe"
+	script: #": "${EXAMPLE_SECRET:?missing EXAMPLE_SECRET}""#
+	secrets: {EXAMPLE_SECRET: "EXAMPLE_SECRET"}
+}]
+```
+
+renders `env: {EXAMPLE_SECRET: ${{ secrets.EXAMPLE_SECRET }}}` on the probe
+step. A `#SecretRef` form (`{source: "EXAMPLE_SECRET"}`) and the `${NAME}`
+spelling read the same secret.
+
 ### Contributor task IDs
 
 This is the single most common source of confusion, so name it up front. A
