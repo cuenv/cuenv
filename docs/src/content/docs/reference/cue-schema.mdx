@@ -989,12 +989,14 @@ watch: {
 | `paths`    | `[...string]`   | -         | Glob patterns relative to project root       |
 | `ignore`   | `[...string]`   | -         | Patterns to ignore (gitignore syntax)        |
 | `debounce` | `string`        | `200ms`   | Debounce window for batched changes          |
-| `on`       | `string`        | `restart` | Action on change (`restart`)                 |
-| `rebuild`  | `[...#TaskNode]`| -         | Tasks to re-run before restart               |
+| `on`       | `string`        | `restart` | Action on change (`restart` or `sync`)       |
+| `rebuild`  | `[...#TaskNode]`| -         | Tasks to re-run before restart or sync       |
 
-Watch events are debounced, then the supervisor restarts the service. The
-schema exposes `rebuild`, but restart-on-change is the supported behavior in
-the current implementation.
+Watch events are debounced. When `rebuild` is set, its tasks run first, with
+their dependencies, through the task executor; then the supervisor restarts
+the service (`on: "restart"`) or sends it `SIGHUP` (`on: "sync"`). A failed
+rebuild is reported and leaves the running process alone. `cuenv up` refuses
+to start when a `rebuild` entry names no task.
 
 ### #Shutdown
 

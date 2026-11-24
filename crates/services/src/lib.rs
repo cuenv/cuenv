@@ -17,6 +17,7 @@ pub mod duration;
 pub mod lifecycle;
 pub mod probes;
 pub(crate) mod process;
+pub mod rebuild;
 pub mod session;
 pub mod supervisor;
 pub mod watcher;

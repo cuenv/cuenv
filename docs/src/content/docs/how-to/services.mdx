@@ -239,7 +239,7 @@ postgres  ready   :5432/tcp          30s      0          12345
 
 ### File watching
 
-`watch` re-runs or reloads the service when files change — the fast inner loop for local development. `paths` (glob patterns relative to the project root) is required; `ignore` uses gitignore syntax; `debounce` (default `200ms`) batches rapid changes. Use `rebuild` to run tasks (for example, recompile a binary) before acting.
+`watch` re-runs or reloads the service when files change — the fast inner loop for local development. `paths` (glob patterns relative to the project root) is required; `ignore` uses gitignore syntax; `debounce` (default `200ms`) batches rapid changes. Use `rebuild` to run tasks (for example, recompile a binary) before acting: they run with their dependencies on every change, and only once they succeed is the service restarted or signalled. A failed rebuild is reported and the running process keeps serving, so a broken build does not take the service down.
 
 `on` controls what happens when a change is detected:
 

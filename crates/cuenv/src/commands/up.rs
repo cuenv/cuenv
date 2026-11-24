@@ -18,6 +18,7 @@ use cuenv_core::tasks::output_refs::OutputRefDep;
 use cuenv_core::tasks::{Task, TaskNode, Tasks};
 use cuenv_events::emit_stdout;
 use cuenv_services::controller::{ControllerConfig, ServiceController};
+use cuenv_services::rebuild::{RebuildError, RebuildFuture, Rebuilder};
 use cuenv_services::session::SessionManager;
 use cuenv_task_exec::{
     ExecutorConfig, ExternalTaskName, ProjectExecution, RootProject, ScopeProject,
@@ -156,18 +157,16 @@ pub async fn execute_up(options: &UpOptions, executor: &CommandExecutor) -> cuen
     };
     // ModuleGuard is now dropped — safe to .await below
 
-    execute_service_dependencies(
-        &dependency_plan,
-        ServiceTaskContext {
-            project,
-            output_ref_deps,
-            environment: options.environment.as_deref(),
-            project_root: &target_path,
-            cue_module_root: env_file::find_cue_module_root(&target_path),
-            executor,
-        },
-    )
-    .await?;
+    let task_context = ServiceTaskContext {
+        project,
+        output_ref_deps,
+        environment: options.environment.as_deref(),
+        project_root: &target_path,
+        cue_module_root: env_file::find_cue_module_root(&target_path),
+        executor,
+    };
+    execute_service_dependencies(&dependency_plan, &task_context).await?;
+    let rebuilder = ServiceRebuilds::prepare(&filtered_services, &task_context).await?;
 
     // Set up shutdown signal
     let shutdown = CancellationToken::new();
@@ -181,6 +180,7 @@ pub async fn execute_up(options: &UpOptions, executor: &CommandExecutor) -> cuen
     let controller = ServiceController::new(
         ControllerConfig {
             project_root: target_path,
+            rebuilder: rebuilder.map(|rebuilds| Arc::new(rebuilds) as Arc<dyn Rebuilder>),
         },
         shutdown,
     );
@@ -393,7 +393,7 @@ struct ServiceTaskContext<'context> {
 
 async fn execute_service_dependencies(
     plan: &ServiceDependencyPlan,
-    context: ServiceTaskContext<'_>,
+    context: &ServiceTaskContext<'_>,
 ) -> cuenv_core::Result<()> {
     // Image roots are resolved by the DependencyPlanner, which already walks
     // their `dependsOn` edges and collects the transitive task deps into
@@ -447,21 +447,112 @@ fn service_task_graph(
 
 async fn execute_service_task_dependencies(
     task_roots: &[String],
-    context: ServiceTaskContext<'_>,
+    context: &ServiceTaskContext<'_>,
 ) -> cuenv_core::Result<()> {
-    let (scope, task_graph) = service_task_graph(task_roots, &context)?;
-
-    if task_graph.task_count() == 0 {
+    let Some(run) = PreparedTaskRun::prepare(task_roots, context).await? else {
         return Ok(());
-    }
+    };
 
     emit_stdout!(format!(
         "cuenv up: running service task dependencies: {}",
         task_roots.join(", ")
     ));
+    run.run().await
+}
 
-    let environments = DependencyEnvironments::new(&scope, context.environment);
-    let executor = TaskExecutor::new(ExecutorConfig {
+/// The graph of some tasks and how to run it, prepared once so it can run
+/// again without evaluating the project.
+struct PreparedTaskRun {
+    graph: TaskGraph,
+    config: ExecutorConfig,
+}
+
+impl PreparedTaskRun {
+    /// Prepare a run of `task_roots` and their dependencies, or `None` when
+    /// that is no task at all.
+    async fn prepare(
+        task_roots: &[String],
+        context: &ServiceTaskContext<'_>,
+    ) -> cuenv_core::Result<Option<Self>> {
+        let (scope, graph) = service_task_graph(task_roots, context)?;
+        if graph.task_count() == 0 {
+            return Ok(None);
+        }
+        let config = service_executor_config(&scope, context).await?;
+        Ok(Some(Self { graph, config }))
+    }
+
+    async fn run(&self) -> cuenv_core::Result<()> {
+        TaskExecutor::new(self.config.clone())
+            .execute_graph(&self.graph)
+            .await?;
+        Ok(())
+    }
+}
+
+/// The `watch.rebuild` tasks of each service that has them, prepared before
+/// the services start so a change only has to run them.
+struct ServiceRebuilds {
+    by_service: HashMap<String, PreparedTaskRun>,
+}
+
+impl ServiceRebuilds {
+    /// Prepare the rebuilds of `services`, or `None` when none has any.
+    ///
+    /// # Errors
+    ///
+    /// Fails when a rebuild task does not exist, so a misnamed task is
+    /// reported before the services start rather than on the first change.
+    async fn prepare(
+        services: &HashMap<String, Service>,
+        context: &ServiceTaskContext<'_>,
+    ) -> cuenv_core::Result<Option<Self>> {
+        let mut by_service = HashMap::new();
+        for (name, service) in services {
+            let roots: Vec<String> = service
+                .watch
+                .iter()
+                .flat_map(|watch| watch.rebuild.iter().flatten())
+                .map(|task| task.task_name().to_string())
+                .collect();
+            if roots.is_empty() {
+                continue;
+            }
+            let run = PreparedTaskRun::prepare(&roots, context)
+                .await?
+                .ok_or_else(|| {
+                    cuenv_core::Error::configuration(format!(
+                        "cuenv up: service '{name}' watch.rebuild names no task: {}",
+                        roots.join(", ")
+                    ))
+                })?;
+            by_service.insert(name.clone(), run);
+        }
+        Ok((!by_service.is_empty()).then_some(Self { by_service }))
+    }
+}
+
+impl Rebuilder for ServiceRebuilds {
+    fn rebuild<'rebuild>(&'rebuild self, service: &'rebuild str) -> RebuildFuture<'rebuild> {
+        Box::pin(async move {
+            let Some(run) = self.by_service.get(service) else {
+                return Ok(());
+            };
+            emit_stdout!(format!("cuenv up: rebuilding service '{service}'"));
+            run.run()
+                .await
+                .map_err(|error| RebuildError::new(error.to_string()))
+        })
+    }
+}
+
+/// How the tasks of `scope` run for `cuenv up`.
+async fn service_executor_config(
+    scope: &TaskScope,
+    context: &ServiceTaskContext<'_>,
+) -> cuenv_core::Result<ExecutorConfig> {
+    let environments = DependencyEnvironments::new(scope, context.environment);
+    Ok(ExecutorConfig {
         capture_output: OutputCapture::Capture,
         max_parallel: 0,
         continue_on_error: false,
@@ -471,7 +562,7 @@ async fn execute_service_task_dependencies(
             .then(|| Arc::new(environments) as Arc<dyn TaskEnvironments>),
         working_dir: None,
         project_root: context.project_root.to_path_buf(),
-        cue_module_root: context.cue_module_root,
+        cue_module_root: context.cue_module_root.clone(),
         cache: None,
         // Inputs are hashed below the workspace, as `cuenv task` hashes
         // them: a task may read what a task of another project wrote.
@@ -490,10 +581,7 @@ async fn execute_service_task_dependencies(
                 )
             })
             .collect(),
-    });
-
-    executor.execute_graph(&task_graph).await?;
-    Ok(())
+    })
 }
 
 /// The environment of a dependency task that belongs to another project:
@@ -856,7 +944,7 @@ tasks: articles: {
         };
         write(
             "cue.mod/module.cue",
-            "module: \"test.example/up\"\nlanguage: version: \"v0.14.0\"\n",
+            "module: \"test.example/up\"\nlanguage: version: \"v0.18.0\"\n",
         )?;
         write("app/env.cue", APP)?;
         write("content/env.cue", CONTENT)?;
@@ -884,7 +972,7 @@ tasks: articles: {
                 task_roots: vec!["prepare".to_string()],
                 image_roots: Vec::new(),
             },
-            ServiceTaskContext {
+            &ServiceTaskContext {
                 project,
                 output_ref_deps,
                 environment: None,
@@ -907,6 +995,71 @@ tasks: articles: {
             std::fs::read_to_string(app.join("env.txt"))?,
             "app-own|unset"
         );
+        Ok(())
+    }
+
+    /// A service whose `watch.rebuild` names `task`.
+    fn service_rebuilding(task: &str) -> Service {
+        Service {
+            watch: Some(cuenv_core::manifest::ServiceWatch {
+                paths: vec!["src/**".to_string()],
+                ignore: None,
+                debounce: None,
+                on: None,
+                rebuild: Some(vec![TaskDependency::from_name(task)]),
+            }),
+            ..Service::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_service_rebuild_runs_its_tasks_each_time() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let directory = module_with_a_dependency_in_another_project()?;
+        let root = directory.path().canonicalize()?;
+        let app = root.join("app");
+        let executor = CommandExecutor::new("cuenv".to_string());
+        let (project, output_ref_deps) = {
+            let module = executor.module(&app)?;
+            let instance = module
+                .get(Path::new("app"))
+                .ok_or("the project evaluates")?;
+            (instance.to_project()?, instance.output_ref_deps.clone())
+        };
+        let context = ServiceTaskContext {
+            project,
+            output_ref_deps,
+            environment: None,
+            project_root: &app,
+            cue_module_root: Some(root.clone()),
+            executor: &executor,
+        };
+        let services = HashMap::from([
+            ("web".to_string(), service_rebuilding("prepare")),
+            ("db".to_string(), Service::default()),
+        ]);
+
+        let rebuilds = ServiceRebuilds::prepare(&services, &context)
+            .await?
+            .ok_or("web has a rebuild")?;
+        assert!(rebuilds.by_service.contains_key("web"));
+        assert!(!rebuilds.by_service.contains_key("db"));
+
+        rebuilds.rebuild("web").await?;
+        assert_eq!(std::fs::read_to_string(app.join("seen.md"))?, "one\n");
+
+        // A later change rebuilds again, with its dependencies, from what
+        // the sources hold now.
+        std::fs::write(root.join("content/articles/one.md"), "two\n")?;
+        rebuilds.rebuild("web").await?;
+        assert_eq!(std::fs::read_to_string(app.join("seen.md"))?, "two\n");
+
+        // A service without rebuild tasks has nothing to run.
+        rebuilds.rebuild("db").await?;
+
+        // A misnamed rebuild task is refused before any service starts.
+        let misnamed = HashMap::from([("web".to_string(), service_rebuilding("missing"))]);
+        assert!(ServiceRebuilds::prepare(&misnamed, &context).await.is_err());
         Ok(())
     }
 }
