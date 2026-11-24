@@ -83,12 +83,18 @@ also decides which CI stage a task lands in:
 
 | Priority | Stage | Purpose | Example |
 | --- | --- | --- | --- |
-| 0–9 | Bootstrap | Environment provisioning, runs first | Install Nix (`nix.install`, priority 2) |
+| 9 or lower (negatives included) | Bootstrap | Environment provisioning, runs first | Install Nix (`nix.install`, priority 2) |
 | 10–49 | Setup | Tool/provider configuration | Setup cuenv (`cuenv.setup`, priority 10) |
 | 50+ | Success | Post-build actions | Coverage upload, notifications |
 
 Tasks with `condition: "on_failure"` are placed in the Failure stage regardless
 of priority.
+
+Within a stage, a task's `dependsOn` wins over priority: a task runs after
+every task of the same stage it depends on, and priority orders the rest. A
+cache setup task at priority 5 that an install task at priority 0 depends on
+therefore renders before it. `dependsOn` does not move a task to another
+stage; a task that depends on a later stage still runs in its own.
 
 ## Configuring CI before contributors can run
 
