@@ -163,8 +163,8 @@ package schema
 	// What to do on change: "restart" kills and respawns the process;
 	// "sync" sends SIGHUP for in-place config reload (Unix only).
 	on?: "restart" | "sync" | *"restart"
-	// Optional dependency tasks to re-run before restart
-	// (e.g., rebuild a binary). Treated as ad-hoc additions to the DAG.
+	// Optional dependency tasks to re-run before a restart or sync
+	// (e.g., rebuild a binary). A failed rebuild keeps the running process.
 	rebuild?: [...#TaskNode]
 }
 

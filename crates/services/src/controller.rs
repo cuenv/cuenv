@@ -16,6 +16,7 @@ use cuenv_core::manifest::Service;
 use cuenv_events::{emit_service_pending, emit_stdout};
 use cuenv_task_graph::{NodeKind, TaskGraph};
 
+use crate::rebuild::Rebuilder;
 use crate::session::SessionManager;
 use crate::supervisor::{ReadinessOutcome, ServiceSupervisor, SupervisorConfig, SupervisorResult};
 
@@ -23,6 +24,8 @@ use crate::supervisor::{ReadinessOutcome, ServiceSupervisor, SupervisorConfig, S
 pub struct ControllerConfig {
     /// Project root directory.
     pub project_root: PathBuf,
+    /// Runs services' `watch.rebuild` tasks after a watched change.
+    pub rebuilder: Option<Arc<dyn Rebuilder>>,
 }
 
 /// Node data for the service graph.
@@ -130,6 +133,7 @@ impl ServiceController {
                                 service: service.clone(),
                                 project_root: self.config.project_root.clone(),
                                 session: Arc::clone(&session),
+                                rebuilder: self.config.rebuilder.clone(),
                             });
 
                             let shutdown = self.shutdown.clone();

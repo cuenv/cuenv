@@ -20,6 +20,7 @@ use cuenv_core::manifest::Service;
 use cuenv_events::{
     emit_service_failed, emit_service_output, emit_service_ready, emit_service_ready_timeout,
     emit_service_restarting, emit_service_starting, emit_service_stopped, emit_service_stopping,
+    emit_stdout,
 };
 
 use crate::control::{ManualControlRequest, wait_for_control_request};
@@ -28,6 +29,7 @@ use crate::lifecycle::ServiceLifecycle;
 use crate::probes::log::LogProbe;
 use crate::probes::{self, ProbeLoopResult};
 use crate::process::ServiceProcess;
+use crate::rebuild::Rebuilder;
 use crate::session::{ServiceState, SessionManager};
 use crate::watcher::{ServiceWatcher, WatchEvent};
 
@@ -95,6 +97,8 @@ pub struct SupervisorConfig {
     pub project_root: PathBuf,
     /// Shared session manager.
     pub session: Arc<SessionManager>,
+    /// Runs the service's `watch.rebuild` tasks after a watched change.
+    pub rebuilder: Option<Arc<dyn Rebuilder>>,
 }
 
 /// Supervisor for a single service.
@@ -103,6 +107,7 @@ pub struct ServiceSupervisor {
     service: Service,
     project_root: PathBuf,
     session: Arc<SessionManager>,
+    rebuilder: Option<Arc<dyn Rebuilder>>,
 }
 
 /// Parameters for a state update.
@@ -150,6 +155,16 @@ enum ServiceWait {
     /// Send SIGHUP to the running process (watch `on: sync`).
     Sync,
     Stop,
+}
+
+/// What to do after a watched change once its rebuild tasks have run.
+enum AfterRebuild {
+    /// The rebuild succeeded, or there was none: restart or signal.
+    Apply,
+    /// The rebuild failed: leave the running process alone.
+    Keep,
+    /// Shutdown was requested while the rebuild ran.
+    Shutdown,
 }
 
 fn abort_output_handles(
@@ -212,6 +227,43 @@ impl ServiceSupervisor {
             service: config.service,
             project_root: config.project_root,
             session: config.session,
+            rebuilder: config.rebuilder,
+        }
+    }
+
+    /// Run the service's `watch.rebuild` tasks after a watched change. A
+    /// failed rebuild is reported and leaves the running process alone.
+    async fn rebuild_after_change(&self, shutdown: &CancellationToken) -> AfterRebuild {
+        let has_rebuild = self
+            .service
+            .watch
+            .as_ref()
+            .and_then(|watch| watch.rebuild.as_ref())
+            .is_some_and(|tasks| !tasks.is_empty());
+        if !has_rebuild {
+            return AfterRebuild::Apply;
+        }
+        let Some(rebuilder) = &self.rebuilder else {
+            warn!(service = %self.name, "watch.rebuild is set but nothing can run it here");
+            emit_stdout!(format!(
+                "Service '{}': watch.rebuild cannot run here; keeping the running process",
+                self.name
+            ));
+            return AfterRebuild::Keep;
+        };
+        tokio::select! {
+            result = rebuilder.rebuild(&self.name) => match result {
+                Ok(()) => AfterRebuild::Apply,
+                Err(error) => {
+                    warn!(service = %self.name, %error, "watch.rebuild failed");
+                    emit_stdout!(format!(
+                        "Service '{}': rebuild failed, keeping the running process: {error}",
+                        self.name
+                    ));
+                    AfterRebuild::Keep
+                }
+            },
+            () = shutdown.cancelled() => AfterRebuild::Shutdown,
         }
     }
 
@@ -508,10 +560,11 @@ impl ServiceSupervisor {
                             .map(|p| p.to_string_lossy().into_owned())
                             .collect();
                         cuenv_events::emit_service_watch!(&self.name, &changed);
-                        if watch_on == "sync" {
-                            ServiceWait::Sync
-                        } else {
-                            ServiceWait::Restart(RestartTrigger::Watch)
+                        match self.rebuild_after_change(&shutdown).await {
+                            AfterRebuild::Apply if watch_on == "sync" => ServiceWait::Sync,
+                            AfterRebuild::Apply => ServiceWait::Restart(RestartTrigger::Watch),
+                            AfterRebuild::Keep => continue,
+                            AfterRebuild::Shutdown => ServiceWait::Shutdown,
                         }
                     }
                     () = wait_for_control_request(
@@ -764,6 +817,7 @@ mod tests {
             service,
             project_root: root.to_path_buf(),
             session,
+            rebuilder: None,
         });
 
         let shutdown = CancellationToken::new();
@@ -783,6 +837,99 @@ mod tests {
         // Give a wrongly respawned copy time to record its start.
         tokio::time::sleep(Duration::from_millis(500)).await;
         assert_eq!(line_count(&starts), 1, "sync change must not respawn");
+
+        shutdown.cancel();
+        assert!(matches!(run.await.unwrap(), SupervisorResult::Stopped));
+    }
+    /// Fails its first rebuild and succeeds afterwards, counting each one.
+    struct FlakyRebuilder {
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl Rebuilder for FlakyRebuilder {
+        fn rebuild<'rebuild>(
+            &'rebuild self,
+            service: &'rebuild str,
+        ) -> crate::rebuild::RebuildFuture<'rebuild> {
+            Box::pin(async move {
+                assert_eq!(service, "api");
+                let call = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if call == 0 {
+                    Err(crate::rebuild::RebuildError::new("build failed"))
+                } else {
+                    Ok(())
+                }
+            })
+        }
+    }
+
+    /// A watched change runs `watch.rebuild` first. A failed rebuild keeps
+    /// the running process; a successful one restarts it.
+    #[tokio::test]
+    async fn a_watched_change_restarts_only_after_its_rebuild_succeeds() {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        let trigger = root.join("trigger.txt");
+        std::fs::write(&trigger, "initial").unwrap();
+        let starts = root.join("starts.log");
+
+        let service = Service {
+            entrypoint: Entrypoint::Script(Script {
+                script: format!(
+                    "echo start >> '{}'; while true; do sleep 0.05; done",
+                    starts.display()
+                ),
+                script_shell: None,
+                shell_options: None,
+            }),
+            watch: Some(ServiceWatch {
+                paths: vec!["trigger.txt".to_string()],
+                ignore: None,
+                debounce: Some("50ms".to_string()),
+                on: None,
+                rebuild: Some(vec![cuenv_core::tasks::TaskDependency::from_name("build")]),
+            }),
+            ..Service::default()
+        };
+        let rebuilder = Arc::new(FlakyRebuilder {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let session = Arc::new(SessionManager::create(root, "rebuild-test").unwrap());
+        let supervisor = ServiceSupervisor::new(SupervisorConfig {
+            name: "api".to_string(),
+            service,
+            project_root: root.to_path_buf(),
+            session,
+            rebuilder: Some(Arc::clone(&rebuilder) as Arc<dyn Rebuilder>),
+        });
+
+        let shutdown = CancellationToken::new();
+        let (readiness_tx, _readiness_rx) = watch::channel(ReadinessOutcome::Pending);
+        let run = {
+            let shutdown = shutdown.clone();
+            tokio::spawn(async move { supervisor.run(shutdown, readiness_tx).await })
+        };
+        let rebuilds = || rebuilder.calls.load(std::sync::atomic::Ordering::SeqCst);
+        let wait_for_rebuilds = |expected: usize| async move {
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+            while rebuilds() < expected && tokio::time::Instant::now() < deadline {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        };
+
+        wait_for_lines(&starts, 1).await;
+        assert_eq!(line_count(&starts), 1, "service should start once");
+
+        std::fs::write(&trigger, "broken").unwrap();
+        wait_for_rebuilds(1).await;
+        assert_eq!(rebuilds(), 1, "a change should run the rebuild");
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert_eq!(line_count(&starts), 1, "a failed rebuild must not restart");
+
+        std::fs::write(&trigger, "fixed").unwrap();
+        wait_for_lines(&starts, 2).await;
+        assert_eq!(rebuilds(), 2, "the next change should rebuild again");
+        assert_eq!(line_count(&starts), 2, "a successful rebuild restarts");
 
         shutdown.cancel();
         assert!(matches!(run.await.unwrap(), SupervisorResult::Stopped));
