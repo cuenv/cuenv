@@ -11,9 +11,20 @@ infrastructure: {
 	providers: fake: {source: "example/fake", version: "1.0.0"}
 	// The compatibility harness exports concrete values; infrastructure runs
 	// declare this output as `string` and fill it from the provider.
-	data: lookup: {type: "fake_lookup", outputs: id: "example-id", configuration: query: "name"}
-	resources: consumer: {
-		type: "fake_object"
-		configuration: value: infrastructure.data.lookup.outputs.id
+	data: {
+		lookup: {type: "fake_lookup", outputs: id: "example-id", configuration: query: "name"}
+		// Runs declare a list output down to the selected element, such as
+		// `outputs: result: [{id: string}]`.
+		groups: {type: "fake_groups", outputs: result: [{id: "group-id"}], configuration: name: "Zone Read"}
+	}
+	resources: {
+		consumer: {
+			type: "fake_object"
+			configuration: value: infrastructure.data.lookup.outputs.id
+		}
+		grouped: {
+			type: "fake_object"
+			configuration: value: infrastructure.data.groups.outputs.result[0].id
+		}
 	}
 }

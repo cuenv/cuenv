@@ -6,7 +6,7 @@ use std::time::Duration;
 use cuenv_manifest::manifest::InfrastructureOutputType;
 use serde_json::{Map, Value as Json};
 
-use super::SourceAddress;
+use super::{OutputPath, SourceAddress};
 use crate::error::Result;
 use crate::type_system::Value;
 
@@ -24,8 +24,8 @@ pub enum ConfigurationSelector {
 pub struct OutputIdentity {
     /// Producer namespace and address.
     pub source: SourceAddress,
-    /// Top-level primitive output attribute.
-    pub attribute: String,
+    /// The primitive output read: a top-level attribute or a position in one.
+    pub attribute: OutputPath,
 }
 
 /// A native selector discovered from the original immutable CUE instance.
@@ -37,8 +37,8 @@ pub struct NativeReference {
     pub destination: Vec<ConfigurationSelector>,
     /// Producer namespace and address.
     pub source: SourceAddress,
-    /// Top-level primitive output attribute.
-    pub attribute: String,
+    /// The primitive output read: a top-level attribute or a position in one.
+    pub attribute: OutputPath,
     /// CUE computes the destination from its sources instead of carrying this one,
     /// so it may read several, and the two need not have the same type.
     pub computed: bool,

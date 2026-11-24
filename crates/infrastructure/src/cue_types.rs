@@ -605,26 +605,29 @@ impl Package {
         self.blank();
         self.line(
             0,
-            "// #Outputs contains selectable top-level scalar provider outputs.",
+            "// #Outputs contains selectable provider outputs: scalars, and lists and objects whose",
+        );
+        self.line(
+            0,
+            "// scalar fields and elements can be selected, such as result[0].id. Narrow a list to",
+        );
+        self.line(
+            0,
+            "// the elements you select, for example `outputs: result: [_]`, so CUE can index it.",
         );
         self.line(0, "#Outputs: {");
         for (name, attribute) in &block.attributes {
-            if !attribute.write_only
-                && attribute.nested.is_none()
-                && matches!(
-                    attribute.value_type,
-                    Type::String | Type::Number | Type::Boolean
-                )
-            {
-                if attribute.sensitive {
-                    self.line(
-                        1,
-                        "// Sensitive: plans mask receiving arguments; strings of at least four characters are redacted.",
-                    );
-                }
-                let value = self.type_expression(&attribute.value_type, 1, Strings::Plain);
-                self.field(1, &label(name), &value);
+            if attribute.contains_write_only() || !selectable_output(&attribute.value_type) {
+                continue;
             }
+            if attribute.contains_sensitive() {
+                self.line(
+                    1,
+                    "// Sensitive: plans mask receiving arguments; strings of at least four characters are redacted.",
+                );
+            }
+            let value = output_type_expression(&attribute.value_type, 1);
+            self.field(1, &label(name), &value);
         }
         self.line(0, "}");
     }
@@ -834,6 +837,60 @@ impl Package {
                 }
                 fields.render(depth)
             }
+        }
+    }
+}
+
+/// Whether an output of this type can be selected: a scalar, or a list,
+/// tuple or object holding one somewhere. Maps are never selected into.
+fn selectable_output(value_type: &Type) -> bool {
+    match value_type {
+        Type::String | Type::Number | Type::Boolean => true,
+        Type::List(element) => selectable_output(element),
+        Type::Tuple(elements) => !elements.is_empty() && elements.iter().all(selectable_output),
+        Type::Object(attributes) => attributes.values().any(selectable_output),
+        // A set has no order to index and a map key is not a selector.
+        Type::Set(_) | Type::Map(_) | Type::Dynamic => false,
+    }
+}
+
+/// The CUE type of a selectable output. Object fields are regular, not
+/// required: an output declaration describes what a provider returns.
+fn output_type_expression(value_type: &Type, depth: usize) -> String {
+    match value_type {
+        Type::Boolean => "bool".to_string(),
+        Type::Number => "number".to_string(),
+        Type::String => "string".to_string(),
+        Type::Dynamic => "_".to_string(),
+        Type::List(element) | Type::Set(element) => {
+            format!("[...{}]", output_type_expression(element, depth))
+        }
+        Type::Map(element) => format!("{{[string]: {}}}", output_type_expression(element, depth)),
+        Type::Tuple(elements) => format!(
+            "[{}]",
+            elements
+                .iter()
+                .map(|element| output_type_expression(element, depth))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        Type::Object(attributes) => {
+            let indentation = "\t".repeat(depth + 1);
+            let mut rendered = String::from("{\n");
+            for (name, attribute_type) in attributes
+                .iter()
+                .filter(|(_, attribute_type)| selectable_output(attribute_type))
+            {
+                let _ = writeln!(
+                    rendered,
+                    "{indentation}{}: {}",
+                    label(name),
+                    output_type_expression(attribute_type, depth + 1)
+                );
+            }
+            rendered.push_str(&"\t".repeat(depth));
+            rendered.push('}');
+            rendered
         }
     }
 }

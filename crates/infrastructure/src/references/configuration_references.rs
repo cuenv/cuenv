@@ -49,8 +49,8 @@ pub struct ResourceOutputReference {
     pub native: NativeReference,
     /// Full address of the resource that supplies the output.
     pub source: SourceAddress,
-    /// Top-level attribute to read from that resource's output.
-    pub attribute: String,
+    /// The output read: a top-level attribute or a position in one.
+    pub attribute: super::OutputPath,
 }
 
 /// What a configuration takes from outside itself: resource and data-source

@@ -50,8 +50,11 @@ import "strings"
 // repeats the checks for projects that do not unify with this schema.
 //
 // Primitive resource and data-source arguments, including nested object and
-// ordered collection elements, can refer to a top-level primitive output of
-// another resource or data source with a native selector through its `outputs` namespace. Sets and write-only fields
+// ordered collection elements, can refer to a primitive output of another
+// resource or data source with a native selector through its `outputs`
+// namespace, including a field or element inside a list or object output
+// such as `outputs.result[0].id`. Selecting an element the provider did not
+// return fails the plan. Sets and write-only fields
 // do not support output references.
 // A sensitive source attribute may be referenced: plans mask the containing
 // argument and identify nested reference paths as (sensitive), with map keys
@@ -484,11 +487,14 @@ _s3LoopbackEndpoint:  "^(?i:http)://((?i:localhost)|\(_tursoLoopback4)|\\[::1\\]
 	// Resources that must be applied before this one (and destroyed after).
 	dependsOn?: [...#InfrastructureName]
 
-	// Abstract top-level scalar outputs. Generated provider types declare the
+	// Abstract provider outputs. Generated provider types declare the
 	// available attributes; untyped resources declare each selected attribute
-	// explicitly, for example `outputs: id: string`. Values come from provider
-	// state at runtime and are never sent as provider configuration.
-	outputs?: {[string]: string | number | bool}
+	// explicitly, for example `outputs: id: string`. A list or object output is
+	// declared down to the scalars it selects, with a list narrowed to the
+	// elements read, for example `outputs: result: [{id: string}]` for
+	// `outputs.result[0].id`. Values come from provider state at runtime and are
+	// never sent as provider configuration.
+	outputs?: {[string]: #InfrastructureOutput}
 
 	// Resource arguments, validated by the provider's schema. A generated
 	// `#Resource` types them with its `#Configuration`.
@@ -500,3 +506,7 @@ _s3LoopbackEndpoint:  "^(?i:http)://((?i:localhost)|\(_tursoLoopback4)|\\[::1\\]
 #DataSource: {
 	#ManagedResource
 }
+
+// One output a resource or data source declares: a scalar, or a list or
+// object whose scalar fields and elements a native selector can read.
+#InfrastructureOutput: string | number | bool | [...#InfrastructureOutput] | {[string]: #InfrastructureOutput}

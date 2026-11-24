@@ -45,6 +45,16 @@ fn pet_block() -> Block {
     let mut secret = attribute(Type::String, Presence::Computed);
     secret.sensitive = true;
     block.attributes.insert("secret".into(), secret);
+    block.attributes.insert(
+        "owners".into(),
+        attribute(
+            Type::List(Box::new(Type::Object(BTreeMap::from([
+                ("id".to_string(), Type::String),
+                ("scopes".to_string(), Type::List(Box::new(Type::String))),
+            ])))),
+            Presence::Computed,
+        ),
+    );
     let mut token = attribute(Type::String, Presence::Optional);
     token.write_only = true;
     block.attributes.insert("token".into(), token);
@@ -213,10 +223,16 @@ import "list"
 	token?: #Value & #WriteOnly
 }
 
-// #Outputs contains selectable top-level scalar provider outputs.
+// #Outputs contains selectable provider outputs: scalars, and lists and objects whose
+// scalar fields and elements can be selected, such as result[0].id. Narrow a list to
+// the elements you select, for example `outputs: result: [_]`, so CUE can index it.
 #Outputs: {
 	id: string
 	length: number
+	owners: [...{
+		id: string
+		scopes: [...string]
+	}]
 	prefix: string
 	// Sensitive: plans mask receiving arguments; strings of at least four characters are redacted.
 	secret: string
