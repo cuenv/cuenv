@@ -47,3 +47,34 @@ pipelines: [declared.build, _named.test, T.lint, _chained.build]
 		}
 	}
 }
+
+// A list entry written as a definition unified with a struct is a value of
+// its own, not a reference to the definition.
+func TestModuleReferencesIgnoreDefinitionsUsedAsValues(t *testing.T) {
+	root := writePackage(t, `
+#Task: {command: string, name?: string}
+tasks: build: #Task & {command: "build"}
+pipelines: [...]
+pipelines: [tasks.build, #Task & {command: "inline", name: "announce"}]
+`)
+	options, err := json.Marshal(ModuleEvalOptions{
+		WithMeta: true, WithReferences: true, PackageName: packageNamed(testPackageName),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := decodeEnvelope(t, evaluateModuleResponse(root, "", string(options)))
+	if response.Error != nil {
+		t.Fatalf("evaluate project: %+v", response.Error)
+	}
+	var result ModuleResult
+	if err := json.Unmarshal(response.Ok, &result); err != nil {
+		t.Fatal(err)
+	}
+	if got := result.Meta["./pipelines[0]"].Reference; got != "tasks.build" {
+		t.Errorf("reference of a task = %q, want tasks.build", got)
+	}
+	if got := result.Meta["./pipelines[1]"].Reference; got != "" {
+		t.Errorf("an inline value has reference %q, want none", got)
+	}
+}

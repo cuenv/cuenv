@@ -118,6 +118,13 @@ pub enum CompilerError {
     #[error("Task '{0}' not found")]
     TaskNotFound(String),
 
+    /// An inline pipeline task is named like a task the project defines, so
+    /// a reference to the name would be ambiguous.
+    #[error(
+        "Inline pipeline task '{0}' has the name of a project task; give it a different description"
+    )]
+    InlineTaskNameClash(String),
+
     /// A shell script cannot be represented as the requested command array.
     #[error("Task '{0}' uses shell script but IR requires command array")]
     ShellScriptNotSupported(String),

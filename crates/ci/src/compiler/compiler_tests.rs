@@ -95,6 +95,8 @@ mod basic;
 mod contributors;
 #[path = "compiler_tests/dependencies.rs"]
 mod dependencies;
+#[path = "compiler_tests/inline.rs"]
+mod inline;
 #[path = "compiler_tests/paths.rs"]
 mod paths;
 #[path = "compiler_tests/providers.rs"]

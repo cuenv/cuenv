@@ -5,6 +5,7 @@ use crate::ir::{
     ArtifactDownload, CachePolicy, IntermediateRepresentation, OutputDeclaration, OutputType,
     SecretConfig, Task as IrTask,
 };
+use cuenv_core::ci::PipelineTask;
 use cuenv_core::tasks::{InputPattern, Task, TaskGroup, TaskNode};
 use cuenv_task_exec::TaskCommandExt as _;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -41,6 +42,9 @@ impl Compiler {
         if let Some(node) = self.project.tasks.get(name) {
             return Some(node);
         }
+        if let Some(node) = self.inline_task(name) {
+            return Some(node);
+        }
         let mut parts = name.split('.');
         let mut node = self.project.tasks.get(parts.next()?)?;
         for part in parts {
@@ -51,6 +55,28 @@ impl Compiler {
             };
         }
         Some(node)
+    }
+
+    /// The task defined inline in the pipeline being compiled under `name`.
+    ///
+    /// An inline task is named by its `description`, as
+    /// [`PipelineTask::task_name`] reads it.
+    pub(super) fn inline_task(&self, name: &str) -> Option<&TaskNode> {
+        self.inline_tasks()
+            .find(|(inline, _)| *inline == name)
+            .map(|(_, node)| node)
+    }
+
+    /// Every task defined inline in the pipeline being compiled, with its name.
+    pub(super) fn inline_tasks(&self) -> impl Iterator<Item = (&str, &TaskNode)> {
+        self.options
+            .pipeline
+            .iter()
+            .flat_map(|pipeline| pipeline.tasks.iter())
+            .filter_map(|entry| match entry {
+                PipelineTask::Node(node @ TaskNode::Task(_)) => Some((entry.task_name(), node)),
+                _ => None,
+            })
     }
 
     /// Find a leaf task by name (handles dotted paths for nested tasks)
@@ -139,6 +165,32 @@ impl Compiler {
             self.compile_task_node(name, task_node, ir)?;
         }
         Ok(())
+    }
+
+    /// Compile the tasks the pipeline defines inline, after the project's own.
+    ///
+    /// # Errors
+    ///
+    /// Fails when an inline task has the name of a project task or of another
+    /// inline task, or when it cannot be lowered.
+    pub(super) fn compile_inline_tasks(
+        &self,
+        ir: &mut IntermediateRepresentation,
+    ) -> Result<(), CompilerError> {
+        let mut seen = std::collections::HashSet::new();
+        self.inline_tasks().try_for_each(|(name, node)| {
+            // A project that already holds this very task (the runner adds
+            // inline tasks to the project) compiled it with the rest.
+            match self.project.tasks.get(name) {
+                Some(existing) if existing == node => return Ok(()),
+                Some(_) => return Err(CompilerError::InlineTaskNameClash(name.to_string())),
+                None => {}
+            }
+            if !seen.insert(name) {
+                return Err(CompilerError::InlineTaskNameClash(name.to_string()));
+            }
+            self.compile_task_node(name, node, ir)
+        })
     }
 
     /// Compile a task node (handles tasks, groups, and lists)

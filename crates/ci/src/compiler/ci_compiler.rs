@@ -133,6 +133,7 @@ impl Compiler {
 
         // Compile tasks
         self.compile_tasks(&self.project.tasks, &mut ir)?;
+        self.compile_inline_tasks(&mut ir)?;
 
         // Fix artifact download paths to use actual upstream task outputs
         // (artifact_downloads are initially created with paths derived from task names,
