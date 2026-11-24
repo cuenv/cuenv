@@ -5,7 +5,7 @@ mod codegen;
 mod git_hooks;
 mod infrastructure;
 mod lock;
-mod rules;
+pub mod rules;
 mod vcs;
 
 use ci::CiSyncProvider;

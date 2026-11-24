@@ -21,6 +21,8 @@ pub struct CommandExecutor {
     pub(super) workspace_modules: Mutex<HashMap<PathBuf, ModuleEvaluation>>,
     /// The CUE package name to evaluate (typically "cuenv").
     pub(super) package: String,
+    /// Generated files synced on the first evaluation of each project.
+    pub(super) autosync: super::autosync::AutoSync,
 }
 
 impl CommandExecutor {
@@ -31,6 +33,7 @@ impl CommandExecutor {
             local_modules: Mutex::new(HashMap::new()),
             workspace_modules: Mutex::new(HashMap::new()),
             package,
+            autosync: super::autosync::AutoSync::default(),
         }
     }
 
@@ -63,18 +66,28 @@ impl CommandExecutor {
             cuenv_core::Error::io_with_path("canonicalize path", path.to_path_buf(), e)
         })?;
 
-        let mut guard = self.local_modules.lock().map_err(|_| {
-            cuenv_core::Error::configuration("Failed to acquire local module cache lock")
-        })?;
-
-        if !guard.contains_key(&target_path) {
-            let module = match self.local_module_from_workspace_cache(&target_path) {
-                Some(module) => module,
-                None => self.evaluate_path_module(&target_path)?,
-            };
-            guard.insert(target_path.clone(), module);
+        let module_root = {
+            let mut guard = self.local_modules.lock().map_err(|_| {
+                cuenv_core::Error::configuration("Failed to acquire local module cache lock")
+            })?;
+            if !guard.contains_key(&target_path) {
+                let module = match self.local_module_from_workspace_cache(&target_path) {
+                    Some(module) => module,
+                    None => self.evaluate_path_module(&target_path)?,
+                };
+                guard.insert(target_path.clone(), module);
+            }
+            guard.get(&target_path).map(|module| module.root.clone())
+        };
+        // Syncing reads the project through this method, so it runs with
+        // the cache unlocked.
+        if let Some(module_root) = module_root {
+            self.autosync(&module_root, &target_path);
         }
 
+        let guard = self.local_modules.lock().map_err(|_| {
+            cuenv_core::Error::configuration("Failed to acquire local module cache lock")
+        })?;
         Ok(ModuleGuard {
             guard,
             key: target_path,
@@ -139,7 +152,20 @@ impl CommandExecutor {
             module.require_unique_project_names()?;
             guard.insert(module_root.clone(), module);
         }
+        let projects: Vec<PathBuf> = guard.get(&module_root).map_or_else(Vec::new, |module| {
+            module
+                .projects()
+                .map(|instance| module_root.join(&instance.path))
+                .collect()
+        });
+        drop(guard);
+        for project in &projects {
+            self.autosync(&module_root, project);
+        }
 
+        let guard = self.workspace_modules.lock().map_err(|_| {
+            cuenv_core::Error::configuration("Failed to acquire workspace module cache lock")
+        })?;
         Ok(ModuleGuard {
             guard,
             key: module_root,
