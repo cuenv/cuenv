@@ -18,7 +18,7 @@ use serde_json::json;
 use sha2::Digest;
 
 use super::super::client::{
-    Addressing, Attempt, BucketAccess, Condition, S3Client, S3Failure, StoredObject,
+    Addressing, Attempt, BucketAccess, Condition, Exposure, S3Client, S3Failure, StoredObject,
 };
 use super::super::document::{
     DocumentLock, DocumentWriter, LOCK_KIND, LastChange, Origin, StateDocument, Tombstone,
@@ -49,6 +49,9 @@ pub(super) const MUTATION_ATTEMPTS: u32 = 8;
 
 /// Attempts a read makes.
 const READ_ATTEMPTS: u32 = 4;
+/// Attempts of the unsigned public-bucket check before it counts as
+/// inconclusive.
+const EXPOSURE_ATTEMPTS: u32 = 3;
 
 /// The wait after a 429 without `Retry-After`.
 const RATE_LIMIT_WAIT: Duration = Duration::from_secs(1);
@@ -800,18 +803,37 @@ impl ObjectStateStore {
             }
             failed => failed,
         };
-        let public = match &outcome {
-            Ok(()) => self.client.readable_without_credentials(&created).await?,
-            Err(_) => Ok(false),
+        let exposure = match &outcome {
+            Ok(()) => Some(self.exposure(&created).await?),
+            Err(_) => None,
         };
         if self.client.delete(&created).await?.is_err() {
             tracing::warn!("could not delete a probe object");
         }
         outcome?;
-        if public.unwrap_or(false) {
-            return Err(public_bucket());
+        match exposure {
+            Some(Exposure::Public) => Err(public_bucket()),
+            // Writes put provider secrets into the bucket, so a check that
+            // could not settle whether it is private refuses them.
+            Some(Exposure::Unknown(reason)) => Err(unknown_exposure(&reason)),
+            Some(Exposure::Private) | None => Ok(()),
         }
-        Ok(())
+    }
+
+    /// Ask, with retries, whether the bucket serves `key` to unsigned
+    /// requests. Only an inconclusive answer is retried.
+    async fn exposure(&self, key: &str) -> Result<Exposure> {
+        let mut exposure = Exposure::Unknown(String::new());
+        for attempt in 0..EXPOSURE_ATTEMPTS {
+            if attempt > 0 {
+                tokio::time::sleep(backoff(attempt)).await;
+            }
+            exposure = self.client.unsigned_exposure(key).await?;
+            if !matches!(exposure, Exposure::Unknown(_)) {
+                break;
+            }
+        }
+        Ok(exposure)
     }
 
     /// Repeat a request while it is rate-limited.
@@ -842,20 +864,26 @@ impl ObjectStateStore {
             return Ok(());
         };
         let path = self.path(tenant)?;
-        self.checked_public
-            .get_or_try_init(|| async {
-                match self
-                    .client
-                    .readable_without_credentials(&path.state_key())
-                    .await?
-                {
-                    Ok(true) => Err(public_bucket()),
-                    // A failed check is not a finding.
-                    Ok(false) | Err(_) => Ok(()),
-                }
-            })
-            .await?;
-        Ok(())
+        if self.checked_public.initialized() {
+            return Ok(());
+        }
+        match self.exposure(&path.state_key()).await? {
+            Exposure::Public => Err(public_bucket()),
+            Exposure::Private => {
+                let _ = self.checked_public.set(());
+                Ok(())
+            }
+            // A read-only command puts nothing in the bucket, so an
+            // inconclusive check warns, and the next command checks again.
+            Exposure::Unknown(reason) => {
+                tracing::warn!(
+                    "cuenv could not confirm that the state bucket is private ({reason}); \
+                     state holds plaintext provider secrets, and commands that write state \
+                     refuse until the check succeeds"
+                );
+                Ok(())
+            }
+        }
     }
 
     // -- migration manifest -------------------------------------------------
@@ -994,6 +1022,14 @@ fn history_writer(value: &str) -> String {
         return "unknown".to_string();
     }
     value.to_string()
+}
+
+fn unknown_exposure(reason: &str) -> InfrastructureError {
+    InfrastructureError::state(format!(
+        "cuenv could not confirm that the bucket is private: {reason}; state holds plaintext \
+         provider secrets, so cuenv does not write it to a bucket that may be public; retry, \
+         and make sure the endpoint refuses unsigned reads with a 4xx status"
+    ))
 }
 
 fn public_bucket() -> InfrastructureError {

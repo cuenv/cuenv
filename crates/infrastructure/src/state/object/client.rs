@@ -297,14 +297,17 @@ impl S3Client {
     }
 
     fn transport(error: &reqwest::Error) -> S3Failure {
-        let category = if error.is_timeout() {
+        S3Failure::Ambiguous(Self::transport_category(error).to_string())
+    }
+
+    fn transport_category(error: &reqwest::Error) -> &'static str {
+        if error.is_timeout() {
             "object-storage request timed out"
         } else if error.is_connect() {
             "object-storage connection failed"
         } else {
             "object-storage request failed"
-        };
-        S3Failure::Ambiguous(category.to_string())
+        }
     }
 
     fn etag(response: &reqwest::Response) -> Attempt<String> {
@@ -559,18 +562,48 @@ impl S3Client {
         ))))
     }
 
-    /// Whether an unsigned GET of `key` succeeds, which means the bucket
-    /// serves objects to anyone.
+    /// What an unsigned GET of `key` says about the bucket: a success means
+    /// the bucket serves objects to anyone, a client error means it refused,
+    /// and a server error, throttling or a lost response settles nothing.
     ///
     /// # Errors
     ///
     /// Returns a configuration error for a key that does not survive URL
     /// building.
-    pub async fn readable_without_credentials(&self, key: &str) -> Result<Attempt<bool>> {
+    pub async fn unsigned_exposure(&self, key: &str) -> Result<Exposure> {
         let url = self.url(Some(key))?;
         match self.http.get(url).send().await {
-            Ok(response) => Ok(Ok(response.status().is_success())),
-            Err(error) => Ok(Err(Self::transport(&error))),
+            Ok(response) => Ok(Exposure::from_status(response.status())),
+            Err(error) => Ok(Exposure::Unknown(
+                Self::transport_category(&error).to_string(),
+            )),
+        }
+    }
+}
+
+/// Whether a bucket serves objects to unsigned requests.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Exposure {
+    /// An unsigned read succeeded.
+    Public,
+    /// An unsigned read was refused.
+    Private,
+    /// The unsigned read failed in a way that does not tell: a server error,
+    /// throttling, a timeout or a lost connection.
+    Unknown(String),
+}
+
+impl Exposure {
+    fn from_status(status: StatusCode) -> Self {
+        if status.is_success() {
+            Self::Public
+        } else if status.is_server_error()
+            || status == StatusCode::TOO_MANY_REQUESTS
+            || status == StatusCode::REQUEST_TIMEOUT
+        {
+            Self::Unknown(format!("the unsigned read answered {status}"))
+        } else {
+            Self::Private
         }
     }
 }
