@@ -87,6 +87,7 @@ use cuenv_events::{
     InteractiveEvent, // Prompts and user interaction
     SystemEvent,    // Internal system events
     OutputEvent,    // stdout/stderr capture
+    ActivityEvent,  // Long-running preparation, such as runtime activation
 };
 ```
 
@@ -361,6 +362,22 @@ fn process_files(files: &[String]) {
 }
 ```
 
+### Activities
+
+Preparation work that is not a task, such as activating a Nix runtime or downloading tools, runs as an `Activity`. An activity stays silent while it is fast and is announced once it outlasts 200 ms (`cuenv_events::activity::ANNOUNCE_DELAY`), so cached work prints nothing:
+
+```rust
+use cuenv_events::Activity;
+
+let activity = Activity::new("Activating Nix flake runtime (nix print-dev-env .)");
+// Each line passed here becomes progress, shown under the spinner in a
+// terminal and printed as an indented line in CI.
+let lines = activity.lines();
+let environment = activity.track(capture_environment(lines)).await?;
+```
+
+`track` emits `ActivityEvent::Completed` with the outcome of the work's `Result` when the activity was announced. The CLI renderer draws a spinner when stderr is a terminal and plain stderr lines otherwise; the TUI ignores activities.
+
 ## Event Schema Reference
 
 ### TaskEvent Variants
@@ -386,6 +403,14 @@ fn process_files(files: &[String]) {
 | `TaskExecuting`      | project, task                  |
 | `TaskResult`         | project, task, success, error? |
 | `ReportGenerated`    | path                           |
+
+### ActivityEvent Variants
+
+| Event Type  | Fields                                                  |
+| ----------- | ------------------------------------------------------- |
+| `Started`   | id, message                                             |
+| `Progress`  | id, detail                                              |
+| `Completed` | id, message, outcome (`succeeded`/`failed`), duration_ms |
 
 ### CommandEvent Variants
 

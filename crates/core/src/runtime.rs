@@ -1,10 +1,14 @@
 //! Environment variables contributed by a project's configured runtime.
 //!
 //! Nix and devenv runtimes supply their development shell environment by
-//! running the runtime's own `print-dev-env` command.
+//! running the runtime's own `print-dev-env` command. Activation can take
+//! minutes when a devShell has to be built, so it runs as an [`Activity`]:
+//! once it outlasts a short delay, cuenv shows on stderr what it is
+//! activating and the latest line the runtime wrote to stderr.
 
 use crate::Result;
 use crate::manifest::{DevenvRuntime, NixRuntime, Runtime};
+use cuenv_events::Activity;
 use cuenv_hooks::{Hook, SourceEnvironmentOptions};
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
@@ -62,7 +66,8 @@ async fn resolve_nix_runtime_environment(
         source: Some(true),
     };
 
-    capture_runtime_environment(hook, withheld_env)
+    let activity = Activity::new(nix_activation_message(runtime));
+    capture_runtime_environment(hook, withheld_env, &activity)
         .await
         .map_err(|e| {
             crate::Error::configuration(format!("Failed to acquire Nix runtime environment: {e}"))
@@ -92,7 +97,8 @@ async fn resolve_devenv_runtime_environment(
         source: Some(true),
     };
 
-    capture_runtime_environment(hook, withheld_env)
+    let activity = Activity::new(devenv_activation_message(runtime));
+    capture_runtime_environment(hook, withheld_env, &activity)
         .await
         .map_err(|e| {
             crate::Error::configuration(format!(
@@ -101,19 +107,26 @@ async fn resolve_devenv_runtime_environment(
         })
 }
 
+/// Run the runtime's `print-dev-env` hook as `activity`, forwarding each
+/// line the runtime writes to stderr (for Nix: what it evaluates, builds and
+/// copies) as progress.
 async fn capture_runtime_environment(
     hook: Hook,
     withheld_env: &BTreeSet<String>,
+    activity: &Activity,
 ) -> cuenv_hooks::Result<HashMap<String, String>> {
-    cuenv_hooks::capture_source_environment_with_options(
-        hook,
-        SourceEnvironmentOptions {
-            prior_env: &HashMap::new(),
-            timeout_seconds: RUNTIME_ENV_TIMEOUT_SECONDS,
-            withheld_env,
-        },
-    )
-    .await
+    let stderr_lines = activity.lines();
+    activity
+        .track(cuenv_hooks::capture_source_environment_with_options(
+            hook,
+            SourceEnvironmentOptions {
+                stderr_lines: Some(&stderr_lines),
+                prior_env: &HashMap::new(),
+                timeout_seconds: RUNTIME_ENV_TIMEOUT_SECONDS,
+                withheld_env,
+            },
+        ))
+        .await
 }
 
 /// Resolve devenv command path, installing via `nix profile install` if needed.
@@ -131,24 +144,31 @@ async fn resolve_devenv_command(withheld_env: &BTreeSet<String>) -> Result<Strin
     }
 
     tracing::info!("devenv not found, installing via nix profile install");
-    let output = runtime_command("nix", withheld_env)
-        .args([
-            "--extra-experimental-features",
-            "nix-command flakes",
-            "profile",
-            "install",
-            "nixpkgs#devenv",
-        ])
-        .output()
-        .await
-        .map_err(|e| crate::Error::configuration(format!("Failed to install devenv: {e}")))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(crate::Error::configuration(format!(
-            "Failed to install devenv: {stderr}"
-        )));
-    }
+    Activity::new("Installing devenv (nix profile install nixpkgs#devenv)")
+        .track(async {
+            let output = runtime_command("nix", withheld_env)
+                .args([
+                    "--extra-experimental-features",
+                    "nix-command flakes",
+                    "profile",
+                    "install",
+                    "nixpkgs#devenv",
+                ])
+                .output()
+                .await
+                .map_err(|e| {
+                    crate::Error::configuration(format!("Failed to install devenv: {e}"))
+                })?;
+            if output.status.success() {
+                Ok(())
+            } else {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                Err(crate::Error::configuration(format!(
+                    "Failed to install devenv: {stderr}"
+                )))
+            }
+        })
+        .await?;
 
     // Return absolute path so we don't need to mutate the process PATH
     if let Ok(home) = std::env::var("HOME") {
@@ -179,6 +199,24 @@ fn nix_print_dev_env_args(runtime: &NixRuntime) -> Vec<String> {
     args
 }
 
+/// What the user sees while the Nix runtime activates.
+fn nix_activation_message(runtime: &NixRuntime) -> String {
+    format!(
+        "Activating Nix flake runtime (nix print-dev-env {})",
+        nix_runtime_target(runtime)
+    )
+}
+
+/// What the user sees while the devenv runtime activates.
+fn devenv_activation_message(runtime: &DevenvRuntime) -> String {
+    let path = if runtime.path.is_empty() {
+        "."
+    } else {
+        runtime.path.as_str()
+    };
+    format!("Activating devenv runtime (devenv print-dev-env in {path})")
+}
+
 fn nix_runtime_target(runtime: &NixRuntime) -> String {
     match &runtime.output {
         Some(output) => format!("{}#{}", runtime.flake, output),
@@ -189,6 +227,25 @@ fn nix_runtime_target(runtime: &NixRuntime) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn activation_messages_name_the_runtime_command() {
+        let nix = NixRuntime {
+            output: Some("devShells.x86_64-linux.ci".to_string()),
+            ..NixRuntime::default()
+        };
+        assert_eq!(
+            nix_activation_message(&nix),
+            "Activating Nix flake runtime (nix print-dev-env .#devShells.x86_64-linux.ci)"
+        );
+        let devenv = DevenvRuntime {
+            path: String::new(),
+        };
+        assert_eq!(
+            devenv_activation_message(&devenv),
+            "Activating devenv runtime (devenv print-dev-env in .)"
+        );
+    }
 
     #[test]
     fn nix_runtime_defaults_to_local_flake() {

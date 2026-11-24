@@ -8,6 +8,7 @@ pub use hook_executor::{
     HookExecutor, HookRunOptions, HookRunState, HookSessionContext, execute_hooks,
     execute_hooks_with_options,
 };
+pub use output::StderrLines;
 pub use source_environment::{
     SourceEnvironmentOptions, capture_source_environment, capture_source_environment_with_options,
 };

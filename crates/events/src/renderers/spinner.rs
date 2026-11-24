@@ -9,13 +9,16 @@ use std::collections::HashMap;
 
 use indicatif::{HumanDuration, MultiProgress, ProgressBar, ProgressStyle};
 
-use crate::event::{CacheSkipReason, SkipReason, Stream, TaskEvent};
+use crate::event::{
+    ActivityEvent, ActivityOutcome, CacheSkipReason, SkipReason, Stream, TaskEvent,
+};
 
 /// Tail of the most recent stdout/stderr line shown under a task's spinner.
 const TAIL_PREFIX_BYTES: usize = 80;
 const GROUP_TEMPLATE: &str = "{prefix:.bold.cyan} {bar:25.cyan/blue} {pos}/{len} {msg}";
 const TASK_TEMPLATE: &str = "{spinner:.green} {prefix:.dim} {wide_msg}";
 const FINISH_TEMPLATE: &str = "{prefix} {wide_msg}";
+const ACTIVITY_TEMPLATE: &str = "{spinner:.cyan} {wide_msg} {elapsed:.dim}";
 
 /// Group-aware progress renderer wrapping [`indicatif`].
 #[derive(Debug)]
@@ -27,6 +30,14 @@ pub struct SpinnerRenderer {
     groups: HashMap<String, GroupBar>,
     /// Whether to mirror the latest output line under each task spinner.
     show_output_tail: bool,
+    /// Per-activity spinners keyed by activity id.
+    activities: HashMap<String, ActivityBar>,
+}
+
+#[derive(Debug)]
+struct ActivityBar {
+    bar: ProgressBar,
+    message: String,
 }
 
 #[derive(Debug)]
@@ -81,6 +92,7 @@ impl SpinnerRenderer {
             tasks: HashMap::new(),
             groups: HashMap::new(),
             show_output_tail: false,
+            activities: HashMap::new(),
         }
     }
 
@@ -106,6 +118,57 @@ impl SpinnerRenderer {
     pub fn print_above(&self, line: &str) {
         if let Err(err) = self.multi.println(line) {
             tracing::warn!(error = %err, "multi.println failed; output line dropped");
+        }
+    }
+
+    /// Apply an [`ActivityEvent`] to the spinner state.
+    ///
+    /// A running activity is a spinner showing its message, its latest
+    /// progress line and the elapsed time. When it ends the spinner is
+    /// replaced by one line naming the outcome and duration.
+    pub fn apply_activity(&mut self, event: &ActivityEvent) {
+        match event {
+            ActivityEvent::Started { id, message } => {
+                let style = ProgressStyle::with_template(ACTIVITY_TEMPLATE)
+                    .unwrap_or_else(|_| ProgressStyle::default_spinner());
+                let bar = self.multi.add(ProgressBar::new_spinner());
+                bar.set_style(style);
+                bar.set_message(message.clone());
+                bar.enable_steady_tick(std::time::Duration::from_millis(120));
+                self.activities.insert(
+                    id.clone(),
+                    ActivityBar {
+                        bar,
+                        message: message.clone(),
+                    },
+                );
+            }
+            ActivityEvent::Progress { id, detail } => {
+                if let Some(activity) = self.activities.get(id) {
+                    activity
+                        .bar
+                        .set_message(format!("{} · {detail}", activity.message));
+                }
+            }
+            ActivityEvent::Completed {
+                id,
+                message,
+                outcome,
+                duration_ms,
+            } => {
+                if let Some(activity) = self.activities.remove(id) {
+                    activity.bar.finish_and_clear();
+                    self.multi.remove(&activity.bar);
+                }
+                let mark = match outcome {
+                    ActivityOutcome::Succeeded => "✓",
+                    ActivityOutcome::Failed => "✗",
+                };
+                self.print_above(&format!(
+                    "{mark} {}",
+                    super::cli::completion_line(message, *outcome, *duration_ms)
+                ));
+            }
         }
     }
 

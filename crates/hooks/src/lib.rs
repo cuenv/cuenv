@@ -45,8 +45,8 @@ pub use state::{
 // Re-export executor
 pub use executor::{
     HookExecutor, HookRunOptions, HookRunState, HookSessionContext, SourceEnvironmentOptions,
-    capture_source_environment, capture_source_environment_with_options, execute_hooks,
-    execute_hooks_with_options,
+    StderrLines, capture_source_environment, capture_source_environment_with_options,
+    execute_hooks, execute_hooks_with_options,
 };
 
 // Re-export approval management

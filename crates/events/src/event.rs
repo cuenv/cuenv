@@ -118,6 +118,8 @@ pub enum EventCategory {
     Cache(CacheEvent),
     /// Generic output events (for migration and compatibility).
     Output(OutputEvent),
+    /// Long-running preparation work, such as runtime activation.
+    Activity(ActivityEvent),
 }
 
 /// Task execution lifecycle events.
@@ -689,6 +691,52 @@ pub enum CacheEvent {
         /// Redacted error message.
         error: String,
     },
+}
+
+/// Long-running preparation work that is not a task, such as activating a
+/// Nix runtime or downloading tools.
+///
+/// Activities are only announced once they outlast a short delay, so fast or
+/// cached work stays silent.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "event", content = "data")]
+pub enum ActivityEvent {
+    /// The activity has been running long enough to be worth showing.
+    Started {
+        /// Identifier shared by every event of this activity.
+        id: String,
+        /// What cuenv is doing, for example `Activating Nix flake runtime (.)`.
+        message: String,
+    },
+    /// The latest thing the activity reported, such as the derivation that
+    /// Nix is building.
+    Progress {
+        /// Identifier shared by every event of this activity.
+        id: String,
+        /// The latest progress line.
+        detail: String,
+    },
+    /// The activity finished.
+    Completed {
+        /// Identifier shared by every event of this activity.
+        id: String,
+        /// The message the activity started with.
+        message: String,
+        /// Whether the activity succeeded.
+        outcome: ActivityOutcome,
+        /// Duration in milliseconds since the activity began.
+        duration_ms: u64,
+    },
+}
+
+/// How an activity ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActivityOutcome {
+    /// The activity succeeded.
+    Succeeded,
+    /// The activity failed.
+    Failed,
 }
 
 /// Output stream identifier.

@@ -122,6 +122,7 @@ impl CliRenderer {
             EventCategory::System(system_event) => self.render_system(system_event),
             EventCategory::Cache(cache_event) => self.render_cache(cache_event),
             EventCategory::Output(output_event) => Self::render_output(output_event),
+            EventCategory::Activity(activity_event) => self.render_activity(activity_event),
         }
     }
 

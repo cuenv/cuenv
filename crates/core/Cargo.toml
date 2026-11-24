@@ -27,6 +27,7 @@ tracing = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
 cuenv-secrets = { workspace = true }
+cuenv-events = { workspace = true }
 cuenv-hooks = { workspace = true }
 cuenv-manifest = { workspace = true }
 cuenv-task-graph = { workspace = true }

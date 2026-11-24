@@ -83,6 +83,16 @@ cuenv is honest about what works. The matrix in [`docs/design/specs/schema-cover
 
 How each variant supplies an environment differs under the hood. Nix and devenv runtimes are resolved by `cuenv` itself (it runs `nix print-dev-env` / `devenv print-dev-env` and sources the result, per `crates/core/src/runtime.rs`). OCI binaries are extracted by the `#OCIActivate` hook.
 
+### What you see while a runtime activates
+
+Activating a runtime can take minutes the first time, while Nix evaluates the flake and builds the devShell, or while cuenv downloads the tools in `cuenv.lock`. When activation takes longer than 200 ms, cuenv reports it on stderr; cached activations stay silent.
+
+- In a terminal, a spinner names what is activating, the latest line the runtime wrote (for example `building 'rust-toolchain.drv'...`, with Nix store hashes shortened) and the elapsed time. It is replaced by one line such as `✓ Activating Nix flake runtime (nix print-dev-env .): done in 42.1s`.
+- In CI or when stderr is not a terminal, cuenv prints plain lines instead: `Activating Nix flake runtime (nix print-dev-env .)...`, each line the runtime writes, indented, and a final `...: done in 42.1s` or `...: failed after 3.0s`.
+- With `--json`, the same information arrives as `Activity` events (`Started`, `Progress`, `Completed`).
+
+Task stdout is never touched. The same reporting covers devenv activation, the one-time `nix profile install nixpkgs#devenv`, and tool downloads for `#ToolsRuntime`.
+
 ## OCI runtime
 
 `#OCIRuntime` (Partial) fetches **specific binaries out of whole OCI images** and puts them on `PATH`. This is the working path for "I want the `nginx` binary from `nginx:1.25-alpine`, hermetically, content-addressed." It is a three-step flow.

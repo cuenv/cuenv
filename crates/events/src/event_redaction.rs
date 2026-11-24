@@ -10,8 +10,8 @@
 use std::borrow::Cow;
 
 use crate::event::{
-    CacheEvent, CacheSkipReason, CiEvent, CommandEvent, EventCategory, InteractiveEvent,
-    OutputEvent, ServiceEvent, SkipReason, SystemEvent, TaskEvent,
+    ActivityEvent, CacheEvent, CacheSkipReason, CiEvent, CommandEvent, EventCategory,
+    InteractiveEvent, OutputEvent, ServiceEvent, SkipReason, SystemEvent, TaskEvent,
 };
 use crate::redaction;
 
@@ -46,6 +46,23 @@ impl EventCategory {
             Self::System(event) => event.redact_in_place(),
             Self::Cache(event) => event.redact_in_place(),
             Self::Output(event) => event.redact_in_place(),
+            Self::Activity(event) => event.redact_in_place(),
+        }
+    }
+}
+
+impl ActivityEvent {
+    fn redact_in_place(&mut self) {
+        match self {
+            Self::Started { id, message }
+            | Self::Progress {
+                id,
+                detail: message,
+            }
+            | Self::Completed { id, message, .. } => {
+                scrub(id);
+                scrub(message);
+            }
         }
     }
 }
