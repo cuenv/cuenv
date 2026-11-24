@@ -571,6 +571,9 @@ pub struct Pipeline {
     /// Workflow-level concurrency configuration (overrides the default concurrency block).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub concurrency: Option<PipelineConcurrency>,
+    /// Per-label job parallelism caps in expanded pipelines (e.g., `heavy: 2`).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub limits: BTreeMap<String, u32>,
     /// Whether to derive trigger paths from task inputs.
     /// Defaults to true for branch/PR triggers, false for scheduled-only.
     pub derive_paths: Option<bool>,
@@ -706,8 +709,114 @@ pub struct TaskCI {
     pub github: Option<TaskGitHubConfig>,
 }
 
-/// GitHub token requirements, unioned with the job's other requirements.
+/// GitHub deployment environment configuration for a task job.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum TaskGitHubEnvironment {
+    /// Simple environment name (or expression).
+    Name(String),
+    /// Environment with optional deployment URL.
+    Detailed {
+        /// Environment name (or expression).
+        name: String,
+        /// Optional deployment URL (or expression).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        url: Option<String>,
+    },
+}
+
+/// Detailed GitHub job container configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskGitHubContainerConfig {
+    /// Container image reference (supports digest pins).
+    pub image: String,
+    /// Additional Docker create options (e.g., `--ipc=host`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub options: Option<String>,
+    /// Environment variables set inside the container.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, String>,
+    /// Volume mounts for the container.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub volumes: Vec<String>,
+}
+
+/// GitHub job container configuration (image shorthand or detailed struct).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum TaskGitHubContainer {
+    /// Container image string shorthand.
+    Image(String),
+    /// Detailed container configuration.
+    Detailed(TaskGitHubContainerConfig),
+}
+
+/// GitHub job `defaults.run` configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskGitHubRunDefaults {
+    /// Default working directory for `run` steps in this job.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub working_directory: Option<String>,
+    /// Default shell for `run` steps in this job.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shell: Option<String>,
+}
+
+/// GitHub job `defaults` configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskGitHubDefaults {
+    /// Default settings for `run` steps.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<TaskGitHubRunDefaults>,
+}
+
+/// Job-level GitHub Actions settings lowered from `#TaskCI.github` into the IR.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskGitHubJobConfig {
+    /// Per-task runner override (single label, expression string, or label list).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runner: Option<StringOrVec>,
+    /// Job-level concurrency configuration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub concurrency: Option<PipelineConcurrency>,
+    /// Job timeout in minutes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_minutes: Option<u32>,
+    /// GitHub deployment environment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<TaskGitHubEnvironment>,
+    /// Container image/config to run the job inside.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container: Option<TaskGitHubContainer>,
+    /// Job `defaults.run` settings (`working-directory`, `shell`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub defaults: Option<TaskGitHubDefaults>,
+    /// Job-level `if` condition expression.
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "if")]
+    pub if_condition: Option<String>,
+}
+
+impl TaskGitHubJobConfig {
+    /// Returns `true` when no job-level overrides are configured.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.runner.is_none()
+            && self.concurrency.is_none()
+            && self.timeout_minutes.is_none()
+            && self.environment.is_none()
+            && self.container.is_none()
+            && self.defaults.is_none()
+            && self.if_condition.is_none()
+    }
+}
+
+/// GitHub token requirements and job-level settings on a task or contributor step.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct TaskGitHubConfig {
     /// Contributor steps only: emit in jobs executing these task IDs.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -719,6 +828,9 @@ pub struct TaskGitHubConfig {
     /// Tasks only: how the task's job runs it. Unset uses the pipeline's default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution: Option<TaskGitHubExecution>,
+    /// Job-level settings (runner, concurrency, timeout, environment, container, defaults, if).
+    #[serde(flatten)]
+    pub job: TaskGitHubJobConfig,
 }
 
 /// How a GitHub job runs a task.

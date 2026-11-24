@@ -3,9 +3,10 @@
 //! Transforms cuenv IR into GitHub Actions workflow YAML files.
 
 use crate::workflow::schema::{
-    CancelInProgress, Concurrency, Environment, Job, MergeGroupTrigger, PermissionLevel,
-    Permissions, PullRequestTrigger, PushTrigger, ReleaseTrigger, RunsOn, ScheduleTrigger, Step,
-    Workflow, WorkflowDispatchTrigger, WorkflowInput, WorkflowRunTrigger, WorkflowTriggers,
+    CancelInProgress, Concurrency, Environment, Job, JobContainer, JobDefaults, MergeGroupTrigger,
+    PermissionLevel, Permissions, PullRequestTrigger, PushTrigger, ReleaseTrigger, RunDefaults,
+    RunsOn, ScheduleTrigger, Step, Workflow, WorkflowDispatchTrigger, WorkflowInput,
+    WorkflowRunTrigger, WorkflowTriggers,
 };
 use crate::workflow::stage_renderer::GitHubStageRenderer;
 use cuenv_ci::emitter::{Emitter, EmitterError, EmitterResult};
@@ -67,6 +68,15 @@ pub enum TokenScope {
     Tasks,
 }
 
+/// Whether `apply_task_github_job` should apply a task's `runner` override.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum RunnerOverridePolicy {
+    /// Apply `task.github_job.runner` when configured.
+    Apply,
+    /// Preserve the runner already chosen (e.g., an arch-specific runner in a matrix job).
+    PreserveExisting,
+}
+
 /// A job that runs after a command workflow's main job.
 #[derive(Debug, Clone)]
 pub struct FollowUpJob<'a> {
@@ -122,6 +132,10 @@ pub struct GitHubActionsEmitter {
     pub workflow_permissions_mode: cuenv_ci::ir::GitHubPermissionsMode,
     /// Dynamic display name for workflow runs (`run-name`)
     pub run_name: Option<String>,
+    /// Multi-label runner list when `provider.github.runner` is a list of labels
+    pub runner_labels: Option<Vec<String>>,
+    /// Default job timeout in minutes (`provider.github.timeoutMinutes`)
+    pub timeout_minutes: Option<u32>,
     /// Optional project remote cache configuration for trust-boundary workflow emission
     pub remote_cache: Option<cuenv_core::manifest::RemoteCache>,
 }
@@ -139,6 +153,8 @@ impl Default for GitHubActionsEmitter {
             configured_permissions: HashMap::new(),
             workflow_permissions_mode: cuenv_ci::ir::GitHubPermissionsMode::Inferred,
             run_name: None,
+            runner_labels: None,
+            timeout_minutes: None,
             remote_cache: None,
         }
     }
@@ -340,8 +356,21 @@ impl GitHubActionsEmitter {
 
         // Apply runner configuration
         if let Some(runner) = &config.runner {
-            emitter.runner = runner.as_single().unwrap_or("ubuntu-latest").to_string();
+            match runner {
+                cuenv_core::ci::StringOrVec::String(label) => {
+                    emitter.runner.clone_from(label);
+                }
+                cuenv_core::ci::StringOrVec::Vec(labels) => {
+                    if let Some(first) = labels.first() {
+                        emitter.runner.clone_from(first);
+                    }
+                    emitter.runner_labels = Some(labels.clone());
+                }
+            }
         }
+
+        // Apply default job timeout
+        emitter.timeout_minutes = config.timeout_minutes;
 
         // Apply Cachix configuration
         if let Some(cachix) = &config.cachix {
@@ -371,7 +400,109 @@ impl GitHubActionsEmitter {
     /// Get the configured runner as a `RunsOn` value
     #[must_use]
     pub fn runner_as_runs_on(&self) -> RunsOn {
-        RunsOn::Label(self.runner.clone())
+        self.runner_labels
+            .as_ref()
+            .filter(|labels| !labels.is_empty())
+            .map_or_else(
+                || RunsOn::Label(self.runner.clone()),
+                |labels| RunsOn::Labels(labels.clone()),
+            )
+    }
+
+    /// Apply job-level GitHub overrides from `task.github_job` and emitter defaults.
+    pub(super) fn apply_task_github_job(
+        &self,
+        task: &cuenv_ci::ir::Task,
+        job: &mut Job,
+        runner_policy: RunnerOverridePolicy,
+    ) {
+        // Pipeline-level timeout default (task override applied below).
+        if job.timeout_minutes.is_none() {
+            job.timeout_minutes = self.timeout_minutes;
+        }
+
+        let Some(cfg) = task.github_job.as_ref() else {
+            return;
+        };
+
+        if runner_policy == RunnerOverridePolicy::Apply
+            && let Some(runner) = &cfg.runner
+        {
+            job.runs_on = match runner {
+                cuenv_core::ci::StringOrVec::String(label) => RunsOn::Label(label.clone()),
+                cuenv_core::ci::StringOrVec::Vec(labels) => RunsOn::Labels(labels.clone()),
+            };
+        }
+
+        if let Some(concurrency) = &cfg.concurrency {
+            let group = concurrency
+                .group
+                .clone()
+                .unwrap_or_else(|| format!("{}-${{{{ github.ref }}}}", task.id));
+            let cancel_in_progress = concurrency
+                .cancel_in_progress
+                .as_ref()
+                .map(Self::resolve_cancel_in_progress);
+            job.concurrency = Some(Concurrency {
+                group,
+                cancel_in_progress,
+            });
+        }
+
+        if let Some(timeout) = cfg.timeout_minutes {
+            job.timeout_minutes = Some(timeout);
+        }
+
+        if let Some(env_cfg) = &cfg.environment {
+            job.environment = Some(match env_cfg {
+                cuenv_core::ci::TaskGitHubEnvironment::Name(name) => {
+                    Environment::Name(name.clone())
+                }
+                cuenv_core::ci::TaskGitHubEnvironment::Detailed { name, url } => match url {
+                    Some(url) => Environment::WithUrl {
+                        name: name.clone(),
+                        url: url.clone(),
+                    },
+                    None => Environment::Name(name.clone()),
+                },
+            });
+        }
+
+        if let Some(container_cfg) = &cfg.container {
+            job.container = Some(match container_cfg {
+                cuenv_core::ci::TaskGitHubContainer::Image(image) => {
+                    JobContainer::Image(image.clone())
+                }
+                cuenv_core::ci::TaskGitHubContainer::Detailed(c) => {
+                    if c.options.is_none() && c.env.is_empty() && c.volumes.is_empty() {
+                        JobContainer::Image(c.image.clone())
+                    } else {
+                        JobContainer::Config {
+                            image: c.image.clone(),
+                            options: c.options.clone(),
+                            env: c.env.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+                            volumes: c.volumes.clone(),
+                        }
+                    }
+                }
+            });
+        }
+
+        if let Some(defaults_cfg) = &cfg.defaults
+            && let Some(run_cfg) = &defaults_cfg.run
+            && (run_cfg.working_directory.is_some() || run_cfg.shell.is_some())
+        {
+            job.defaults = Some(JobDefaults {
+                run: Some(RunDefaults {
+                    working_directory: run_cfg.working_directory.clone(),
+                    shell: run_cfg.shell.clone(),
+                }),
+            });
+        }
+
+        if let Some(if_expr) = &cfg.if_condition {
+            job.if_condition = Some(if_expr.clone());
+        }
     }
 
     /// Default GitHub workflow concurrency group expression.
@@ -788,10 +919,12 @@ impl GitHubActionsEmitter {
             if_condition: command.job_if.map(str::to_string),
             strategy: None,
             environment: environment.map(Environment::Name),
+            container: None,
+            defaults: None,
             env: IndexMap::new(),
             concurrency: None,
             continue_on_error: None,
-            timeout_minutes: None,
+            timeout_minutes: self.timeout_minutes,
             steps,
         };
 
@@ -809,6 +942,8 @@ impl GitHubActionsEmitter {
                     if_condition: Some(follow_up.if_condition.to_string()),
                     strategy: None,
                     environment: None,
+                    container: None,
+                    defaults: None,
                     env: IndexMap::new(),
                     concurrency: None,
                     continue_on_error: None,
@@ -1204,8 +1339,10 @@ impl GitHubActionsEmitter {
             // Map task dependencies to sanitized job IDs
             job.needs = task.depends_on.iter().map(|d| sanitize_job_id(d)).collect();
 
-            // Handle concurrency group
-            if let Some(group) = &task.concurrency_group {
+            // Handle concurrency group (fallback when not already set via task.github_job)
+            if job.concurrency.is_none()
+                && let Some(group) = &task.concurrency_group
+            {
                 job.concurrency = Some(Concurrency {
                     group: group.clone(),
                     cancel_in_progress: Some(CancelInProgress::Bool(false)),

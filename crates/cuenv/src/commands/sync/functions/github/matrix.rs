@@ -173,6 +173,7 @@ fn build_pipeline_jobs(request: &PipelineJobsRequest<'_>) -> Result<BuiltPipelin
                             .github_permissions
                             .clone_from(&original.github_permissions);
                         synthetic_task.github_permissions_mode = original.github_permissions_mode;
+                        synthetic_task.github_job.clone_from(&original.github_job);
                         synthetic_task.deployment = original.deployment;
                         synthetic_task.manual_approval = original.manual_approval;
                         synthetic_task.outputs.clone_from(&original.outputs);
@@ -447,6 +448,7 @@ fn synthetic_task_base(task_name: &str) -> cuenv_ci::ir::Task {
         github_permissions: std::collections::BTreeMap::new(),
         github_permissions_mode: cuenv_ci::ir::GitHubPermissionsMode::Inferred,
         github_execution: None,
+        github_job: None,
         provider_hints: None,
         external_dependencies: Vec::new(),
     }

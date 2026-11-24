@@ -66,7 +66,32 @@ package schema
 	"models"?:   "none" | "read"
 }
 
-// Task and contributor-step token requirements.
+// GitHub deployment environment configuration (name and optional deployment URL)
+#GitHubEnvironment: {
+	name!: string
+	url?:  string
+}
+
+// GitHub job container configuration (pinned image, options, env, volumes)
+#GitHubContainer: {
+	image!:   string
+	options?: string
+	env?: [string]: string
+	volumes?: [...string]
+}
+
+// GitHub job defaults.run configuration
+#GitHubRunDefaults: {
+	workingDirectory?: string
+	shell?:            string
+}
+
+// GitHub job defaults configuration
+#GitHubJobDefaults: {
+	run?: #GitHubRunDefaults
+}
+
+// Task and contributor-step GitHub configuration.
 #TaskCI: {
 	github?: {
 		permissions?: #GitHubPermissions
@@ -77,6 +102,20 @@ package schema
 		// secrets or environment through cuenv. Non-release Nix tasks already run
 		// this way; use it for a release task that needs nothing from cuenv.
 		execution?: "direct"
+		// Per-task runner override (single label, expression string, or label list).
+		runner?: string | [...string]
+		// Job-level concurrency configuration.
+		concurrency?: #Concurrency
+		// Job timeout in minutes (overrides pipeline timeoutMinutes).
+		timeoutMinutes?: int & >0
+		// GitHub deployment environment (name shorthand or {name, url?}).
+		environment?: string | #GitHubEnvironment
+		// Container image (or detailed container config) to run the job in.
+		container?: string | #GitHubContainer
+		// Default working-directory / shell for run steps in this job.
+		defaults?: #GitHubJobDefaults
+		// Job-level `if` condition expression (e.g., "always()", "needs.changes.outputs.rust == 'true'").
+		if?: string
 	}
 }
 
@@ -89,6 +128,8 @@ package schema
 	runners?: {
 		arch?: [string]: string
 	}
+	// Default job timeout in minutes for this pipeline (task timeoutMinutes wins)
+	timeoutMinutes?: int & >0
 	cachix?: {
 		name!:       string
 		authToken?:  string
@@ -346,6 +387,10 @@ package schema
 
 	// Workflow-level concurrency configuration (overrides the default concurrency block)
 	concurrency?: #Concurrency
+
+	// Per-label job parallelism caps in expanded pipelines (e.g., {heavy: 2}
+	// assigns tasks labelled "heavy" round-robin across 2 concurrency slots).
+	limits?: [string]: int & >0
 
 	derivePaths?: bool // whether to derive trigger paths from task inputs
 	provider?:    #ProviderConfig

@@ -407,6 +407,17 @@ impl Compiler {
         // Determine if this is a deployment task
         let deployment = task.labels.contains(&"deployment".to_string());
 
+        let github_job = task
+            .ci
+            .as_ref()
+            .and_then(|ci| ci.github.as_ref())
+            .filter(|gh| !gh.job.is_empty())
+            .map(|gh| gh.job.clone());
+        let concurrency_group = github_job
+            .as_ref()
+            .and_then(|job| job.concurrency.as_ref())
+            .and_then(|c| c.group.clone());
+
         Ok(IrTask {
             id: id.to_string(),
             runtime: None, // Would be set based on Nix flake configuration
@@ -415,7 +426,7 @@ impl Compiler {
             env,
             secrets,
             resources: None, // Would extract from task metadata if available
-            concurrency_group: None,
+            concurrency_group,
             inputs,
             outputs,
             depends_on: task
@@ -463,6 +474,7 @@ impl Compiler {
                 crate::ir::GitHubPermissionsMode::Inferred
             },
             github_execution,
+            github_job,
             provider_hints: None,
         })
     }

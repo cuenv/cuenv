@@ -592,6 +592,7 @@ impl Compiler {
                 crate::ir::GitHubPermissionsMode::Inferred
             },
             github_execution: None,
+            github_job: None,
             provider_hints,
             external_dependencies: Vec::new(),
         }

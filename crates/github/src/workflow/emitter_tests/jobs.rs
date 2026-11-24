@@ -506,3 +506,116 @@ fn nix_cuenv_setup_accepts_byte_different_builds_of_the_store_path()
     assert_eq!(std::fs::read_to_string(&github_path)?, "");
     Ok(())
 }
+
+#[test]
+fn task_github_job_settings_are_emitted_in_expanded_jobs() {
+    use cuenv_ci::emitter::Emitter;
+    use cuenv_core::ci::{
+        CancelInProgressConfig, PipelineConcurrency, StringOrVec, TaskGitHubContainer,
+        TaskGitHubContainerConfig, TaskGitHubDefaults, TaskGitHubEnvironment, TaskGitHubJobConfig,
+        TaskGitHubRunDefaults,
+    };
+    use std::collections::BTreeMap;
+
+    let config = crate::config::GitHubConfig {
+        timeout_minutes: Some(30),
+        ..Default::default()
+    };
+    let emitter = GitHubActionsEmitter::from_config(&config)
+        .without_nix()
+        .without_cuenv_build();
+
+    let mut deploy = super::make_task("deploy.docs", &["deploy"]);
+    deploy.github_job = Some(TaskGitHubJobConfig {
+        runner: Some(StringOrVec::Vec(vec![
+            "namespace-profile-builder".to_string(),
+        ])),
+        concurrency: Some(PipelineConcurrency {
+            group: Some("deploy-prod".to_string()),
+            cancel_in_progress: Some(CancelInProgressConfig::Bool(false)),
+        }),
+        timeout_minutes: Some(45),
+        environment: Some(TaskGitHubEnvironment::Detailed {
+            name: "production".to_string(),
+            url: Some("https://docs.intar.dev".to_string()),
+        }),
+        container: Some(TaskGitHubContainer::Detailed(TaskGitHubContainerConfig {
+            image: "mcr.microsoft.com/playwright:v1.64.1-noble@sha256:deadbeef".to_string(),
+            options: Some("--ipc=host".to_string()),
+            env: BTreeMap::from([("CI".to_string(), "1".to_string())]),
+            volumes: vec!["/tmp:/tmp".to_string()],
+        })),
+        defaults: Some(TaskGitHubDefaults {
+            run: Some(TaskGitHubRunDefaults {
+                working_directory: Some("docs".to_string()),
+                shell: Some("bash".to_string()),
+            }),
+        }),
+        if_condition: Some("always()".to_string()),
+    });
+
+    // A second task with image-only container & string environment inherits pipeline timeout.
+    let mut smoke = super::make_task("smoke", &["test"]);
+    smoke.github_job = Some(TaskGitHubJobConfig {
+        runner: Some(StringOrVec::String("${{ matrix.runner }}".to_string())),
+        environment: Some(TaskGitHubEnvironment::Name("staging".to_string())),
+        container: Some(TaskGitHubContainer::Detailed(TaskGitHubContainerConfig {
+            image: "node:22@sha256:cafe".to_string(),
+            ..Default::default()
+        })),
+        ..Default::default()
+    });
+
+    let ir = super::make_ir(vec![deploy, smoke]);
+    let yaml = emitter.emit_expanded(&ir).unwrap();
+    let doc: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
+
+    let deploy_job = &doc["jobs"]["deploy-docs"];
+    assert_eq!(
+        deploy_job["runs-on"],
+        serde_yaml::Value::Sequence(vec![serde_yaml::Value::String(
+            "namespace-profile-builder".to_string()
+        )])
+    );
+    assert_eq!(
+        deploy_job["concurrency"]["group"].as_str(),
+        Some("deploy-prod")
+    );
+    assert_eq!(
+        deploy_job["concurrency"]["cancel-in-progress"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(deploy_job["timeout-minutes"].as_u64(), Some(45));
+    assert_eq!(
+        deploy_job["environment"]["name"].as_str(),
+        Some("production")
+    );
+    assert_eq!(
+        deploy_job["environment"]["url"].as_str(),
+        Some("https://docs.intar.dev")
+    );
+    assert_eq!(
+        deploy_job["container"]["image"].as_str(),
+        Some("mcr.microsoft.com/playwright:v1.64.1-noble@sha256:deadbeef")
+    );
+    assert_eq!(
+        deploy_job["container"]["options"].as_str(),
+        Some("--ipc=host")
+    );
+    assert_eq!(
+        deploy_job["defaults"]["run"]["working-directory"].as_str(),
+        Some("docs")
+    );
+    assert_eq!(
+        deploy_job["defaults"]["run"]["shell"].as_str(),
+        Some("bash")
+    );
+    assert_eq!(deploy_job["if"].as_str(), Some("always()"));
+
+    let smoke_job = &doc["jobs"]["smoke"];
+    assert_eq!(smoke_job["runs-on"].as_str(), Some("${{ matrix.runner }}"));
+    assert_eq!(smoke_job["timeout-minutes"].as_u64(), Some(30));
+    assert_eq!(smoke_job["environment"].as_str(), Some("staging"));
+    // Image-only container serializes as string shorthand.
+    assert_eq!(smoke_job["container"].as_str(), Some("node:22@sha256:cafe"));
+}

@@ -72,6 +72,7 @@ fn make_phase_task(id: &str, command: &[&str], phase: TaskPhase) -> Task {
         github_permissions: std::collections::BTreeMap::new(),
         github_permissions_mode: cuenv_ci::ir::GitHubPermissionsMode::Inferred,
         github_execution: None,
+        github_job: None,
         provider_hints: None,
         external_dependencies: Vec::new(),
     }
@@ -105,6 +106,7 @@ fn make_task(id: &str, command: &[&str]) -> Task {
         github_permissions: std::collections::BTreeMap::new(),
         github_permissions_mode: cuenv_ci::ir::GitHubPermissionsMode::Inferred,
         github_execution: None,
+        github_job: None,
         provider_hints: None,
         external_dependencies: Vec::new(),
     }

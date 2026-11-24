@@ -343,6 +343,9 @@ pub struct Task {
     /// How this task's GitHub job runs it; unset uses the pipeline's default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub github_execution: Option<cuenv_core::ci::TaskGitHubExecution>,
+    /// Job-level GitHub Actions settings (runner, concurrency, timeout, environment, container, defaults, if).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub github_job: Option<cuenv_core::ci::TaskGitHubJobConfig>,
     /// Unique task identifier
     pub id: String,
 
@@ -516,6 +519,7 @@ impl Task {
             github_permissions: std::collections::BTreeMap::new(),
             github_permissions_mode: GitHubPermissionsMode::Inferred,
             github_execution: None,
+            github_job: None,
             provider_hints: None,
             external_dependencies: Vec::new(),
         }
@@ -555,6 +559,7 @@ impl Task {
             github_permissions: std::collections::BTreeMap::new(),
             github_permissions_mode: GitHubPermissionsMode::Inferred,
             github_execution: None,
+            github_job: None,
             provider_hints: None,
             external_dependencies: Vec::new(),
         }

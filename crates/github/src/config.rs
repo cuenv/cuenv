@@ -19,6 +19,8 @@ pub struct GitHubConfig {
     pub runner: Option<StringOrVec>,
     /// Runner mapping for matrix dimensions
     pub runners: Option<RunnerMapping>,
+    /// Default job timeout in minutes (task-level timeoutMinutes wins)
+    pub timeout_minutes: Option<u32>,
     /// Cachix configuration for Nix caching
     pub cachix: Option<CachixConfig>,
     /// Hestia configuration for GitHub Actions-backed Nix caching
@@ -118,6 +120,7 @@ impl GitHubConfigExt for CI {
                 run_name: pipeline.run_name.clone().or(global.run_name),
                 runner: pipeline.runner.clone().or(global.runner),
                 runners: pipeline.runners.clone().or(global.runners),
+                timeout_minutes: pipeline.timeout_minutes.or(global.timeout_minutes),
                 cachix: pipeline.cachix.clone().or(global.cachix),
                 hestia: pipeline.hestia.clone().or(global.hestia),
                 namespace_cache: pipeline.namespace_cache.clone().or(global.namespace_cache),
