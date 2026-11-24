@@ -184,7 +184,10 @@ group covers every `x86_64-linux` flake check except `cuenv`, which is the same
 derivation as the package and is built, with its install-check smoke test, by the
 `sync-check` pipeline's `nix build .#cuenv` bootstrap on every trigger of the `ci`
 pipeline except a change to `cuenv-ci.yml` alone (a package build failure
-surfaces as a failed `cuenv-sync-check`). `checks.cuetty` builds the four
+surfaces as a failed `cuenv-sync-check`). `checks.audit` audits against the RustSec
+database pinned in `flake.lock`; the `advisories` pipeline runs
+`security.audit` against the live database daily, on pushes to `main` and on
+demand, and both read their exceptions from `.cargo/audit.toml`. `checks.cuetty` builds the four
 cuetty checks in one job (their third-party crates compile once per profile and
 their source is limited to the app, `crates/cuengine` and the CUE files the
 catalog test reads), and `checks.infrastructure-e2e` also names

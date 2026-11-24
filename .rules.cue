@@ -11,7 +11,10 @@ rules.#DirectoryRules & {
             "_tests",
             ".cache",
             ".claude/worktrees",
-            ".cargo",
+            // Local cargo state; the shared config and audit ignores are tracked.
+            ".cargo/*",
+            "!.cargo/audit.toml",
+            "!.cargo/config.toml",
             ".cuenv",
             ".test",
             ".worktrees",

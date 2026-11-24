@@ -1,0 +1,40 @@
+# cargo-audit configuration shared by both advisory checks:
+# - `nix build .#checks.x86_64-linux.cuenv-audit` audits against the RustSec
+#   database pinned in flake.lock (reproducible; it also disables the yanked
+#   check because the build has no registry index).
+# - `cuenv task security.audit` audits against the live RustSec database and
+#   runs daily in the `advisories` pipeline, so a new advisory surfaces the
+#   day it is published instead of whenever the pin moves.
+#
+# Every ignore names the dependency chain that blocks the fix. Drop an entry
+# as soon as that root cause moves.
+[advisories]
+ignore = [
+    # rsa Marvin timing side channel, no fixed release:
+    #   octocrab -> jsonwebtoken -> rsa 0.9
+    "RUSTSEC-2023-0071",
+    # crypto-bigint 0.5 timing variability (fixed in 0.7.6), dev-only:
+    #   cuenv-infrastructure (dev) -> pgp 0.21 -> cx448 / elliptic-curve 0.13
+    "RUSTSEC-2026-0387",
+    # heapless 0.8 (fixed in 0.9.4), pinned by faster-hex 0.10:
+    #   gix 0.85 -> gix-hash 0.25 -> faster-hex 0.10 -> heapless 0.8
+    # Resolved by moving to a gix release on faster-hex 1.x or later.
+    "RUSTSEC-2026-0574",
+    "RUSTSEC-2026-0575",
+    "RUSTSEC-2026-0576",
+    "RUSTSEC-2026-0577",
+    "RUSTSEC-2026-0578",
+    "RUSTSEC-2026-0579",
+    "RUSTSEC-2026-0580",
+    "RUSTSEC-2026-0581",
+    "RUSTSEC-2026-0582",
+    # Unmaintained, no maintained drop-in yet:
+    #   jwt (oci-distribution), unsafe-libyaml (serde_yaml),
+    #   pin-utils (aws-smithy-http / aws-smithy-types), humantime (cucumber,
+    #   dev-only), chrono (direct dependency of several crates)
+    "RUSTSEC-2016-0007",
+    "RUSTSEC-2024-0449",
+    "RUSTSEC-2026-0441",
+    "RUSTSEC-2026-0542",
+    "RUSTSEC-2026-0543",
+]

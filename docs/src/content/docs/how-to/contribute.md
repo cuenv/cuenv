@@ -111,14 +111,25 @@ gh workflow run cuenv-arm.yml --ref <branch>
 
 CI jobs get Nix store paths from a Namespace cache volume: each Linux runner mounts one at `/nix`, so a job starts with whatever an earlier job on that volume built, and anything missing comes from cache.nixos.org or is built. Volumes are per runner profile and the last job to finish writes it, so a job can still rebuild something another job built. macOS jobs do not mount a volume. To see whether a job started warm, check the Namespace cache step: it reports whether the cache paths were found and how much space they use. The repository no longer uses Hestia: its GitHub Actions cache was rate limited and evicting packs under parallel load, and once the volume was warm it served nothing.
 
-The Nix audit uses the pinned RustSec advisory database offline and includes a
-known-vulnerable fixture to verify that advisories are checked. It does not
-check for yanked releases, because the sandbox has no registry index.
+Two jobs audit dependencies against RustSec, and both read their exceptions
+from `.cargo/audit.toml`. Each exception there names the dependency chain that
+blocks the fix.
+
+- `checks.audit` uses the advisory database pinned in `flake.lock`, offline, so
+  it is reproducible. It includes a known-vulnerable fixture to verify that
+  advisories are checked, and it does not check for yanked releases, because
+  the sandbox has no registry index. It only knows the advisories published
+  before the pin.
+- The `advisories` pipeline (`cuenv-advisories.yml`) runs
+  `cuenv task security.audit` against the live database every day, on every
+  push to `main` and on demand, with the yanked check on. When it goes red, a
+  new advisory affects the lockfile: update the dependency, or add an
+  exception with its blocking chain. Then move the pin forward with
+  `nix flake update advisory-db` so `checks.audit` covers it too.
 
 `cargo deny --locked check advisories` reads the advisory exceptions in
 `deny.toml`. Run it in the Nix dev shell when editing that list. The CI
-`checks.deny` job checks bans and licenses. The separate `checks.audit` job
-uses its own `cargo audit` exceptions from `flake.nix`.
+`checks.deny` job checks bans and licenses.
 
 For performance changes, make the claim measurable. Add or update Criterion
 coverage next to the hot path, keep a behavior regression test for the
