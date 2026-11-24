@@ -1491,6 +1491,57 @@ async fn the_probe_refuses_stores_that_ignore_conditions_or_serve_the_public() {
 }
 
 #[tokio::test]
+async fn an_inconclusive_public_check_refuses_writes_until_it_settles() {
+    // One failed unsigned read is retried and settles.
+    let flaky = FakeS3::start().await.unwrap();
+    flaky.fault("GET", ".probe-", FaultAction::Status(503, String::new()));
+    store(&flaky).migrate().await.unwrap();
+
+    // A check that never settles is not read as "private".
+    let failing = FakeS3::start().await.unwrap();
+    for _ in 0..3 {
+        failing.fault("GET", ".probe-", FaultAction::Status(503, String::new()));
+    }
+    let error = store(&failing).migrate().await.unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("could not confirm that the bucket is private"),
+        "{error}"
+    );
+
+    let dropped = FakeS3::start().await.unwrap();
+    for _ in 0..3 {
+        dropped.fault("GET", ".probe-", FaultAction::DropBeforeApply);
+    }
+    let error = store(&dropped).migrate().await.unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("could not confirm that the bucket is private"),
+        "{error}"
+    );
+}
+
+#[tokio::test]
+async fn read_commands_warn_on_an_inconclusive_public_check_and_check_again() {
+    let server = FakeS3::start().await.unwrap();
+    let store = store(&server);
+    let key = path("cuenv", &tenant()).state_key();
+    let document = super::document::StateDocument::new(&path("cuenv", &tenant()), 1);
+    server.put_object(BUCKET, &key, document.encode().unwrap());
+    for _ in 0..3 {
+        server.fault_exact("GET", &key, FaultAction::Status(500, String::new()));
+    }
+    store.list(&tenant()).await.unwrap();
+
+    // The inconclusive result is not remembered: the next read checks again.
+    server.make_public();
+    let error = store.list(&tenant()).await.unwrap_err();
+    assert!(error.to_string().contains("public"), "{error}");
+}
+
+#[tokio::test]
 async fn planted_and_newer_documents_are_refused() {
     let server = FakeS3::start().await.unwrap();
     let store = store(&server);
