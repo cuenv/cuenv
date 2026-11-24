@@ -732,21 +732,11 @@ fn pipeline_gate_and_changes_emit_and_verify_truth_table() {
     let detect_step = &changes_job["steps"][1];
     assert_eq!(detect_step["id"].as_str(), Some("detect"));
     let detect_run = detect_step["run"].as_str().expect("detect run script");
-    assert!(detect_run.contains("merge_group)"));
-    assert!(detect_run.contains("pull_request|pull_request_target)"));
-    assert!(detect_run.contains("push)"));
-    assert_eq!(
-        detect_step["env"]["MERGE_GROUP_BASE_SHA"].as_str(),
-        Some("${{ github.event.merge_group.base_sha }}")
-    );
-    assert_eq!(
-        detect_step["env"]["PR_BASE_SHA"].as_str(),
-        Some("${{ github.event.pull_request.base.sha }}")
-    );
-    assert_eq!(
-        detect_step["env"]["PUSH_BEFORE_SHA"].as_str(),
-        Some("${{ github.event.before }}")
-    );
+    assert!(detect_run.contains(
+        "cuenv ci --pipeline 'test-pipeline' --dry-run --plan-format lines --output \"$plan\""
+    ));
+    // The provider supplies the base, and nothing may reference a flag `cuenv ci` lacks.
+    assert!(!detect_run.contains("--affected"));
 
     assert_eq!(
         doc["jobs"]["check-rust"]["if"].as_str(),
@@ -814,7 +804,12 @@ fn pipeline_gate_and_changes_emit_and_verify_truth_table() {
     }
 
     // 2. Thin workflow also emits the gate job needing the main thin job.
-    let thin_yaml = emitter.emit_thin(&ir).expect("emit thin workflow");
+    let mut thin_ir = ir.clone();
+    thin_ir.pipeline.changes = None;
+    if let Some(gate) = thin_ir.pipeline.gate.as_mut() {
+        gate.required.clear();
+    }
+    let thin_yaml = emitter.emit_thin(&thin_ir).expect("emit thin workflow");
     let thin_doc: serde_yaml::Value = serde_yaml::from_str(&thin_yaml).expect("parse thin yaml");
     assert_eq!(thin_doc["jobs"]["ci-ok"]["if"].as_str(), Some("always()"));
     assert_eq!(
@@ -900,4 +895,201 @@ fn job_concurrency_default_group_is_namespaced_by_workflow() {
         doc["jobs"]["deploy"]["concurrency"]["group"].as_str(),
         Some("${{ github.workflow }}-deploy-${{ github.ref }}")
     );
+}
+
+/// Run the generated default detection step with a stub `cuenv` that plans the
+/// given task names, and return the lane outputs it wrote.
+fn run_detection_step(
+    detect_run: &str,
+    planned_tasks: Option<&[&str]>,
+) -> std::collections::BTreeMap<String, String> {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let stub = dir.path().join("cuenv");
+    let body = match planned_tasks {
+        // Honour `--output <file>` like `cuenv ci --dry-run --plan-format lines`.
+        Some(tasks) => {
+            let lines = tasks.join("\n") + if tasks.is_empty() { "" } else { "\n" };
+            format!(
+                "#!/bin/sh\nwhile [ $# -gt 0 ]; do\n  if [ \"$1\" = --output ]; then out=\"$2\"; fi\n  shift\ndone\nprintf '%s' '{lines}' > \"$out\"\n"
+            )
+        }
+        None => "#!/bin/sh\necho 'unexpected argument' >&2\nexit 2\n".to_string(),
+    };
+    std::fs::write(&stub, body).expect("write stub");
+    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).expect("chmod stub");
+
+    let github_output = dir.path().join("github_output");
+    std::fs::write(&github_output, "").expect("create output file");
+    let path = format!(
+        "{}:{}",
+        dir.path().display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let status = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(detect_run)
+        .env("PATH", path)
+        .env("RUNNER_TEMP", dir.path())
+        .env("GITHUB_OUTPUT", &github_output)
+        .status()
+        .expect("run detection step");
+    assert!(status.success(), "detection step must succeed");
+
+    std::fs::read_to_string(&github_output)
+        .expect("read outputs")
+        .lines()
+        .filter_map(|line| line.split_once('='))
+        .map(|(lane, value)| (lane.to_string(), value.to_string()))
+        .collect()
+}
+
+fn detection_ir() -> cuenv_ci::ir::IntermediateRepresentation {
+    use cuenv_core::ci::{PipelineChangeLane, PipelineChanges};
+    use std::collections::BTreeMap;
+
+    let mut ir = super::make_ir(vec![
+        super::make_task("test", &["cargo", "test"]),
+        super::make_task("test-integration", &["cargo", "test"]),
+        super::make_task("lint", &["cargo", "clippy"]),
+    ]);
+    let lane = |tasks: &[&str]| PipelineChangeLane {
+        tasks: tasks.iter().map(|task| (*task).to_string()).collect(),
+    };
+    ir.pipeline.changes = Some(PipelineChanges {
+        job: None,
+        lanes: BTreeMap::from([
+            ("unit".to_string(), lane(&["test"])),
+            ("integration".to_string(), lane(&["test-integration"])),
+            ("style".to_string(), lane(&["lint", "test"])),
+        ]),
+        script: None,
+        runner: None,
+    });
+    ir
+}
+
+fn detection_script(ir: &cuenv_ci::ir::IntermediateRepresentation) -> String {
+    let emitter = GitHubActionsEmitter::new()
+        .without_nix()
+        .without_cuenv_build();
+    let yaml = emitter.emit_expanded(ir).expect("emit expanded workflow");
+    let doc: serde_yaml::Value = serde_yaml::from_str(&yaml).expect("parse yaml");
+    doc["jobs"]["changes"]["steps"]
+        .as_sequence()
+        .and_then(|steps| {
+            steps
+                .iter()
+                .find(|step| step["id"].as_str() == Some("detect"))
+        })
+        .and_then(|step| step["run"].as_str())
+        .expect("detect step script")
+        .to_string()
+}
+
+#[test]
+fn change_detection_matches_whole_task_names_when_executed() {
+    let script = detection_script(&detection_ir());
+
+    // Only `test-integration` is affected: `test` must not match it as a substring.
+    let outputs = run_detection_step(&script, Some(&["test-integration"]));
+    assert_eq!(outputs["unit"], "false");
+    assert_eq!(outputs["integration"], "true");
+    assert_eq!(outputs["style"], "false");
+
+    // A lane is true when any of its tasks is affected.
+    let outputs = run_detection_step(&script, Some(&["test", "unrelated"]));
+    assert_eq!(outputs["unit"], "true");
+    assert_eq!(outputs["integration"], "false");
+    assert_eq!(outputs["style"], "true");
+
+    // Nothing affected.
+    let outputs = run_detection_step(&script, Some(&[]));
+    assert!(outputs.values().all(|value| value == "false"));
+}
+
+#[test]
+fn change_detection_runs_every_lane_when_cuenv_cannot_plan() {
+    let script = detection_script(&detection_ir());
+    let outputs = run_detection_step(&script, None);
+    assert_eq!(outputs.len(), 3);
+    assert!(outputs.values().all(|value| value == "true"));
+}
+
+#[test]
+fn change_lane_naming_an_unknown_task_is_rejected() {
+    let mut ir = detection_ir();
+    if let Some(changes) = ir.pipeline.changes.as_mut() {
+        changes
+            .lanes
+            .get_mut("unit")
+            .expect("unit lane")
+            .tasks
+            .push("tset".to_string());
+    }
+    let emitter = GitHubActionsEmitter::new()
+        .without_nix()
+        .without_cuenv_build();
+    let err = emitter.emit_expanded(&ir).expect_err("unknown lane task");
+    assert!(err.to_string().contains("lane 'unit'"), "{err}");
+    assert!(err.to_string().contains("'tset'"), "{err}");
+}
+
+#[test]
+fn change_lane_with_an_invalid_name_or_no_tasks_is_rejected() {
+    use cuenv_core::ci::PipelineChangeLane;
+
+    let emitter = GitHubActionsEmitter::new()
+        .without_nix()
+        .without_cuenv_build();
+
+    let mut bad_name = detection_ir();
+    if let Some(changes) = bad_name.pipeline.changes.as_mut() {
+        changes.lanes.insert(
+            "x\"; rm -rf /; \"".to_string(),
+            PipelineChangeLane {
+                tasks: vec!["test".to_string()],
+            },
+        );
+    }
+    assert!(emitter.emit_expanded(&bad_name).is_err());
+
+    let mut empty = detection_ir();
+    if let Some(changes) = empty.pipeline.changes.as_mut() {
+        changes
+            .lanes
+            .insert("none".to_string(), PipelineChangeLane { tasks: vec![] });
+    }
+    assert!(emitter.emit_expanded(&empty).is_err());
+}
+
+#[test]
+fn gate_naming_an_unknown_or_colliding_job_is_rejected() {
+    use cuenv_core::ci::PipelineGate;
+
+    let emitter = GitHubActionsEmitter::new()
+        .without_nix()
+        .without_cuenv_build();
+    let gate = |name: &str, required: &[&str]| PipelineGate {
+        name: name.to_string(),
+        required: required.iter().map(|id| (*id).to_string()).collect(),
+        runner: None,
+        timeout_minutes: None,
+    };
+
+    let mut unknown = super::make_ir(vec![super::make_task("test", &["cargo", "test"])]);
+    unknown.pipeline.gate = Some(gate("ci-ok", &["tset"]));
+    let err = emitter
+        .emit_expanded(&unknown)
+        .expect_err("unknown required job");
+    assert!(err.to_string().contains("'tset'"), "{err}");
+
+    let mut collision = super::make_ir(vec![super::make_task("ci-ok", &["cargo", "test"])]);
+    collision.pipeline.gate = Some(gate("ci-ok", &[]));
+    assert!(emitter.emit_expanded(&collision).is_err());
+
+    let mut thin_changes = detection_ir();
+    thin_changes.pipeline.gate = None;
+    assert!(emitter.emit_thin(&thin_changes).is_err());
 }

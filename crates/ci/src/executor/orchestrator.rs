@@ -28,6 +28,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use super::plan_output::{self, PlanOutput, PlannedProject};
 use super::projects::{CiModule, CiProjects, HookProject};
 use super::task_env;
 use super::task_execution::{PipelineScope, PipelineTaskResults, PipelineTasksRequest};
@@ -123,6 +124,8 @@ pub struct RunCiRequest {
     pub max_parallel: usize,
     /// Optional deterministic task shard (`--shard <INDEX>/<TOTAL>`).
     pub shard: Option<ShardSpec>,
+    /// Where a dry run writes the tasks it selected, in machine-readable form.
+    pub plan_output: Option<PlanOutput>,
 }
 
 /// Run the CI pipeline logic
@@ -142,6 +145,7 @@ pub async fn run_ci(request: RunCiRequest) -> Result<()> {
         path_filter,
         max_parallel,
         shard,
+        plan_output,
     } = request;
 
     let context = provider.context();
@@ -156,6 +160,12 @@ pub async fn run_ci(request: RunCiRequest) -> Result<()> {
     }
 
     let Some(discovered) = load_ci_projects(path_filter.as_deref())? else {
+        // No project, so nothing is selected: say so in the plan too.
+        if dry_run.is_dry_run()
+            && let Some(output) = &plan_output
+        {
+            plan_output::write(output, &[])?;
+        }
         return match task_selection {
             TaskSelection::Affected => Ok(()),
             TaskSelection::All => Err(cuenv_core::Error::configuration(
@@ -175,6 +185,7 @@ pub async fn run_ci(request: RunCiRequest) -> Result<()> {
         discovered: &discovered,
         max_parallel: max_parallel.max(1),
         shard,
+        plan_output: plan_output.as_ref(),
     })
     .await?;
 
@@ -384,6 +395,7 @@ struct CiProjectRunRequest<'request> {
     discovered: &'request DiscoveredCiProjects,
     max_parallel: usize,
     shard: Option<ShardSpec>,
+    plan_output: Option<&'request PlanOutput>,
 }
 
 async fn run_ci_projects(
@@ -400,6 +412,7 @@ async fn run_ci_projects(
         discovered,
         max_parallel,
         shard,
+        plan_output,
     } = request;
 
     // Track failures with structured errors
@@ -476,6 +489,31 @@ async fn run_ci_projects(
                 true
             }
         });
+    }
+
+    if dry_run.is_dry_run()
+        && let Some(output) = plan_output
+    {
+        let planned: Vec<PlannedProject> = plans
+            .iter()
+            .map(|(project_path, _, plan)| PlannedProject {
+                project: project_path
+                    .strip_prefix(&discovered.module_root)
+                    .map_or_else(
+                        |_| project_path.display().to_string(),
+                        |relative| {
+                            if relative.as_os_str().is_empty() {
+                                ".".to_string()
+                            } else {
+                                relative.display().to_string()
+                            }
+                        },
+                    ),
+                pipeline: plan.pipeline_name.clone(),
+                tasks: plan.tasks_to_run.clone(),
+            })
+            .collect();
+        plan_output::write(output, &planned)?;
     }
 
     if !dry_run.is_dry_run() {

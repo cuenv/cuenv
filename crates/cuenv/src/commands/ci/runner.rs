@@ -40,6 +40,10 @@ pub async fn execute_runner(args: &CiArgs) -> Result<()> {
         path_filter: effective_path,
         max_parallel: args.effective_jobs(),
         shard: args.shard,
+        plan_output: args.plan_format.map(|format| executor::PlanOutput {
+            format: format.into(),
+            destination: args.output.clone(),
+        }),
     })
     .await
 }
