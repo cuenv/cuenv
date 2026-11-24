@@ -232,11 +232,11 @@ impl IRTaskRunner {
             command.env("HOME", home);
         }
 
-        if !env.contains_key("FORCE_COLOR") {
-            command.env("FORCE_COLOR", "1");
-        }
-        if !env.contains_key("CLICOLOR_FORCE") {
-            command.env("CLICOLOR_FORCE", "1");
+        for (name, value) in cuenv_task_exec::env::forced_color_vars(
+            cuenv_task_exec::env::ColorOutput::detect(),
+            |name| env.contains_key(name),
+        ) {
+            command.env(name, value);
         }
     }
 

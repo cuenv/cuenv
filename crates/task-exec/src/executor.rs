@@ -1081,13 +1081,15 @@ impl TaskExecutor {
         }
         cmd.env_remove("CUENV_HOOK_SESSION");
 
-        // Force color output even when stdout is piped (for capture mode)
-        // These are widely supported: FORCE_COLOR by Node.js/chalk, CLICOLOR_FORCE by BSD/macOS
-        if !env_vars.contains_key("FORCE_COLOR") {
-            cmd.env("FORCE_COLOR", "1");
-        }
-        if !env_vars.contains_key("CLICOLOR_FORCE") {
-            cmd.env("CLICOLOR_FORCE", "1");
+        // A child's stdout is piped, so it would drop colour even when cuenv
+        // is showing it on a terminal. Ask for colour only then: a child that
+        // prints data (`gh api`) must not get colour codes in a pipe or a log.
+        for (name, value) in
+            crate::env::forced_color_vars(crate::env::ColorOutput::detect(), |name| {
+                env_vars.contains_key(name)
+            })
+        {
+            cmd.env(name, value);
         }
 
         for name in environment.withheld_names() {
