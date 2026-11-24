@@ -520,6 +520,8 @@ mod tests {
                 project_path: None,
                 trigger: None,
                 concurrency: None,
+                gate: None,
+                changes: None,
                 pipeline_tasks: Vec::new(),
                 pipeline_task_defs: Vec::new(),
             },

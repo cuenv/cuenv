@@ -84,6 +84,8 @@ fn test_ir() -> IntermediateRepresentation {
             project_path: None,
             trigger: None,
             concurrency: None,
+            gate: None,
+            changes: None,
             pipeline_tasks: vec![],
             pipeline_task_defs: vec![],
         },

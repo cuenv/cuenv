@@ -437,6 +437,36 @@ package schema
 	cancelInProgress?: bool | string | #CancelInProgressByEvent
 }
 
+// Single required check job that aggregates every other job in a pipeline.
+#PipelineGate: {
+	// Required: stable check name (emitted as both job `name` and sanitized job ID).
+	name!: string
+	// Job IDs that must finish with `success` (all other jobs may be `success` or `skipped`).
+	required?: [...string]
+	// Optional runner override for the gate job (defaults to pipeline runner).
+	runner?: string | [...string]
+	// Optional timeout in minutes for the gate job (defaults to 5).
+	timeoutMinutes?: int & >0
+}
+
+// A lane in `#PipelineChanges`: true when any listed task is affected.
+#PipelineChangeLane: {
+	tasks!: [...string]
+}
+
+// Per-lane change detection job exposed as job outputs for job-level `if` conditions.
+#PipelineChanges: {
+	// Emitted detection job ID/name (defaults to `"changes"`).
+	job?: string | *"changes"
+	// Named lanes mapped to the pipeline tasks they guard.
+	lanes!: [string]: #PipelineChangeLane
+	// Optional custom shell script replacing the default `cuenv ci` affected-detection step
+	// (must write `<lane>=true|false` lines to `$GITHUB_OUTPUT`).
+	script?: string
+	// Optional runner override for the detection job (defaults to pipeline runner).
+	runner?: string | [...string]
+}
+
 #Pipeline: {
 	// Generation mode for this pipeline (default: "thin")
 	mode?: #PipelineMode | *"thin"
@@ -468,6 +498,12 @@ package schema
 	// Per-label job parallelism caps in expanded pipelines (e.g., {heavy: 2}
 	// assigns tasks labelled "heavy" round-robin across 2 concurrency slots).
 	limits?: [string]: int & >0
+
+	// Single required check job that aggregates every other job in this pipeline.
+	gate?: #PipelineGate
+
+	// Per-lane change detection job exposed as job outputs for job-level `if` conditions.
+	changes?: #PipelineChanges
 
 	derivePaths?: bool // whether to derive trigger paths from task inputs
 	provider?:    #ProviderConfig

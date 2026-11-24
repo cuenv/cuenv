@@ -243,6 +243,8 @@ pub(super) struct PipelineContext {
     pub(super) github_config: cuenv_github::config::GitHubConfig,
     pub(super) trigger: cuenv_ci::ir::TriggerCondition,
     pub(super) concurrency: Option<cuenv_core::ci::PipelineConcurrency>,
+    pub(super) gate: Option<cuenv_core::ci::PipelineGate>,
+    pub(super) changes: Option<cuenv_core::ci::PipelineChanges>,
     pub(super) project_name: Option<String>,
     /// Relative path to project directory (for working-directory in monorepos)
     pub(super) project_path: Option<String>,
@@ -270,6 +272,8 @@ impl PipelineContext {
                 project_path: self.project_path.clone(),
                 trigger: Some(self.trigger.clone()),
                 concurrency: self.concurrency.clone(),
+                gate: self.gate.clone(),
+                changes: self.changes.clone(),
                 pipeline_tasks: self
                     .pipeline_tasks
                     .iter()
@@ -473,6 +477,8 @@ fn build_project_pipeline_context(request: WorkflowRequest<'_>) -> Result<Pipeli
         github_config: ci.github_config_for_pipeline(pipeline_name),
         trigger,
         concurrency: pipeline.concurrency.clone(),
+        gate: pipeline.gate.clone(),
+        changes: pipeline.changes.clone(),
         project_name: Some(project.config.name.clone()),
         project_path: project_path_for_compiler,
         environment: pipeline.environment.clone(),
@@ -906,6 +912,8 @@ mod tests {
                 project_path: None,
                 trigger: None,
                 concurrency: None,
+                gate: None,
+                changes: None,
                 pipeline_tasks: vec![],
                 pipeline_task_defs: vec![],
             },
@@ -1048,6 +1056,8 @@ mod tests {
             github_config: cuenv_github::config::GitHubConfig::default(),
             trigger: cuenv_ci::ir::TriggerCondition::default(),
             concurrency: None,
+            gate: None,
+            changes: None,
             project_name: Some("test".to_string()),
             project_path: None,
             environment: None,
