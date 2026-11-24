@@ -46,6 +46,28 @@ pub fn transform_secret_ref(value: &str) -> String {
     format!("${{{{ secrets.{var_name} }}}}")
 }
 
+/// The GitHub Actions expression that reads the repository secret
+/// `source` names: a bare name (`DEPLOY_TOKEN`) or the CI-agnostic
+/// `${DEPLOY_TOKEN}` spelling.
+#[must_use]
+pub fn secret_expression(source: &str) -> String {
+    let trimmed = source.trim();
+    let name = trimmed
+        .strip_prefix("${")
+        .and_then(|rest| rest.strip_suffix('}'))
+        .unwrap_or(trimmed);
+    let is_identifier = name
+        .chars()
+        .next()
+        .is_some_and(|first| first.is_ascii_alphabetic() || first == '_')
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+    if is_identifier {
+        format!("${{{{ secrets.{name} }}}}")
+    } else {
+        format!("${{{{ secrets['{}'] }}}}", name.replace('\'', "''"))
+    }
+}
+
 use cuenv_ci::ir::Task;
 
 use super::schema::Step;
@@ -144,6 +166,7 @@ impl GitHubStageRenderer {
             for (key, value) in &task.env {
                 step.env.insert(key.clone(), transform_secret_ref(value));
             }
+            Self::add_secret_env(&mut step, task);
 
             return step;
         }
@@ -156,8 +179,18 @@ impl GitHubStageRenderer {
         for (key, value) in &task.env {
             step.env.insert(key.clone(), transform_secret_ref(value));
         }
+        Self::add_secret_env(&mut step, task);
 
         step
+    }
+
+    /// Expose the task's declared secrets to its step only, each as the
+    /// variable it is declared under.
+    fn add_secret_env(step: &mut Step, task: &Task) {
+        for (variable, secret) in &task.secrets {
+            step.env
+                .insert(variable.clone(), secret_expression(&secret.source));
+        }
     }
 
     /// Render a slice of tasks to GitHub Actions steps.
@@ -461,5 +494,58 @@ mod tests {
         let task = make_test_task("test", &["echo"]);
 
         assert!(ActionSpec::from_task(&task).is_none());
+    }
+
+    fn secret(source: &str) -> cuenv_ci::ir::SecretConfig {
+        cuenv_ci::ir::SecretConfig {
+            source: source.to_string(),
+            cache_key: false,
+        }
+    }
+
+    /// A contributor task's declared secrets reach its own step (issue 563).
+    #[test]
+    fn a_run_step_reads_the_secrets_its_task_declares() {
+        let mut task = make_test_task("cuenv:contributor:probe", &["sh", "-c", "probe"]);
+        task.secrets
+            .insert("EXAMPLE_SECRET".to_string(), secret("EXAMPLE_SECRET"));
+        task.secrets
+            .insert("DEPLOY_TOKEN".to_string(), secret("${CI_DEPLOY_TOKEN}"));
+
+        let step = GitHubStageRenderer::new().render_task(&task);
+
+        assert_eq!(
+            step.env.get("EXAMPLE_SECRET").map(String::as_str),
+            Some("${{ secrets.EXAMPLE_SECRET }}")
+        );
+        assert_eq!(
+            step.env.get("DEPLOY_TOKEN").map(String::as_str),
+            Some("${{ secrets.CI_DEPLOY_TOKEN }}")
+        );
+    }
+
+    #[test]
+    fn an_action_step_reads_the_secrets_its_task_declares() {
+        let mut task = make_test_task("cuenv:contributor:cache", &[]);
+        task.provider_hints = Some(make_github_action_hints(
+            "example/cache@v1",
+            BTreeMap::new(),
+        ));
+        task.secrets
+            .insert("CACHE_TOKEN".to_string(), secret("CACHE_TOKEN"));
+
+        let step = GitHubStageRenderer::new().render_task(&task);
+
+        assert_eq!(step.uses.as_deref(), Some("example/cache@v1"));
+        assert_eq!(
+            step.env.get("CACHE_TOKEN").map(String::as_str),
+            Some("${{ secrets.CACHE_TOKEN }}")
+        );
+    }
+
+    #[test]
+    fn a_secret_name_that_is_not_an_identifier_is_indexed() {
+        assert_eq!(secret_expression("my-token"), "${{ secrets['my-token'] }}");
+        assert_eq!(secret_expression("_TOKEN1"), "${{ secrets._TOKEN1 }}");
     }
 }
