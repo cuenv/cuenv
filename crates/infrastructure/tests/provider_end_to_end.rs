@@ -447,7 +447,7 @@ async fn generated_types_describe_real_provider_schemas() -> TestResult {
         .get(Path::new("resources/random_pet/resource.cue"))
         .ok_or("no random_pet package")?;
     // Computed-only `id` is not configuration.
-    assert!(pet.contains("\tlength?: number\n"), "{pet}");
+    assert!(pet.contains("\tlength?: number | #Number\n"), "{pet}");
     assert!(!pet.contains("\tid?:"), "{pet}");
     Ok(())
 }
