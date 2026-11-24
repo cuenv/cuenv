@@ -111,6 +111,7 @@ impl Compiler {
         // Set pipeline context from options (enables environment-aware contributors)
         if let Some(ref pipeline) = self.options.pipeline {
             ir.pipeline.environment.clone_from(&pipeline.environment);
+            ir.pipeline.concurrency.clone_from(&pipeline.concurrency);
             ir.pipeline.pipeline_tasks = pipeline
                 .tasks
                 .iter()

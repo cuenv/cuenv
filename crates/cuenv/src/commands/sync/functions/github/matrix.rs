@@ -37,7 +37,7 @@ pub(super) fn emit_matrix_workflow(
     pipeline_name: &str,
     ctx: &PipelineContext,
 ) -> Result<Vec<(String, String)>> {
-    use cuenv_github::workflow::schema::{Concurrency, Workflow};
+    use cuenv_github::workflow::schema::Workflow;
 
     let workflow_name = match &ctx.project_name {
         Some(project) => format!("{project}-{pipeline_name}"),
@@ -46,6 +46,9 @@ pub(super) fn emit_matrix_workflow(
 
     let ir = ctx.to_ir(pipeline_name);
     let emitter = ctx.github_emitter();
+    emitter
+        .validate_workflow_permissions(&ir)
+        .map_err(|e| cuenv_core::Error::configuration(e.to_string()))?;
     let cuenv_setup = implementation::pipeline_cuenv_setup(ctx, &emitter, &ir);
 
     let explicit_task_names: HashSet<String> = ctx
@@ -83,12 +86,12 @@ pub(super) fn emit_matrix_workflow(
 
     let workflow = Workflow {
         name: workflow_name.clone(),
+        run_name: emitter.run_name.clone(),
         on: emitter.build_triggers(&ir, &filename),
-        concurrency: Some(Concurrency {
-            group: "${{ github.workflow }}-${{ github.head_ref || github.ref }}".to_string(),
-            cancel_in_progress: Some(true),
-        }),
-        permissions: None,
+        concurrency: Some(
+            cuenv_github::workflow::GitHubActionsEmitter::build_workflow_concurrency(&ir),
+        ),
+        permissions: emitter.workflow_permissions(),
         env: indexmap::IndexMap::new(),
         jobs,
     };
@@ -169,6 +172,7 @@ fn build_pipeline_jobs(request: &PipelineJobsRequest<'_>) -> Result<BuiltPipelin
                         synthetic_task
                             .github_permissions
                             .clone_from(&original.github_permissions);
+                        synthetic_task.github_permissions_mode = original.github_permissions_mode;
                         synthetic_task.deployment = original.deployment;
                         synthetic_task.manual_approval = original.manual_approval;
                         synthetic_task.outputs.clone_from(&original.outputs);
@@ -441,6 +445,7 @@ fn synthetic_task_base(task_name: &str) -> cuenv_ci::ir::Task {
         condition: None,
         github_task_filter: Vec::new(),
         github_permissions: std::collections::BTreeMap::new(),
+        github_permissions_mode: cuenv_ci::ir::GitHubPermissionsMode::Inferred,
         github_execution: None,
         provider_hints: None,
         external_dependencies: Vec::new(),

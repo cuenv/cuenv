@@ -577,7 +577,20 @@ impl Compiler {
                 .ci
                 .as_ref()
                 .and_then(|ci| ci.github.as_ref())
-                .map_or_default(|gh| gh.permissions.clone()),
+                .and_then(|gh| gh.permissions.as_ref())
+                .cloned()
+                .unwrap_or_default(),
+            github_permissions_mode: if contributor_task
+                .ci
+                .as_ref()
+                .and_then(|ci| ci.github.as_ref())
+                .and_then(|gh| gh.permissions.as_ref())
+                .is_some_and(BTreeMap::is_empty)
+            {
+                crate::ir::GitHubPermissionsMode::ExplicitEmpty
+            } else {
+                crate::ir::GitHubPermissionsMode::Inferred
+            },
             github_execution: None,
             provider_hints,
             external_dependencies: Vec::new(),

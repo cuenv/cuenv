@@ -498,10 +498,10 @@ impl GitHubActionsEmitter {
         }
 
         Job {
-            permissions: Some(self.build_job_permissions(
+            permissions: self.job_permissions_option(
                 task,
                 &Self::emitted_phase_tasks(ir, options.execution, options.cuenv_setup),
-            )),
+            ),
             name: Some(task.id.clone()),
             runs_on: RunsOn::Label(self.runner.clone()),
             needs: Vec::new(),
@@ -611,10 +611,10 @@ impl GitHubActionsEmitter {
         steps.push(task_step);
 
         Job {
-            permissions: Some(self.build_job_permissions(
+            permissions: self.job_permissions_option(
                 task,
                 &Self::emitted_phase_tasks(ir, TaskExecution::Orchestrated, options.cuenv_setup),
-            )),
+            ),
             name: Some(task.id.clone()),
             runs_on: RunsOn::Label(self.runner.clone()),
             needs: options.previous_jobs.to_vec(),
@@ -759,10 +759,10 @@ impl GitHubActionsEmitter {
                 jobs.insert(
                     job_id,
                     Job {
-                        permissions: Some(self.build_job_permissions(
+                        permissions: self.job_permissions_option(
                             task,
                             &Self::emitted_phase_tasks(ir, options.execution, options.cuenv_setup),
-                        )),
+                        ),
                         name: Some(format!("{} ({arch})", task.id)),
                         runs_on: RunsOn::Label(runner),
                         needs: options.previous_jobs.to_vec(),

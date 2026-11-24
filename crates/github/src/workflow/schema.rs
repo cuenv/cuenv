@@ -15,6 +15,10 @@ pub struct Workflow {
     /// Workflow name displayed in GitHub UI
     pub name: String,
 
+    /// Dynamic display name for workflow runs
+    #[serde(rename = "run-name", skip_serializing_if = "Option::is_none")]
+    pub run_name: Option<String>,
+
     /// Trigger configuration
     #[serde(rename = "on")]
     pub on: WorkflowTriggers,
@@ -155,8 +159,18 @@ pub struct ScheduleTrigger {
     pub cron: String,
 }
 
+/// Value for `concurrency.cancel-in-progress` in GitHub Actions YAML.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum CancelInProgress {
+    /// Static boolean (`true` or `false`)
+    Bool(bool),
+    /// GitHub Actions expression string (e.g., `${{ github.event_name == 'pull_request' }}`)
+    Expression(String),
+}
+
 /// Concurrency configuration to prevent duplicate workflow runs.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub struct Concurrency {
     /// Concurrency group name (use expressions like `${{ github.workflow }}`)
@@ -164,42 +178,78 @@ pub struct Concurrency {
 
     /// Whether to cancel in-progress runs when a new run is triggered
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub cancel_in_progress: Option<bool>,
+    pub cancel_in_progress: Option<CancelInProgress>,
 }
 
 /// `GITHUB_TOKEN` permissions configuration.
 ///
 /// Controls what the workflow can access using the automatic `GITHUB_TOKEN`.
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub struct Permissions {
-    /// Repository contents permission
+    /// GitHub Actions permission
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub contents: Option<PermissionLevel>,
+    pub actions: Option<PermissionLevel>,
+
+    /// Artifact metadata permission (for artifact attestations)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub artifact_metadata: Option<PermissionLevel>,
+
+    /// Artifact attestations permission
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attestations: Option<PermissionLevel>,
 
     /// Check runs permission
     #[serde(skip_serializing_if = "Option::is_none")]
     pub checks: Option<PermissionLevel>,
 
-    /// Pull requests permission
+    /// Repository contents permission
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub pull_requests: Option<PermissionLevel>,
+    pub contents: Option<PermissionLevel>,
 
-    /// Issues permission
+    /// Deployments permission
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub issues: Option<PermissionLevel>,
+    pub deployments: Option<PermissionLevel>,
 
-    /// GitHub Packages permission
+    /// Discussions permission
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub packages: Option<PermissionLevel>,
+    pub discussions: Option<PermissionLevel>,
 
     /// OIDC token permission (for cloud authentication)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id_token: Option<PermissionLevel>,
 
-    /// GitHub Actions permission
+    /// Issues permission
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub actions: Option<PermissionLevel>,
+    pub issues: Option<PermissionLevel>,
+
+    /// GitHub Models permission
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub models: Option<PermissionLevel>,
+
+    /// GitHub Packages permission
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub packages: Option<PermissionLevel>,
+
+    /// GitHub Pages permission
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pages: Option<PermissionLevel>,
+
+    /// Pull requests permission
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pull_requests: Option<PermissionLevel>,
+
+    /// Repository projects permission
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repository_projects: Option<PermissionLevel>,
+
+    /// Security events permission
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub security_events: Option<PermissionLevel>,
+
+    /// Commit statuses permission
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub statuses: Option<PermissionLevel>,
 }
 
 /// Permission level for `GITHUB_TOKEN` scopes.
@@ -452,6 +502,7 @@ mod tests {
     fn test_workflow_serialization() {
         let workflow = Workflow {
             name: "CI".to_string(),
+            run_name: None,
             on: WorkflowTriggers {
                 push: Some(PushTrigger {
                     branches: vec!["main".to_string()],
@@ -461,7 +512,7 @@ mod tests {
             },
             concurrency: Some(Concurrency {
                 group: "${{ github.workflow }}-${{ github.ref }}".to_string(),
-                cancel_in_progress: Some(true),
+                cancel_in_progress: Some(CancelInProgress::Bool(true)),
             }),
             permissions: Some(Permissions {
                 contents: Some(PermissionLevel::Read),

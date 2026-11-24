@@ -227,3 +227,117 @@ fn thin_reporter_grants_are_attributed_and_capped() {
     assert_eq!(grants["checks"], "none");
     assert_eq!(grants["pull-requests"], "none");
 }
+
+#[test]
+fn all_github_permission_scopes_are_emitted_and_clamped() {
+    let mut emitter = GitHubActionsEmitter::new();
+    emitter
+        .configured_permissions
+        .insert("attestations".into(), "read".into());
+    let mut task = super::make_task("attest", &["attest"]);
+    for (scope, level) in [
+        ("actions", "read"),
+        ("artifact-metadata", "write"),
+        ("attestations", "write"),
+        ("checks", "write"),
+        ("contents", "write"),
+        ("deployments", "write"),
+        ("discussions", "read"),
+        ("id-token", "write"),
+        ("issues", "write"),
+        ("models", "read"),
+        ("packages", "write"),
+        ("pages", "write"),
+        ("pull-requests", "write"),
+        ("repository-projects", "read"),
+        ("security-events", "write"),
+        ("statuses", "write"),
+    ] {
+        task.github_permissions
+            .insert(scope.to_string(), level.to_string());
+    }
+    let ir = super::make_ir(vec![task.clone()]);
+    let job = emitter.build_simple_job(&task, &ir, &SimpleJobOptions::orchestrated(None, None));
+    let perms = permissions(&job);
+    assert_eq!(perms["artifact-metadata"], "write");
+    assert_eq!(perms["attestations"], "read"); // clamped by pipeline ceiling
+    assert_eq!(perms["deployments"], "write");
+    assert_eq!(perms["discussions"], "read");
+    assert_eq!(perms["models"], "read");
+    assert_eq!(perms["pages"], "write");
+    assert_eq!(perms["repository-projects"], "read");
+    assert_eq!(perms["security-events"], "write");
+    assert_eq!(perms["statuses"], "write");
+}
+
+#[test]
+fn explicit_empty_workflow_permissions_emits_empty_block_without_inference() {
+    let config = crate::config::GitHubConfig {
+        permissions: Some(HashMap::new()),
+        ..Default::default()
+    };
+    let emitter = GitHubActionsEmitter::from_config(&config)
+        .without_nix()
+        .without_cuenv_build();
+    let ir = super::make_ir(vec![super::make_task("check", &["cargo", "check"])]);
+
+    for yaml in [
+        emitter.emit_thin(&ir).unwrap(),
+        emitter.emit_expanded(&ir).unwrap(),
+    ] {
+        let doc: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(
+            doc["permissions"],
+            serde_yaml::Value::Mapping(serde_yaml::Mapping::new())
+        );
+        for job in doc["jobs"].as_mapping().unwrap().values() {
+            assert!(job.get("permissions").is_none());
+        }
+    }
+}
+
+#[test]
+fn explicit_empty_job_permissions_emits_verbatim_and_rejects_required_scopes() {
+    let emitter = GitHubActionsEmitter::new()
+        .without_nix()
+        .without_cuenv_build();
+    let mut gate = super::make_task("ci-ok", &["true"]);
+    gate.github_permissions_mode = cuenv_ci::ir::GitHubPermissionsMode::ExplicitEmpty;
+    let check = super::make_task("check", &["cargo", "check"]);
+    let ir = super::make_ir(vec![check, gate]);
+
+    let yaml = emitter.emit_expanded(&ir).unwrap();
+    let doc: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
+    assert!(doc.get("permissions").is_none());
+    assert_eq!(
+        doc["jobs"]["ci-ok"]["permissions"],
+        serde_yaml::Value::Mapping(serde_yaml::Mapping::new())
+    );
+    assert_eq!(doc["jobs"]["check"]["permissions"]["contents"], "read");
+
+    // A task requiring a scope under explicit empty workflow permissions fails.
+    let empty_config = crate::config::GitHubConfig {
+        permissions: Some(HashMap::new()),
+        ..Default::default()
+    };
+    let empty_emitter = GitHubActionsEmitter::from_config(&empty_config)
+        .without_nix()
+        .without_cuenv_build();
+    let mut publish = super::make_task("publish", &["publish"]);
+    publish
+        .github_permissions
+        .insert("attestations".into(), "write".into());
+    let conflict_ir = super::make_ir(vec![publish]);
+    assert!(empty_emitter.emit_expanded(&conflict_ir).is_err());
+    assert!(empty_emitter.emit_thin(&conflict_ir).is_err());
+
+    // A job with explicit empty permissions fails if a matching phase step needs a scope.
+    let mut restricted = super::make_task("restricted", &["true"]);
+    restricted.github_permissions_mode = cuenv_ci::ir::GitHubPermissionsMode::ExplicitEmpty;
+    let mut auth =
+        super::make_phase_task("auth", &["login"], TaskPhase::new(BuildStage::Setup, 25));
+    auth.github_permissions
+        .insert("id-token".into(), "write".into());
+    let job_conflict_ir = super::make_ir(vec![restricted, auth]);
+    assert!(emitter.emit_expanded(&job_conflict_ir).is_err());
+}

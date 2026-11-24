@@ -311,6 +311,7 @@ mod tests {
             condition: None,
             github_task_filter: Vec::new(),
             github_permissions: std::collections::BTreeMap::new(),
+            github_permissions_mode: cuenv_ci::ir::GitHubPermissionsMode::Inferred,
             github_execution: None,
             provider_hints: None,
             external_dependencies: Vec::new(),

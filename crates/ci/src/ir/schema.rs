@@ -44,6 +44,7 @@ impl IntermediateRepresentation {
                 project_name: None,
                 project_path: None,
                 trigger: None,
+                concurrency: None,
                 pipeline_tasks: Vec::new(),
                 pipeline_task_defs: Vec::new(),
             },
@@ -124,6 +125,10 @@ pub struct PipelineMetadata {
     /// Trigger conditions
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trigger: Option<TriggerCondition>,
+
+    /// Workflow-level concurrency configuration
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub concurrency: Option<cuenv_core::ci::PipelineConcurrency>,
 
     /// Task IDs that this pipeline runs (for contributor filtering)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -240,6 +245,31 @@ pub enum PurityMode {
     Override,
 }
 
+/// How a GitHub Actions `permissions` block is determined for a task or workflow.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GitHubPermissionsMode {
+    /// Infer baseline permissions and apply any configured scopes/ceilings (default).
+    #[default]
+    Inferred,
+    /// Explicit empty `permissions: {}`; do not infer scopes and reject required scopes.
+    ExplicitEmpty,
+}
+
+impl GitHubPermissionsMode {
+    /// Returns `true` when using the default inferred mode.
+    #[must_use]
+    pub const fn is_inferred(self) -> bool {
+        matches!(self, Self::Inferred)
+    }
+
+    /// Returns `true` when an explicit empty `permissions: {}` block was configured.
+    #[must_use]
+    pub const fn is_explicit_empty(self) -> bool {
+        matches!(self, Self::ExplicitEmpty)
+    }
+}
+
 /// Task definition in the IR
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Task {
@@ -249,6 +279,9 @@ pub struct Task {
     /// GitHub token requirements of this task or injected step.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub github_permissions: BTreeMap<String, String>,
+    /// Whether this task explicitly declared `permissions: {}` (no token permissions).
+    #[serde(default)]
+    pub github_permissions_mode: GitHubPermissionsMode,
     /// How this task's GitHub job runs it; unset uses the pipeline's default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub github_execution: Option<cuenv_core::ci::TaskGitHubExecution>,
@@ -423,6 +456,7 @@ impl Task {
             condition: None,
             github_task_filter: Vec::new(),
             github_permissions: std::collections::BTreeMap::new(),
+            github_permissions_mode: GitHubPermissionsMode::Inferred,
             github_execution: None,
             provider_hints: None,
             external_dependencies: Vec::new(),
@@ -461,6 +495,7 @@ impl Task {
             condition: None,
             github_task_filter: Vec::new(),
             github_permissions: std::collections::BTreeMap::new(),
+            github_permissions_mode: GitHubPermissionsMode::Inferred,
             github_execution: None,
             provider_hints: None,
             external_dependencies: Vec::new(),

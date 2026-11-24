@@ -582,6 +582,40 @@ ci: {
 }
 ```
 
+### Workflow run name, permissions, and concurrency
+
+For GitHub Actions pipelines, you can set a dynamic `run-name`, lock down
+`GITHUB_TOKEN` permissions (including an explicit empty `permissions: {}`), and
+configure workflow-level `concurrency`:
+
+```cue
+ci: pipelines: deploy: {
+	mode: "expanded"
+	when: branch: "main"
+	concurrency: {
+		group: "deploy-${{ github.ref }}"
+		// Accepts a bool, a GitHub Actions expression string, or a per-event map
+		// such as {pullRequest: true, push: false}.
+		cancelInProgress: false
+	}
+	provider: github: {
+		runName: "Deploy main @ ${{ github.sha }}"
+		// Explicit empty `{}` emits top-level `permissions: {}` without inference
+		// and fails sync if any task requires a withheld scope.
+		permissions: {}
+	}
+	tasks: [_t.verify]
+}
+```
+
+`#GitHubPermissions` supports all GitHub Actions token scopes (`actions`,
+`artifact-metadata`, `attestations`, `checks`, `contents`, `deployments`,
+`discussions`, `id-token`, `issues`, `models`, `packages`, `pages`,
+`pull-requests`, `repository-projects`, `security-events`, `statuses`). Setting
+`ci: github: permissions: {}` on an individual task emits `permissions: {}` on
+that job verbatim and rejects any required scope on the task or its emitted
+phase steps.
+
 ## Secrets in CI
 
 Use task-local secret refs when cuenv should resolve the value at runtime:

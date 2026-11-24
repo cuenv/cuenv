@@ -3,9 +3,9 @@
 //! Transforms cuenv IR into GitHub Actions workflow YAML files.
 
 use crate::workflow::schema::{
-    Concurrency, Environment, Job, PermissionLevel, Permissions, PullRequestTrigger, PushTrigger,
-    ReleaseTrigger, RunsOn, ScheduleTrigger, Step, Workflow, WorkflowDispatchTrigger,
-    WorkflowInput, WorkflowTriggers,
+    CancelInProgress, Concurrency, Environment, Job, PermissionLevel, Permissions,
+    PullRequestTrigger, PushTrigger, ReleaseTrigger, RunsOn, ScheduleTrigger, Step, Workflow,
+    WorkflowDispatchTrigger, WorkflowInput, WorkflowTriggers,
 };
 use crate::workflow::stage_renderer::GitHubStageRenderer;
 use cuenv_ci::emitter::{Emitter, EmitterError, EmitterResult};
@@ -118,6 +118,10 @@ pub struct GitHubActionsEmitter {
     pub approval_environment: String,
     /// Configured permissions from the manifest
     pub configured_permissions: HashMap<String, String>,
+    /// Whether the pipeline explicitly configured `permissions: {}`
+    pub workflow_permissions_mode: cuenv_ci::ir::GitHubPermissionsMode,
+    /// Dynamic display name for workflow runs (`run-name`)
+    pub run_name: Option<String>,
     /// Optional project remote cache configuration for trust-boundary workflow emission
     pub remote_cache: Option<cuenv_core::manifest::RemoteCache>,
 }
@@ -133,6 +137,8 @@ impl Default for GitHubActionsEmitter {
             build_cuenv: true,
             approval_environment: "production".to_string(),
             configured_permissions: HashMap::new(),
+            workflow_permissions_mode: cuenv_ci::ir::GitHubPermissionsMode::Inferred,
+            run_name: None,
             remote_cache: None,
         }
     }
@@ -346,9 +352,17 @@ impl GitHubActionsEmitter {
             }
         }
 
+        // Apply run-name configuration
+        emitter.run_name.clone_from(&config.run_name);
+
         // Apply configured permissions
         if let Some(permissions) = &config.permissions {
             emitter.configured_permissions.clone_from(permissions);
+            emitter.workflow_permissions_mode = if permissions.is_empty() {
+                cuenv_ci::ir::GitHubPermissionsMode::ExplicitEmpty
+            } else {
+                cuenv_ci::ir::GitHubPermissionsMode::Inferred
+            };
         }
 
         emitter
@@ -358,6 +372,133 @@ impl GitHubActionsEmitter {
     #[must_use]
     pub fn runner_as_runs_on(&self) -> RunsOn {
         RunsOn::Label(self.runner.clone())
+    }
+
+    /// Default GitHub workflow concurrency group expression.
+    pub const DEFAULT_CONCURRENCY_GROUP: &'static str =
+        "${{ github.workflow }}-${{ github.head_ref || github.ref }}";
+
+    /// Build workflow-level concurrency from IR pipeline metadata.
+    #[must_use]
+    pub fn build_workflow_concurrency(ir: &IntermediateRepresentation) -> Concurrency {
+        let Some(cfg) = ir.pipeline.concurrency.as_ref() else {
+            return Concurrency {
+                group: Self::DEFAULT_CONCURRENCY_GROUP.to_string(),
+                cancel_in_progress: Some(CancelInProgress::Bool(true)),
+            };
+        };
+
+        let group = cfg
+            .group
+            .clone()
+            .unwrap_or_else(|| Self::DEFAULT_CONCURRENCY_GROUP.to_string());
+        let cancel_in_progress = cfg
+            .cancel_in_progress
+            .as_ref()
+            .map(Self::resolve_cancel_in_progress);
+
+        Concurrency {
+            group,
+            cancel_in_progress,
+        }
+    }
+
+    fn resolve_cancel_in_progress(
+        config: &cuenv_core::ci::CancelInProgressConfig,
+    ) -> CancelInProgress {
+        use cuenv_core::ci::CancelInProgressConfig;
+        match config {
+            CancelInProgressConfig::Bool(value) => CancelInProgress::Bool(*value),
+            CancelInProgressConfig::Expression(expr) => CancelInProgress::Expression(expr.clone()),
+            CancelInProgressConfig::ByEvent(by_event) => {
+                let events = [
+                    ("pull_request", by_event.pull_request),
+                    ("push", by_event.push),
+                    ("merge_group", by_event.merge_group),
+                    ("workflow_run", by_event.workflow_run),
+                    ("workflow_dispatch", by_event.manual),
+                    ("schedule", by_event.scheduled),
+                    ("release", by_event.release),
+                ];
+                let clauses: Vec<String> = events
+                    .into_iter()
+                    .filter(|&(_, enabled)| enabled == Some(true))
+                    .map(|(event, _)| format!("github.event_name == '{event}'"))
+                    .collect();
+                if clauses.is_empty() {
+                    CancelInProgress::Bool(false)
+                } else {
+                    CancelInProgress::Expression(format!("${{{{ {} }}}}", clauses.join(" || ")))
+                }
+            }
+        }
+    }
+
+    /// Workflow-level permissions block (`Some({})` when explicitly empty, otherwise `None`).
+    #[must_use]
+    pub fn workflow_permissions(&self) -> Option<Permissions> {
+        self.workflow_permissions_mode
+            .is_explicit_empty()
+            .then(Permissions::default)
+    }
+
+    /// Validate that explicit empty `permissions: {}` blocks do not conflict with
+    /// scopes required by tasks or emitted contributor steps.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EmitterError::InvalidIR`] if a task or phase step requires a
+    /// non-`none` permission scope withheld by an explicit empty `permissions: {}`.
+    pub fn validate_workflow_permissions(
+        &self,
+        ir: &IntermediateRepresentation,
+    ) -> EmitterResult<()> {
+        if self.workflow_permissions_mode.is_explicit_empty() {
+            Self::ensure_no_required_scopes(
+                &format!("pipeline '{}'", ir.pipeline.name),
+                ir.tasks.iter(),
+            )?;
+        }
+
+        for task in ir.regular_tasks() {
+            if !task.github_permissions_mode.is_explicit_empty() {
+                continue;
+            }
+            let matching_phases = ir.tasks.iter().filter(|step| {
+                step.phase.is_some()
+                    && (step.github_task_filter.is_empty()
+                        || step.github_task_filter.contains(&task.id))
+            });
+            Self::ensure_no_required_scopes(
+                &format!("task '{}'", task.id),
+                std::iter::once(task).chain(matching_phases),
+            )?;
+        }
+
+        Ok(())
+    }
+
+    fn ensure_no_required_scopes<'a>(
+        owner: &str,
+        tasks: impl Iterator<Item = &'a cuenv_ci::ir::Task>,
+    ) -> EmitterResult<()> {
+        for task in tasks {
+            if task.deployment {
+                return Err(EmitterError::InvalidIR(format!(
+                    "{owner} declares explicit empty `permissions: {{}}`, but task '{}' requires 'contents: write' (deployment)",
+                    task.id
+                )));
+            }
+            for (scope, level) in &task.github_permissions {
+                if level != "none" {
+                    return Err(EmitterError::InvalidIR(format!(
+                        "{owner} declares explicit empty `permissions: {{}}`, but task '{}' requires '{scope}: {level}'",
+                        task.id
+                    )));
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Clamp only explicitly configured scopes; a ceiling never adds a grant.
@@ -388,13 +529,22 @@ impl GitHubActionsEmitter {
         key: &str,
     ) -> Option<&'a mut Option<PermissionLevel>> {
         match key {
-            "contents" => Some(&mut permissions.contents),
-            "checks" => Some(&mut permissions.checks),
-            "pull-requests" => Some(&mut permissions.pull_requests),
-            "issues" => Some(&mut permissions.issues),
-            "packages" => Some(&mut permissions.packages),
-            "id-token" => Some(&mut permissions.id_token),
             "actions" => Some(&mut permissions.actions),
+            "artifact-metadata" => Some(&mut permissions.artifact_metadata),
+            "attestations" => Some(&mut permissions.attestations),
+            "checks" => Some(&mut permissions.checks),
+            "contents" => Some(&mut permissions.contents),
+            "deployments" => Some(&mut permissions.deployments),
+            "discussions" => Some(&mut permissions.discussions),
+            "id-token" => Some(&mut permissions.id_token),
+            "issues" => Some(&mut permissions.issues),
+            "models" => Some(&mut permissions.models),
+            "packages" => Some(&mut permissions.packages),
+            "pages" => Some(&mut permissions.pages),
+            "pull-requests" => Some(&mut permissions.pull_requests),
+            "repository-projects" => Some(&mut permissions.repository_projects),
+            "security-events" => Some(&mut permissions.security_events),
+            "statuses" => Some(&mut permissions.statuses),
             _ => None,
         }
     }
@@ -505,22 +655,38 @@ impl GitHubActionsEmitter {
                     .any(|task| task.phase.is_none() && step.github_task_filter.contains(&task.id))
         });
         let ir = &scoped_ir;
+        self.validate_workflow_permissions(ir)?;
+        if self.workflow_permissions_mode.is_explicit_empty()
+            && let Some((scope, level)) = command
+                .additional_permissions
+                .iter()
+                .find(|(_, level)| *level != "none")
+        {
+            return Err(EmitterError::InvalidIR(format!(
+                "pipeline '{}' declares explicit empty `permissions: {{}}`, but workflow requires '{scope}: {level}'",
+                ir.pipeline.name
+            )));
+        }
         let workflow_name = Self::build_workflow_name(ir);
         let workflow_filename = format!("{}.yml", sanitize_filename(&workflow_name));
         let triggers = self.build_triggers(ir, &workflow_filename);
-        let mut permissions = match command.token_scope {
-            TokenScope::Workflow => self.build_permissions(ir),
-            TokenScope::Tasks => self.permissions_for_tasks(ir.tasks.iter()),
-        };
-        for (key, value) in command.additional_permissions {
-            if let (Some(slot), Some(level)) = (
-                Self::permission_slot(&mut permissions, key),
-                Self::permission_level(value),
-            ) {
-                *slot = Some(slot.unwrap_or(PermissionLevel::None).max(level));
+        let job_permissions = if self.workflow_permissions_mode.is_explicit_empty() {
+            None
+        } else {
+            let mut permissions = match command.token_scope {
+                TokenScope::Workflow => self.build_permissions(ir),
+                TokenScope::Tasks => self.permissions_for_tasks(ir.tasks.iter()),
+            };
+            for (key, value) in command.additional_permissions {
+                if let (Some(slot), Some(level)) = (
+                    Self::permission_slot(&mut permissions, key),
+                    Self::permission_level(value),
+                ) {
+                    *slot = Some(slot.unwrap_or(PermissionLevel::None).max(level));
+                }
             }
-        }
-        let permissions = self.apply_configured_permissions(permissions);
+            Some(self.apply_configured_permissions(permissions))
+        };
 
         let mut renderer = GitHubStageRenderer::new()
             .with_cachix_auth_token_secret(self.cachix_auth_token_secret.clone());
@@ -599,7 +765,7 @@ impl GitHubActionsEmitter {
 
         // Build single job
         let job = Job {
-            permissions: Some(permissions),
+            permissions: job_permissions,
             name: Some(workflow_name.clone()),
             runs_on: self.runner_as_runs_on(),
             needs: Vec::new(),
@@ -636,17 +802,24 @@ impl GitHubActionsEmitter {
             );
         }
 
-        let workflow = Workflow {
-            name: workflow_name,
-            on: triggers,
-            concurrency: Some(Concurrency {
+        let concurrency = if command.concurrency_group.is_some() || !command.cancel_in_progress {
+            Concurrency {
                 group: command.concurrency_group.map_or_else(
-                    || "${{ github.workflow }}-${{ github.head_ref || github.ref }}".to_string(),
+                    || Self::DEFAULT_CONCURRENCY_GROUP.to_string(),
                     str::to_string,
                 ),
-                cancel_in_progress: Some(command.cancel_in_progress),
-            }),
-            permissions: None,
+                cancel_in_progress: Some(CancelInProgress::Bool(command.cancel_in_progress)),
+            }
+        } else {
+            Self::build_workflow_concurrency(ir)
+        };
+
+        let workflow = Workflow {
+            name: workflow_name,
+            run_name: self.run_name.clone(),
+            on: triggers,
+            concurrency: Some(concurrency),
+            permissions: self.workflow_permissions(),
             env: IndexMap::new(),
             jobs,
         };
@@ -672,7 +845,7 @@ impl GitHubActionsEmitter {
         let workflow_name = Self::build_workflow_name(ir);
 
         // Generate a single workflow with all tasks as jobs
-        let workflow = self.build_workflow(ir, &workflow_name);
+        let workflow = self.build_workflow(ir, &workflow_name)?;
         let filename = format!("{}.yml", sanitize_filename(&workflow_name));
         let yaml = Self::serialize_workflow(&workflow)?;
         workflows.insert(filename, yaml);
@@ -689,22 +862,25 @@ impl GitHubActionsEmitter {
     }
 
     /// Build a workflow from the IR
-    fn build_workflow(&self, ir: &IntermediateRepresentation, workflow_name: &str) -> Workflow {
+    fn build_workflow(
+        &self,
+        ir: &IntermediateRepresentation,
+        workflow_name: &str,
+    ) -> EmitterResult<Workflow> {
+        self.validate_workflow_permissions(ir)?;
         let workflow_filename = format!("{}.yml", sanitize_filename(workflow_name));
         let triggers = self.build_triggers(ir, &workflow_filename);
         let jobs = self.build_jobs(ir);
 
-        Workflow {
+        Ok(Workflow {
             name: workflow_name.to_string(),
+            run_name: self.run_name.clone(),
             on: triggers,
-            concurrency: Some(Concurrency {
-                group: "${{ github.workflow }}-${{ github.head_ref || github.ref }}".to_string(),
-                cancel_in_progress: Some(true),
-            }),
-            permissions: None,
+            concurrency: Some(Self::build_workflow_concurrency(ir)),
+            permissions: self.workflow_permissions(),
             env: IndexMap::new(),
             jobs,
-        }
+        })
     }
 
     /// Build workflow triggers from IR
@@ -876,7 +1052,26 @@ impl GitHubActionsEmitter {
         task: &cuenv_ci::ir::Task,
         phases: &[&cuenv_ci::ir::Task],
     ) -> Permissions {
+        if task.github_permissions_mode.is_explicit_empty() {
+            return Permissions::default();
+        }
         self.permissions_for_tasks(std::iter::once(task).chain(phases.iter().copied()))
+    }
+
+    /// Calculate the `jobs.<id>.permissions` field, honoring explicit empty blocks.
+    #[must_use]
+    pub(super) fn job_permissions_option(
+        &self,
+        task: &cuenv_ci::ir::Task,
+        phases: &[&cuenv_ci::ir::Task],
+    ) -> Option<Permissions> {
+        if task.github_permissions_mode.is_explicit_empty() {
+            Some(Permissions::default())
+        } else if self.workflow_permissions_mode.is_explicit_empty() {
+            None
+        } else {
+            Some(self.build_job_permissions(task, phases))
+        }
     }
 
     pub(super) fn permissions_for_tasks<'a>(
@@ -944,7 +1139,7 @@ impl GitHubActionsEmitter {
             if let Some(group) = &task.concurrency_group {
                 job.concurrency = Some(Concurrency {
                     group: group.clone(),
-                    cancel_in_progress: Some(false),
+                    cancel_in_progress: Some(CancelInProgress::Bool(false)),
                 });
             }
 
@@ -1008,7 +1203,7 @@ impl Emitter for GitHubActionsEmitter {
     /// a separate job with dependencies managed by GitHub Actions (`needs:`).
     fn emit_expanded(&self, ir: &IntermediateRepresentation) -> EmitterResult<String> {
         let workflow_name = Self::build_workflow_name(ir);
-        let workflow = self.build_workflow(ir, &workflow_name);
+        let workflow = self.build_workflow(ir, &workflow_name)?;
         Self::serialize_workflow(&workflow)
     }
 

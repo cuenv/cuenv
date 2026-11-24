@@ -2,8 +2,8 @@
 
 use crate::workflow::emitter::GitHubActionsEmitter;
 use crate::workflow::schema::{
-    Concurrency, Environment, Job, Matrix, PermissionLevel, ReleaseTrigger, RunsOn, Step, Strategy,
-    Workflow, WorkflowDispatchTrigger, WorkflowInput, WorkflowTriggers,
+    Environment, Job, Matrix, PermissionLevel, ReleaseTrigger, RunsOn, Step, Strategy, Workflow,
+    WorkflowDispatchTrigger, WorkflowInput, WorkflowTriggers,
 };
 use cuenv_ci::ir::{BuildStage, IntermediateRepresentation};
 use indexmap::IndexMap;
@@ -113,12 +113,10 @@ impl ReleaseWorkflowBuilder {
 
         Workflow {
             name: workflow_name,
+            run_name: self.emitter.run_name.clone(),
             on: triggers,
-            concurrency: Some(Concurrency {
-                group: "${{ github.workflow }}-${{ github.head_ref || github.ref }}".to_string(),
-                cancel_in_progress: Some(true),
-            }),
-            permissions: None,
+            concurrency: Some(GitHubActionsEmitter::build_workflow_concurrency(ir)),
+            permissions: self.emitter.workflow_permissions(),
             env: IndexMap::new(),
             jobs,
         }
@@ -499,6 +497,7 @@ mod tests {
             condition: None,
             github_task_filter: Vec::new(),
             github_permissions: std::collections::BTreeMap::new(),
+            github_permissions_mode: cuenv_ci::ir::GitHubPermissionsMode::Inferred,
             github_execution: None,
             provider_hints: Some(serde_json::json!({
                 "github_action": {
@@ -521,6 +520,7 @@ mod tests {
                 project_name: Some("example".to_string()),
                 project_path: None,
                 trigger: None,
+                concurrency: None,
                 pipeline_tasks: Vec::new(),
                 pipeline_task_defs: Vec::new(),
             },
