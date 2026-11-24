@@ -1029,7 +1029,14 @@ func fillTaskName(root cue.Value, field string, taskName string) cue.Value {
 		return root
 	}
 
-	return root.FillPath(namePath, taskName)
+	filled := root.FillPath(namePath, taskName)
+	// A task that appears under more than one name, such as a sequence that
+	// is an element of another sequence, already has the name it was given the
+	// first time. Keep that one instead of failing the whole value.
+	if filled.Err() != nil && root.Err() == nil {
+		return root
+	}
+	return filled
 }
 
 // taskFillPath converts a task path like "pipeline[0]" or
