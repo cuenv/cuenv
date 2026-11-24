@@ -85,6 +85,49 @@ fn read_passthrough(host_var: &str, withheld_env: &BTreeSet<String>) -> Option<S
     std::env::var(host_var).ok()
 }
 
+/// Where the colour of a task's output ends up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColorOutput {
+    /// cuenv's own output is a terminal, so a child's colour is shown.
+    Terminal,
+    /// cuenv's output is redirected, or `NO_COLOR` is set. Colour codes would
+    /// corrupt what a child prints as data, such as `gh api` writing JSON.
+    Plain,
+}
+
+impl ColorOutput {
+    /// Decide from cuenv's own streams and the host's `NO_COLOR`.
+    #[must_use]
+    pub fn detect() -> Self {
+        use std::io::IsTerminal;
+        let no_color = std::env::var_os("NO_COLOR").is_some_and(|value| !value.is_empty());
+        if !no_color && (std::io::stdout().is_terminal() || std::io::stderr().is_terminal()) {
+            Self::Terminal
+        } else {
+            Self::Plain
+        }
+    }
+}
+
+/// Variables that make a child colour its output even though cuenv captures it.
+///
+/// Empty unless `output` is a terminal, and never replaces a variable the
+/// task or the caller already set (`is_set`).
+#[must_use]
+pub fn forced_color_vars(
+    output: ColorOutput,
+    is_set: impl Fn(&str) -> bool,
+) -> Vec<(&'static str, &'static str)> {
+    match output {
+        ColorOutput::Plain => Vec::new(),
+        ColorOutput::Terminal => ["FORCE_COLOR", "CLICOLOR_FORCE"]
+            .into_iter()
+            .filter(|name| !is_set(name))
+            .map(|name| (name, "1"))
+            .collect(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -184,5 +227,22 @@ mod tests {
         assert_eq!(secrets, ["resolver-value"]);
         assert_eq!(std::env::var(CREDENTIAL)?, SENTINEL);
         Ok(())
+    }
+
+    #[test]
+    fn forced_color_vars_follow_the_terminal() {
+        assert_eq!(forced_color_vars(ColorOutput::Plain, |_| false), Vec::new());
+        assert_eq!(
+            forced_color_vars(ColorOutput::Terminal, |_| false),
+            vec![("FORCE_COLOR", "1"), ("CLICOLOR_FORCE", "1")]
+        );
+    }
+
+    #[test]
+    fn forced_color_vars_keep_what_is_already_set() {
+        assert_eq!(
+            forced_color_vars(ColorOutput::Terminal, |name| name == "FORCE_COLOR"),
+            vec![("CLICOLOR_FORCE", "1")]
+        );
     }
 }

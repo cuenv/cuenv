@@ -328,6 +328,15 @@ A group or a sequence runs its own children, in parallel or in order. Whatever
 those children depend on outside it, in the same project or another, runs
 first.
 
+### Colour in task output
+
+cuenv captures a task's output, so a program would normally drop its colour.
+When cuenv's own output is a terminal it sets `FORCE_COLOR=1` and
+`CLICOLOR_FORCE=1` for the task, unless the task or your environment sets them.
+When cuenv's output is redirected, or `NO_COLOR` is set, it sets neither, so a
+task that prints data such as JSON never receives colour codes. Set
+`FORCE_COLOR` in the task's `env` to colour it anyway.
+
 ## Caching
 
 cuenv supports task-result caching. Caching is opt-in per task through
