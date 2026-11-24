@@ -25,6 +25,7 @@ use super::overlay::{CellOverlaySpan, OverlayKind, TerminalOverlays};
 use super::palette::{self, Command as PaletteCommand, Item as PaletteItem, Mode as PaletteMode};
 use super::presentation::{DeviceGrid, ScaleFactor, TerminalMetrics, TerminalTheme};
 use super::scrollbar::ScrollExtent;
+use super::selection::SelectionUnit;
 use super::sizing::CellSize;
 use super::tab_label::{PaneActivity, TabLabelSources};
 use super::tab_rename::{RenameKey, TabRename};
@@ -1826,18 +1827,24 @@ fn viewport_hit(
 
 const SELECTION_SCROLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
 
-/// The first and last grid rows are the drag-to-scroll zones.
-fn selection_scroll_direction(y: f32, hit: CellHitTest) -> i32 {
+/// How many lines a drag at `y` scrolls each tick: positive into history, negative
+/// towards the live screen. The first and last grid rows are the drag-to-scroll zones,
+/// where a drag scrolls one line a tick. Past the grid's edge it scrolls one more line a
+/// tick for every row of distance, up to a screen a tick.
+fn selection_scroll_lines(y: f32, hit: CellHitTest) -> i32 {
     if hit.rows == 0 {
         return 0;
     }
     let height = hit.cell_height.max(1.0);
     let bottom = height * hit.rows as f32;
     let edge = height.min(bottom / 2.0);
+    let cap = i32::try_from(hit.rows).unwrap_or(i32::MAX);
+    // A float-to-int `as` saturates, so a pointer far off screen stays in range.
+    let speed = |past: f32| ((past.max(0.0) / height) as i32).saturating_add(1).min(cap);
     if y < edge {
-        1
+        speed(-y)
     } else if y >= bottom - edge {
-        -1
+        -speed(y - bottom)
     } else {
         0
     }
@@ -2135,7 +2142,10 @@ fn terminal_key_input(key: &str, key_char: Option<&str>) -> Option<KeyInput> {
         "right" => Some(KeyInput::Right),
         "home" => Some(KeyInput::Home),
         "end" => Some(KeyInput::End),
+        "insert" => Some(KeyInput::Insert),
         "delete" => Some(KeyInput::Delete),
+        "pageup" => Some(KeyInput::PageUp),
+        "pagedown" => Some(KeyInput::PageDown),
         "space" => Some(KeyInput::Character(' ')),
         _ => key_char
             .and_then(single_character)
@@ -3635,7 +3645,9 @@ impl TerminalView {
         };
         if let Some(state) = self.active_state_mut() {
             state.interaction.begin_selection(hit_test, position);
-            state.session.begin_selection(position);
+            state
+                .session
+                .begin_selection(position, SelectionUnit::from_click_count(event.click_count));
             state.selection_dragging = true;
             let generation = state.generation;
             self.selection_gesture_id = self.selection_gesture_id.wrapping_add(1);
@@ -3723,15 +3735,16 @@ impl TerminalView {
         let Some(state) = self.active_state() else {
             return false;
         };
-        let direction = selection_scroll_direction(hit.relative_y, hit.grid);
+        let lines = selection_scroll_lines(hit.relative_y, hit.grid);
         let Some((offset, history)) = state.frame.viewport_offset.zip(state.frame.scrollback_rows)
         else {
             return true;
         };
-        let target = match direction {
-            1 => offset.saturating_add(1).min(history),
-            -1 => offset.saturating_sub(1),
-            _ => offset,
+        let step = lines.unsigned_abs() as usize;
+        let target = if lines > 0 {
+            offset.saturating_add(step).min(history)
+        } else {
+            offset.saturating_sub(step)
         };
         if target != offset {
             self.scroll_active(TerminalScroll::ToOffset(target));
@@ -4386,19 +4399,39 @@ mod tests {
             rows: 4,
             columns: 10,
         };
-        assert_eq!(selection_scroll_direction(-30.0, hit), 1);
-        assert_eq!(selection_scroll_direction(19.9, hit), 1);
-        assert_eq!(selection_scroll_direction(20.0, hit), 0);
-        assert_eq!(selection_scroll_direction(59.9, hit), 0);
-        assert_eq!(selection_scroll_direction(60.0, hit), -1);
-        assert_eq!(selection_scroll_direction(100.0, hit), -1);
+        assert_eq!(selection_scroll_lines(19.9, hit), 1);
+        assert_eq!(selection_scroll_lines(20.0, hit), 0);
+        assert_eq!(selection_scroll_lines(59.9, hit), 0);
+        assert_eq!(selection_scroll_lines(60.0, hit), -1);
+        assert_eq!(selection_scroll_lines(80.0, hit), -1);
         let single = CellHitTest { rows: 1, ..hit };
-        assert_eq!(selection_scroll_direction(5.0, single), 1);
-        assert_eq!(selection_scroll_direction(15.0, single), -1);
+        assert_eq!(selection_scroll_lines(5.0, single), 1);
+        assert_eq!(selection_scroll_lines(15.0, single), -1);
         assert_eq!(
-            selection_scroll_direction(0.0, CellHitTest { rows: 0, ..hit }),
+            selection_scroll_lines(0.0, CellHitTest { rows: 0, ..hit }),
             0
         );
+    }
+
+    #[test]
+    fn selection_scrolling_speeds_up_with_distance_past_the_edge() {
+        let hit = CellHitTest {
+            cell_width: 8.0,
+            cell_height: 20.0,
+            rows: 4,
+            columns: 10,
+        };
+        // Just past the edge it still creeps; each further row adds a line a tick.
+        assert_eq!(selection_scroll_lines(-1.0, hit), 1);
+        assert_eq!(selection_scroll_lines(-20.0, hit), 2);
+        assert_eq!(selection_scroll_lines(-45.0, hit), 3);
+        assert_eq!(selection_scroll_lines(81.0, hit), -1);
+        assert_eq!(selection_scroll_lines(100.0, hit), -2);
+        assert_eq!(selection_scroll_lines(125.0, hit), -3);
+        // No faster than a screen a tick, however far the pointer goes.
+        assert_eq!(selection_scroll_lines(-1_000.0, hit), 4);
+        assert_eq!(selection_scroll_lines(f32::MAX, hit), -4);
+        assert_eq!(selection_scroll_lines(f32::MIN, hit), 4);
     }
 
     struct FakeSession {
@@ -4443,7 +4476,7 @@ mod tests {
             Ok(())
         }
 
-        fn begin_selection(&mut self, _: LogicalPosition) {}
+        fn begin_selection(&mut self, _: LogicalPosition, _: SelectionUnit) {}
 
         fn extend_selection(&mut self, _: LogicalPosition) -> bool {
             true
@@ -5292,7 +5325,17 @@ mod tests {
             terminal_key_input("space", None),
             Some(KeyInput::Character(' '))
         );
-        assert_eq!(terminal_key_input("pageup", None), None);
+        assert_eq!(terminal_key_input("f13", None), None);
+    }
+
+    #[test]
+    fn paging_keys_reach_the_program_in_the_terminal() {
+        assert_eq!(terminal_key_input("pageup", None), Some(KeyInput::PageUp));
+        assert_eq!(
+            terminal_key_input("pagedown", None),
+            Some(KeyInput::PageDown)
+        );
+        assert_eq!(terminal_key_input("insert", None), Some(KeyInput::Insert));
     }
 
     #[test]

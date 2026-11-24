@@ -8,6 +8,30 @@ pub struct LogicalPosition {
     pub column: usize,
 }
 
+/// What one pointer press selects, and what a drag from it grows by.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SelectionUnit {
+    /// A single click: the drag selects exactly the cells it covers.
+    #[default]
+    Cell,
+    /// A double click: the word under the pointer, growing a word at a time.
+    Word,
+    /// A triple click: the whole line, growing a line at a time.
+    Line,
+}
+
+impl SelectionUnit {
+    /// The unit a press selects by how many clicks it ended in a row. A fourth click
+    /// starts over at a single cell.
+    pub fn from_click_count(clicks: usize) -> Self {
+        match clicks {
+            2 => Self::Word,
+            3 => Self::Line,
+            _ => Self::Cell,
+        }
+    }
+}
+
 pub trait TextSource {
     fn line_count(&self) -> usize;
     fn line_cells(&self, line: usize) -> &[TerminalCell];
