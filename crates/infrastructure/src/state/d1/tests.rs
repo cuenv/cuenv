@@ -209,7 +209,6 @@ fn run(
     let mut statement = database.prepare(sql).map_err(|error| error.to_string())?;
     let columns: Vec<String> = statement
         .column_names()
-        .into_iter()
         .map(str::to_string)
         .collect();
     let mut rows = statement
