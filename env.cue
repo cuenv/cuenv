@@ -593,15 +593,6 @@ schema.#Project & {
 				command: "bash"
 				args: ["-c", """
 					set -euo pipefail
-					mkdir -p .cuenv-home .cuenv-cache .cuenv-tmp
-					task_root="$PWD"
-					trap 'rm -rf "$task_root/.cuenv-home" "$task_root/.cuenv-cache" "$task_root/.cuenv-tmp"' EXIT
-					export HOME="$task_root/.cuenv-home"
-					export XDG_CACHE_HOME="$task_root/.cuenv-cache"
-					export TMPDIR="$task_root/.cuenv-tmp"
-					export TMP="$TMPDIR"
-					export TEMP="$TMPDIR"
-
 					bun install --frozen-lockfile
 					cd docs
 					bun run build
@@ -621,15 +612,6 @@ schema.#Project & {
 				command: "bash"
 				args: ["-c", """
 					set -euo pipefail
-					mkdir -p .cuenv-home .cuenv-cache .cuenv-tmp
-					task_root="$PWD"
-					trap 'rm -rf "$task_root/.cuenv-home" "$task_root/.cuenv-cache" "$task_root/.cuenv-tmp"' EXIT
-					export HOME="$task_root/.cuenv-home"
-					export XDG_CACHE_HOME="$task_root/.cuenv-cache"
-					export TMPDIR="$task_root/.cuenv-tmp"
-					export TMP="$TMPDIR"
-					export TEMP="$TMPDIR"
-
 					bun install --frozen-lockfile
 					cd docs
 					bunx --no-install wrangler deploy
@@ -654,15 +636,6 @@ schema.#Project & {
 				command: "bash"
 				args: ["-c", """
 					set -euo pipefail
-					mkdir -p .cuenv-home .cuenv-cache .cuenv-tmp
-					task_root="$PWD"
-					trap 'rm -rf "$task_root/.cuenv-home" "$task_root/.cuenv-cache" "$task_root/.cuenv-tmp"' EXIT
-					export HOME="$task_root/.cuenv-home"
-					export XDG_CACHE_HOME="$task_root/.cuenv-cache"
-					export TMPDIR="$task_root/.cuenv-tmp"
-					export TMP="$TMPDIR"
-					export TEMP="$TMPDIR"
-
 					# Pull request runs check out refs/pull/<number>/merge.
 					pr="${REF%%/*}"
 					if ! [[ "$pr" =~ ^[0-9]+$ ]]; then
@@ -738,15 +711,6 @@ schema.#Project & {
 				command: "bash"
 				args: ["-c", """
 					set -euo pipefail
-					mkdir -p .cuenv-home .cuenv-cache .cuenv-tmp
-					task_root="$PWD"
-					trap 'rm -rf "$task_root/.cuenv-home" "$task_root/.cuenv-cache" "$task_root/.cuenv-tmp"' EXIT
-					export HOME="$task_root/.cuenv-home"
-					export XDG_CACHE_HOME="$task_root/.cuenv-cache"
-					export TMPDIR="$task_root/.cuenv-tmp"
-					export TMP="$TMPDIR"
-					export TEMP="$TMPDIR"
-
 					nix build .#cuenv -L --accept-flake-config
 					"""]
 				inputs: _flakeInputs

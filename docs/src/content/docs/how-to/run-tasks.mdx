@@ -897,6 +897,11 @@ home. Declared environment values can override the defaults. For
 host-executed tasks, use `hermetic: false` when a task needs the
 caller's actual home and ambient environment.
 
+That home is writable and persists between runs, so tool caches under it
+(Bun's install cache, Cargo's registry, Nix's eval cache) survive. A task does
+not need to point `HOME`, `XDG_CACHE_HOME`, or `TMPDIR` at a scratch
+directory of its own, and doing so throws those caches away on every run.
+
 Set `hermetic: false` for tasks that intentionally operate on the live
 checkout, such as local development servers, dependency installers, or
 commands that manage files outside the declared input/output boundary.
