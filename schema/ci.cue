@@ -22,10 +22,18 @@ package schema
 	release?: [...string] // release event types e.g. ["published"]
 }
 
-// Token requirements are unioned per job. Pipeline maps only cap named scopes.
+// Token requirements are unioned per job. Pipeline maps cap named scopes;
+// an explicit empty `{}` at pipeline or task level emits `permissions: {}`
+// and forbids widening.
 #GitHubPermissions: {
-	["contents" | "checks" | "pull-requests" | "issues" | "packages" | "actions"]: "none" | "read" | "write"
-	"id-token"?:                                                                   "none" | "write"
+	[
+		"actions" | "artifact-metadata" | "attestations" | "checks" |
+		"contents" | "deployments" | "discussions" | "issues" |
+		"packages" | "pages" | "pull-requests" | "repository-projects" |
+		"security-events" | "statuses",
+	]: "none" | "read" | "write"
+	"id-token"?: "none" | "write"
+	"models"?:   "none" | "read"
 }
 
 // Task and contributor-step token requirements.
@@ -44,6 +52,8 @@ package schema
 
 // GitHub Actions provider configuration
 #GitHubConfig: {
+	// Dynamic display name for workflow runs (emitted as top-level `run-name`)
+	runName?: string
 	runner?: string | [...string]
 	// Runner mapping for matrix dimensions (e.g., arch -> runner name)
 	runners?: {
@@ -68,7 +78,8 @@ package schema
 		cueRegistry?: bool // Enable trusted publishing for the CUE Registry
 	}
 	// Ceiling for named scopes: omitted scopes are unrestricted; none forbids.
-	// This never grants a permission. Per-pipeline maps replace global maps.
+	// An explicit empty `{}` emits top-level `permissions: {}` and forbids widening.
+	// Per-pipeline maps replace global maps.
 	permissions?: #GitHubPermissions
 }
 
@@ -258,6 +269,26 @@ package schema
 // Used to specify which CI providers should emit workflow manifests
 #CIProvider: "github" | "buildkite" | "gitlab"
 
+// Per-event cancel-in-progress map for workflow concurrency
+#CancelInProgressByEvent: {
+	pullRequest?: bool
+	push?:        bool
+	mergeGroup?:  bool
+	workflowRun?: bool
+	manual?:      bool
+	scheduled?:   bool
+	release?:     bool
+}
+
+// Workflow or job concurrency configuration
+#Concurrency: {
+	// Concurrency group name or expression.
+	// When omitted at workflow level, defaults to `${{ github.workflow }}-${{ github.head_ref || github.ref }}`.
+	group?: string
+	// Whether to cancel in-progress runs: a bool, an expression string, or a per-event map.
+	cancelInProgress?: bool | string | #CancelInProgressByEvent
+}
+
 #Pipeline: {
 	// Generation mode for this pipeline (default: "thin")
 	mode?: #PipelineMode | *"thin"
@@ -282,6 +313,9 @@ package schema
 	// dropped. The pipeline still exits non-zero overall if any task
 	// failed. Default: false (current behaviour — first failure aborts).
 	continueOnError?: bool | *false
+
+	// Workflow-level concurrency configuration (overrides the default concurrency block)
+	concurrency?: #Concurrency
 
 	derivePaths?: bool // whether to derive trigger paths from task inputs
 	provider?:    #ProviderConfig

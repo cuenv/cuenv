@@ -553,3 +553,121 @@ fn test_remote_cache_ambient_mode_gates_manual_and_scheduled_triggers_dynamicall
     assert!(readonly_yaml.contains("CUENV_REMOTE_CACHE_UPLOAD: 'false'"));
     assert!(readonly_yaml.contains("cuenv-cache/untrusted"));
 }
+
+#[test]
+fn workflow_run_name_is_emitted_when_configured_and_omitted_by_default() {
+    let ir = super::make_ir(vec![super::make_task("build", &["cargo", "build"])]);
+
+    let default_emitter = GitHubActionsEmitter::new()
+        .without_nix()
+        .without_cuenv_build();
+    let default_doc: serde_yaml::Value =
+        serde_yaml::from_str(&default_emitter.emit_expanded(&ir).unwrap()).unwrap();
+    assert!(default_doc.get("run-name").is_none());
+
+    let config = crate::config::GitHubConfig {
+        run_name: Some("Deploy main @ ${{ github.sha }}".to_string()),
+        ..Default::default()
+    };
+    let emitter = GitHubActionsEmitter::from_config(&config)
+        .without_nix()
+        .without_cuenv_build();
+    for yaml in [
+        emitter.emit_thin(&ir).unwrap(),
+        emitter.emit_expanded(&ir).unwrap(),
+    ] {
+        let doc: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(
+            doc["run-name"].as_str(),
+            Some("Deploy main @ ${{ github.sha }}")
+        );
+    }
+}
+
+#[test]
+fn workflow_concurrency_supports_bool_expression_and_per_event_map() {
+    use cuenv_core::ci::{CancelInProgressByEvent, CancelInProgressConfig, PipelineConcurrency};
+
+    let emitter = GitHubActionsEmitter::new()
+        .without_nix()
+        .without_cuenv_build();
+
+    // 1. Static false with default group
+    let mut ir_false = super::make_ir(vec![super::make_task("deploy", &["deploy"])]);
+    ir_false.pipeline.concurrency = Some(PipelineConcurrency {
+        group: None,
+        cancel_in_progress: Some(CancelInProgressConfig::Bool(false)),
+    });
+    for yaml in [
+        emitter.emit_thin(&ir_false).unwrap(),
+        emitter.emit_expanded(&ir_false).unwrap(),
+    ] {
+        let doc: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(
+            doc["concurrency"]["group"].as_str(),
+            Some(GitHubActionsEmitter::DEFAULT_CONCURRENCY_GROUP)
+        );
+        assert_eq!(
+            doc["concurrency"]["cancel-in-progress"].as_bool(),
+            Some(false)
+        );
+    }
+
+    // 2. Expression strings for both group and cancel-in-progress
+    let mut ir_expr = super::make_ir(vec![super::make_task("check", &["check"])]);
+    ir_expr.pipeline.concurrency = Some(PipelineConcurrency {
+        group: Some(
+            "pr-title-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}"
+                .to_string(),
+        ),
+        cancel_in_progress: Some(CancelInProgressConfig::Expression(
+            "${{ github.event_name == 'pull_request' }}".to_string(),
+        )),
+    });
+    let expr_doc: serde_yaml::Value =
+        serde_yaml::from_str(&emitter.emit_expanded(&ir_expr).unwrap()).unwrap();
+    assert_eq!(
+        expr_doc["concurrency"]["cancel-in-progress"].as_str(),
+        Some("${{ github.event_name == 'pull_request' }}")
+    );
+    assert!(
+        expr_doc["concurrency"]["group"]
+            .as_str()
+            .unwrap()
+            .starts_with("pr-title-")
+    );
+
+    // 3. Per-event map rendered as an expression
+    let mut ir_events = super::make_ir(vec![super::make_task("check", &["check"])]);
+    ir_events.pipeline.concurrency = Some(PipelineConcurrency {
+        group: None,
+        cancel_in_progress: Some(CancelInProgressConfig::ByEvent(CancelInProgressByEvent {
+            pull_request: Some(true),
+            push: Some(false),
+            ..Default::default()
+        })),
+    });
+    let events_doc: serde_yaml::Value =
+        serde_yaml::from_str(&emitter.emit_expanded(&ir_events).unwrap()).unwrap();
+    assert_eq!(
+        events_doc["concurrency"]["cancel-in-progress"].as_str(),
+        Some("${{ github.event_name == 'pull_request' }}")
+    );
+
+    // 4. Per-event map with all false simplifies to boolean false
+    let mut ir_none = super::make_ir(vec![super::make_task("release", &["release"])]);
+    ir_none.pipeline.concurrency = Some(PipelineConcurrency {
+        group: Some("release-${{ github.ref }}".to_string()),
+        cancel_in_progress: Some(CancelInProgressConfig::ByEvent(CancelInProgressByEvent {
+            pull_request: Some(false),
+            push: Some(false),
+            ..Default::default()
+        })),
+    });
+    let none_doc: serde_yaml::Value =
+        serde_yaml::from_str(&emitter.emit_expanded(&ir_none).unwrap()).unwrap();
+    assert_eq!(
+        none_doc["concurrency"]["cancel-in-progress"].as_bool(),
+        Some(false)
+    );
+}

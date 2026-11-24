@@ -80,6 +80,7 @@ pub fn build_hestia_gc_workflow() -> Workflow {
 
     Workflow {
         name: "Hestia Cache GC".to_string(),
+        run_name: None,
         on: WorkflowTriggers {
             schedule: Some(vec![ScheduleTrigger {
                 cron: "23 3 * * *".to_string(),
@@ -91,7 +92,7 @@ pub fn build_hestia_gc_workflow() -> Workflow {
         },
         concurrency: Some(Concurrency {
             group: "hestia-gc".to_string(),
-            cancel_in_progress: Some(false),
+            cancel_in_progress: Some(crate::workflow::schema::CancelInProgress::Bool(false)),
         }),
         permissions: None,
         env: IndexMap::new(),

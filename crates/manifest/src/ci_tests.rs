@@ -280,6 +280,7 @@ fn test_providers_for_pipeline_global() {
                 tasks: vec![],
                 annotations: HashMap::new(),
                 continue_on_error: false,
+                concurrency: None,
                 derive_paths: None,
                 provider: None,
             },
@@ -303,6 +304,7 @@ fn test_providers_for_pipeline_override() {
                 tasks: vec![],
                 annotations: HashMap::new(),
                 continue_on_error: false,
+                concurrency: None,
                 derive_paths: None,
                 provider: None,
             },
@@ -422,4 +424,43 @@ fn test_pipeline_with_annotations() {
         Some(AnnotationValue::CaptureRef { cuenv_task, cuenv_capture, .. })
         if cuenv_task == "deploy.preview" && cuenv_capture == "previewUrl"
     ));
+}
+
+#[test]
+fn test_pipeline_concurrency_variants() {
+    use super::{CancelInProgressConfig, TaskGitHubConfig};
+
+    let bool_json = r#"{"tasks": [], "concurrency": {"cancelInProgress": false}}"#;
+    let p_bool: Pipeline = serde_json::from_str(bool_json).unwrap();
+    assert_eq!(
+        p_bool
+            .concurrency
+            .as_ref()
+            .and_then(|c| c.cancel_in_progress.as_ref()),
+        Some(&CancelInProgressConfig::Bool(false))
+    );
+
+    let expr_json = r#"{"tasks": [], "concurrency": {"group": "g-${{ github.ref }}", "cancelInProgress": "${{ github.event_name == 'pull_request' }}"}}"#;
+    let p_expr: Pipeline = serde_json::from_str(expr_json).unwrap();
+    assert_eq!(
+        p_expr.concurrency.as_ref().and_then(|c| c.group.as_deref()),
+        Some("g-${{ github.ref }}")
+    );
+    assert!(matches!(
+        p_expr.concurrency.as_ref().and_then(|c| c.cancel_in_progress.as_ref()),
+        Some(CancelInProgressConfig::Expression(s)) if s == "${{ github.event_name == 'pull_request' }}"
+    ));
+
+    let map_json = r#"{"tasks": [], "concurrency": {"cancelInProgress": {"pullRequest": true, "push": false}}}"#;
+    let p_map: Pipeline = serde_json::from_str(map_json).unwrap();
+    assert!(matches!(
+        p_map.concurrency.as_ref().and_then(|c| c.cancel_in_progress.as_ref()),
+        Some(CancelInProgressConfig::ByEvent(ev)) if ev.pull_request == Some(true) && ev.push == Some(false)
+    ));
+
+    let omitted: TaskGitHubConfig = serde_json::from_str("{}").unwrap();
+    assert_eq!(omitted.permissions, None);
+
+    let explicit_empty: TaskGitHubConfig = serde_json::from_str(r#"{"permissions": {}}"#).unwrap();
+    assert_eq!(explicit_empty.permissions, Some(BTreeMap::new()));
 }

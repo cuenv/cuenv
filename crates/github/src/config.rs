@@ -13,6 +13,8 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct GitHubConfig {
+    /// Dynamic display name for workflow runs (emitted as top-level `run-name`)
+    pub run_name: Option<String>,
     /// Runner label(s) - single string or array of labels
     pub runner: Option<StringOrVec>,
     /// Runner mapping for matrix dimensions
@@ -27,7 +29,8 @@ pub struct GitHubConfig {
     pub artifacts: Option<ArtifactsConfig>,
     /// Trusted publishing configuration (OIDC-based, no secrets needed)
     pub trusted_publishing: Option<TrustedPublishingConfig>,
-    /// Ceilings for explicitly named token scopes; never grants access
+    /// Ceilings for explicitly named token scopes; never grants access.
+    /// An explicit empty map emits top-level `permissions: {}` and forbids widening.
     pub permissions: Option<HashMap<String, String>>,
 }
 
@@ -112,6 +115,7 @@ impl GitHubConfigExt for CI {
 
         match pipeline_config {
             Some(pipeline) => GitHubConfig {
+                run_name: pipeline.run_name.clone().or(global.run_name),
                 runner: pipeline.runner.clone().or(global.runner),
                 runners: pipeline.runners.clone().or(global.runners),
                 cachix: pipeline.cachix.clone().or(global.cachix),

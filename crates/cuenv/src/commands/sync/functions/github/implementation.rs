@@ -242,6 +242,7 @@ pub(super) struct PipelineContext {
     pub(super) mode: cuenv_core::ci::PipelineMode,
     pub(super) github_config: cuenv_github::config::GitHubConfig,
     pub(super) trigger: cuenv_ci::ir::TriggerCondition,
+    pub(super) concurrency: Option<cuenv_core::ci::PipelineConcurrency>,
     pub(super) project_name: Option<String>,
     /// Relative path to project directory (for working-directory in monorepos)
     pub(super) project_path: Option<String>,
@@ -268,6 +269,7 @@ impl PipelineContext {
                 project_name: self.project_name.clone(),
                 project_path: self.project_path.clone(),
                 trigger: Some(self.trigger.clone()),
+                concurrency: self.concurrency.clone(),
                 pipeline_tasks: self
                     .pipeline_tasks
                     .iter()
@@ -470,6 +472,7 @@ fn build_project_pipeline_context(request: WorkflowRequest<'_>) -> Result<Pipeli
         mode: pipeline.mode,
         github_config: ci.github_config_for_pipeline(pipeline_name),
         trigger,
+        concurrency: pipeline.concurrency.clone(),
         project_name: Some(project.config.name.clone()),
         project_path: project_path_for_compiler,
         environment: pipeline.environment.clone(),
@@ -694,7 +697,7 @@ fn emit_standard_workflow(
     pipeline_name: &str,
     ctx: &PipelineContext,
 ) -> Result<Vec<(String, String)>> {
-    use cuenv_github::workflow::schema::{Concurrency, Workflow};
+    use cuenv_github::workflow::schema::Workflow;
     use indexmap::IndexMap;
 
     let workflow_name = match &ctx.project_name {
@@ -704,6 +707,9 @@ fn emit_standard_workflow(
 
     let ir = ctx.to_ir(pipeline_name);
     let emitter = ctx.github_emitter();
+    emitter
+        .validate_workflow_permissions(&ir)
+        .map_err(|e| cuenv_core::Error::configuration(e.to_string()))?;
     let cuenv_setup = pipeline_cuenv_setup(ctx, &emitter, &ir);
 
     // Build jobs using build_simple_job (which supports project_path for working-directory)
@@ -739,12 +745,12 @@ fn emit_standard_workflow(
 
     let workflow = Workflow {
         name: workflow_name.clone(),
+        run_name: emitter.run_name.clone(),
         on: emitter.build_triggers(&ir, &filename),
-        concurrency: Some(Concurrency {
-            group: "${{ github.workflow }}-${{ github.head_ref || github.ref }}".to_string(),
-            cancel_in_progress: Some(true),
-        }),
-        permissions: None,
+        concurrency: Some(
+            cuenv_github::workflow::GitHubActionsEmitter::build_workflow_concurrency(&ir),
+        ),
+        permissions: emitter.workflow_permissions(),
         env: IndexMap::new(),
         jobs,
     };
@@ -859,6 +865,7 @@ mod tests {
                 project_name: None,
                 project_path: None,
                 trigger: None,
+                concurrency: None,
                 pipeline_tasks: vec![],
                 pipeline_task_defs: vec![],
             },
@@ -897,6 +904,7 @@ mod tests {
             condition: None,
             github_task_filter: Vec::new(),
             github_permissions: std::collections::BTreeMap::new(),
+            github_permissions_mode: cuenv_ci::ir::GitHubPermissionsMode::Inferred,
             github_execution: None,
             provider_hints: None,
             external_dependencies: Vec::new(),
@@ -956,6 +964,7 @@ mod tests {
             condition: None,
             github_task_filter: Vec::new(),
             github_permissions: std::collections::BTreeMap::new(),
+            github_permissions_mode: cuenv_ci::ir::GitHubPermissionsMode::Inferred,
             github_execution: None,
             provider_hints: None,
             external_dependencies: Vec::new(),
@@ -1001,6 +1010,7 @@ mod tests {
                 manual: None,
                 paths: vec![],
             },
+            concurrency: None,
             project_name: Some("test".to_string()),
             project_path: None,
             environment: None,

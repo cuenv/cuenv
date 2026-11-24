@@ -383,6 +383,57 @@ pub enum PipelineMode {
     Expanded,
 }
 
+/// Per-event cancel-in-progress configuration for workflow concurrency.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct CancelInProgressByEvent {
+    /// Cancel superseded pull request runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pull_request: Option<bool>,
+    /// Cancel superseded push runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub push: Option<bool>,
+    /// Cancel superseded merge group runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merge_group: Option<bool>,
+    /// Cancel superseded `workflow_run` runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_run: Option<bool>,
+    /// Cancel superseded manual (`workflow_dispatch`) runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manual: Option<bool>,
+    /// Cancel superseded scheduled runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scheduled: Option<bool>,
+    /// Cancel superseded release runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release: Option<bool>,
+}
+
+/// How `cancel-in-progress` is configured in a concurrency block.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum CancelInProgressConfig {
+    /// Static boolean (`true` or `false`).
+    Bool(bool),
+    /// Expression string (e.g., `${{ github.event_name == 'pull_request' }}`).
+    Expression(String),
+    /// Per-event map rendered into a GitHub Actions expression.
+    ByEvent(CancelInProgressByEvent),
+}
+
+/// Workflow or job concurrency configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PipelineConcurrency {
+    /// Concurrency group name or expression.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+    /// Whether to cancel in-progress runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cancel_in_progress: Option<CancelInProgressConfig>,
+}
+
 /// A named CI pipeline: trigger conditions plus the tasks it runs.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
@@ -412,6 +463,9 @@ pub struct Pipeline {
     /// Defaults to `false` (current behaviour — first failure aborts).
     #[serde(default)]
     pub continue_on_error: bool,
+    /// Workflow-level concurrency configuration (overrides the default concurrency block).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub concurrency: Option<PipelineConcurrency>,
     /// Whether to derive trigger paths from task inputs.
     /// Defaults to true for branch/PR triggers, false for scheduled-only.
     pub derive_paths: Option<bool>,
@@ -554,8 +608,9 @@ pub struct TaskGitHubConfig {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tasks: Vec<String>,
     /// Required token scopes and access levels.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub permissions: BTreeMap<String, String>,
+    /// `Some({})` means an explicit empty `permissions: {}` block.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permissions: Option<BTreeMap<String, String>>,
     /// Tasks only: how the task's job runs it. Unset uses the pipeline's default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution: Option<TaskGitHubExecution>,
