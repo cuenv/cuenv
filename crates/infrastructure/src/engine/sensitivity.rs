@@ -132,7 +132,7 @@ impl InfrastructureEngine {
                 sensitive.extend(resource_sensitivity(record, schema));
                 sensitive.sort();
                 sensitive.dedup();
-                register_stored_values(record, &sensitive);
+                register_stored_values(record, &sensitive, &schema.block.implied_type());
             }
             self.output_sensitivity.insert(source.clone(), sensitive);
         }
@@ -190,13 +190,82 @@ pub(super) fn retained_sensitive_record(
     Some(retained)
 }
 
+/// Register the string values of a stored record before any provider schema
+/// is loaded. Object keys wait for [`register_stored_values`]: without a
+/// schema, a fixed field label such as `name` or `token` cannot be told apart
+/// from a map key, and registering labels would redact those words in all
+/// output for the rest of the run. Every path that hands the record to a
+/// provider registers it again with the schema first.
+pub(super) fn register_stored_strings(row: &ManagedResource) {
+    for name in &row.sensitive_attributes {
+        if let Some(value) = row.state.get(name) {
+            register_json_leaves(value);
+        }
+    }
+}
+
+fn register_json_leaves(value: &serde_json::Value) {
+    match value {
+        serde_json::Value::String(text) => cuenv_events::register_secret(text.clone()),
+        serde_json::Value::Array(values) => values.iter().for_each(register_json_leaves),
+        serde_json::Value::Object(values) => values.values().for_each(register_json_leaves),
+        _ => {}
+    }
+}
+
 /// Register raw JSON before attempting a decode against a potentially newer
-/// schema. Historical names must still protect values the new schema cannot see.
-pub(super) fn register_stored_values(row: &ManagedResource, names: &[String]) {
+/// schema. Historical names must still protect values the new schema cannot
+/// see: a key the current schema does not declare is registered with its
+/// whole subtree, as are map keys. Fixed field labels are schema metadata.
+pub(super) fn register_stored_values(row: &ManagedResource, names: &[String], value_type: &Type) {
+    let attributes = match value_type {
+        Type::Object(attributes) => Some(attributes),
+        _ => None,
+    };
     for name in names.iter().chain(&row.sensitive_attributes) {
         if let Some(value) = row.state.get(name) {
-            register_json_strings(value);
+            match attributes.and_then(|attributes| attributes.get(name)) {
+                Some(value_type) => register_typed_json(value, value_type),
+                None => register_json_strings(value),
+            }
         }
+    }
+}
+
+fn register_typed_json(value: &serde_json::Value, value_type: &Type) {
+    match (value, value_type) {
+        (serde_json::Value::Object(values), Type::Object(attributes)) => {
+            for (name, value) in values {
+                if let Some(value_type) = attributes.get(name) {
+                    register_typed_json(value, value_type);
+                } else {
+                    cuenv_events::register_secret(name.clone());
+                    register_json_strings(value);
+                }
+            }
+        }
+        (serde_json::Value::Object(values), Type::Map(element)) => {
+            for (name, value) in values {
+                cuenv_events::register_secret(name.clone());
+                register_typed_json(value, element);
+            }
+        }
+        (serde_json::Value::Array(values), Type::List(element) | Type::Set(element)) => {
+            for value in values {
+                register_typed_json(value, element);
+            }
+        }
+        (serde_json::Value::Array(values), Type::Tuple(elements)) => {
+            for (index, value) in values.iter().enumerate() {
+                match elements.get(index) {
+                    Some(value_type) => register_typed_json(value, value_type),
+                    None => register_json_strings(value),
+                }
+            }
+        }
+        // Dynamic values, and stored shapes the current schema does not
+        // describe, stay conservative.
+        _ => register_json_strings(value),
     }
 }
 
