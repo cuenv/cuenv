@@ -104,13 +104,7 @@ let
       (fs.fileFilter (file: file.hasExt "rs" || file.name == "Cargo.toml") (toRepoPath "crates"))
     ]
   );
-  xcodeXcrun = pkgs.writeShellScriptBin "xcrun" ''
-    unset DEVELOPER_DIR SDKROOT
-    exec /usr/bin/xcrun "$@"
-  '';
-  nativeBuildInputs = lib.optionals pkgs.stdenv.hostPlatform.isDarwin [ xcodeXcrun ] ++ [
-    pkgs.pkg-config
-  ];
+  nativeBuildInputs = [ pkgs.pkg-config ];
   buildInputs =
     lib.optionals pkgs.stdenv.hostPlatform.isDarwin [ pkgs.libiconv ]
     ++ lib.optionals pkgs.stdenv.hostPlatform.isLinux [
