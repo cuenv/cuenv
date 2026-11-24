@@ -117,7 +117,7 @@ impl MacosSandboxPlan {
     }
 
     pub(super) fn build_command(&self, program: &str, args: &[String]) -> Command {
-        let mut command = Command::new(SANDBOX_EXEC_BIN);
+        let mut command = crate::process::task_command(SANDBOX_EXEC_BIN);
         command.arg("-p").arg(&self.profile).arg(program).args(args);
         command
     }

@@ -50,6 +50,7 @@ pub use index::{IndexedTask, TaskIndex, TaskPath, WorkspaceTask};
 pub use output_refs::{
     OutputRefResolver, TaskOutputField, TaskOutputRef, has_output_refs, process_output_refs,
 };
+pub use process::supervise_tasks_with;
 pub use process_registry::global_registry;
 pub use result::CacheSource;
 pub use scope::{
