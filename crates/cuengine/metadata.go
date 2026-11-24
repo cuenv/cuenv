@@ -272,7 +272,7 @@ func extractReferencesFromExpr(expr ast.Expr, fieldPath, instancePath string, re
 			// Only record if it looks like a task reference (not a built-in type)
 			if ident, ok := elem.(*ast.Ident); ok {
 				// Skip CUE built-in types and reserved identifiers
-				if !isBuiltinType(ident.Name) {
+				if !isBuiltinType(ident.Name) && !strings.HasPrefix(ident.Name, "#") {
 					metaKey := makeMetaKey(instancePath, indexPath)
 					refs[metaKey] = identPath(ident)
 				}
@@ -281,7 +281,7 @@ func extractReferencesFromExpr(expr ast.Expr, fieldPath, instancePath string, re
 			// Selector expression (e.g., `dependsOn: [tasks.build]`)
 			if sel, ok := elem.(*ast.SelectorExpr); ok {
 				refPath := selectorToPath(sel)
-				if refPath != "" {
+				if refPath != "" && !namesDefinition(refPath) {
 					metaKey := makeMetaKey(instancePath, indexPath)
 					refs[metaKey] = refPath
 				}
@@ -330,7 +330,7 @@ func extractReferencesFromExpr(expr ast.Expr, fieldPath, instancePath string, re
 	case *ast.Ident:
 		// Direct identifier reference at field level
 		// Only record if it looks like a reference (not a built-in type)
-		if !isBuiltinType(e.Name) {
+		if !isBuiltinType(e.Name) && !strings.HasPrefix(e.Name, "#") {
 			metaKey := makeMetaKey(instancePath, fieldPath)
 			refs[metaKey] = identPath(e)
 		}
@@ -338,7 +338,7 @@ func extractReferencesFromExpr(expr ast.Expr, fieldPath, instancePath string, re
 	case *ast.SelectorExpr:
 		// Selector expression at field level
 		refPath := selectorToPath(e)
-		if refPath != "" {
+		if refPath != "" && !namesDefinition(refPath) {
 			metaKey := makeMetaKey(instancePath, fieldPath)
 			refs[metaKey] = refPath
 		}
@@ -374,6 +374,15 @@ func isBuiltinType(name string) bool {
 		"true": true, "false": true,
 	}
 	return builtins[name]
+}
+
+// namesDefinition reports whether a dotted path ends in a definition such as
+// `schema.#Task`. A definition is a type that values are unified with, not a
+// value another field refers to, so `schema.#Task & {...}` written in place
+// does not reference anything.
+func namesDefinition(path string) bool {
+	segments := strings.Split(path, ".")
+	return strings.HasPrefix(segments[len(segments)-1], "#")
 }
 
 // selectorToPath converts a selector expression to a dotted path string

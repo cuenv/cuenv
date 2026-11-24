@@ -20,6 +20,7 @@ use crate::report::{ContextReport, PipelineReport, PipelineStatus};
 use chrono::{DateTime, Utc};
 use cuenv_core::ci::PipelineTask;
 use cuenv_core::manifest::Project;
+use cuenv_core::tasks::TaskNode;
 use cuenv_core::tasks::file_references::ReferenceChecks;
 use cuenv_core::{DryRun, Result};
 use cuenv_task_exec::TaskIndex;
@@ -211,6 +212,40 @@ struct DiscoveredCiProjects {
 type ProjectDependencyMap = HashMap<String, (PathBuf, Project)>;
 type ProjectConfigMap = HashMap<PathBuf, Project>;
 
+/// Add the tasks the project's pipelines define inline to its tasks, so a
+/// pipeline entry resolves, runs and is compared with changes like any other.
+///
+/// An inline task is named by its `description`. A name that a different
+/// project task already has is an error: a reference to it would be ambiguous.
+fn with_inline_pipeline_tasks(mut project: Project) -> Result<Project> {
+    let inline: Vec<(String, TaskNode)> = project
+        .ci
+        .iter()
+        .flat_map(|ci| ci.pipelines.values())
+        .flat_map(|pipeline| pipeline.tasks.iter())
+        .filter_map(|entry| match entry {
+            PipelineTask::Node(node @ TaskNode::Task(_)) => {
+                Some((entry.task_name().to_string(), node.clone()))
+            }
+            _ => None,
+        })
+        .collect();
+    for (name, node) in inline {
+        match project.tasks.get(&name) {
+            Some(existing) if *existing != node => {
+                return Err(cuenv_core::Error::configuration(format!(
+                    "Inline pipeline task '{name}' has the name of a project task; give it a different description"
+                )));
+            }
+            Some(_) => {}
+            None => {
+                project.tasks.insert(name, node);
+            }
+        }
+    }
+    Ok(project)
+}
+
 fn load_ci_projects(path_filter: Option<&str>) -> Result<Option<DiscoveredCiProjects>> {
     // Evaluate module and discover projects
     let module = discovery::evaluate_module_from_cwd()?;
@@ -226,7 +261,7 @@ fn load_ci_projects(path_filter: Option<&str>) -> Result<Option<DiscoveredCiProj
     // nor which directory a project name resolves to may depend on it.
     let mut projects: Vec<(PathBuf, Project)> = Vec::new();
     for instance in module.projects() {
-        let config = instance.to_project()?;
+        let config = with_inline_pipeline_tasks(instance.to_project()?)?;
         let project_path = module.root.join(&instance.path);
         projects.push((project_path, config));
     }
@@ -798,12 +833,19 @@ fn validate_all_pipeline_tasks(
     }
     let index = TaskIndex::build(&config.tasks)?;
     for task in &pipeline.tasks {
-        let PipelineTask::Simple(reference) = task else {
-            return Err(cuenv_core::Error::configuration(
-                "--all requires named task references; inline and matrix pipeline entries are unsupported",
-            ));
-        };
-        index.resolve(reference.task_name())?;
+        match task {
+            PipelineTask::Simple(reference) => {
+                index.resolve(reference.task_name())?;
+            }
+            // An inline task defines itself; the compiler reports a name that
+            // clashes with a project task.
+            PipelineTask::Node(TaskNode::Task(_)) => {}
+            PipelineTask::Matrix(_) | PipelineTask::Node(_) => {
+                return Err(cuenv_core::Error::configuration(
+                    "--all requires named task references or inline tasks; matrix and inline group or sequence pipeline entries are unsupported",
+                ));
+            }
+        }
     }
     Ok(())
 }
@@ -1227,7 +1269,7 @@ mod tests {
     }
 
     #[test]
-    fn all_selection_rejects_inline_task_fallback_names() {
+    fn all_selection_accepts_an_inline_task() {
         let mut config = selection_project();
         config
             .ci
@@ -1237,14 +1279,33 @@ mod tests {
             .get_mut("verify")
             .unwrap()
             .tasks = serde_json::from_value(
-            serde_json::json!([{"command": "false", "description": "changed"}]),
+            serde_json::json!([{"command": "false", "description": "announce"}]),
+        )
+        .unwrap();
+        let config = with_inline_pipeline_tasks(config).unwrap();
+        assert!(config.tasks.contains_key("announce"));
+        assert!(plan_selection(&config, TaskSelection::All, &one_changed_file()).is_ok());
+    }
+
+    #[test]
+    fn an_inline_task_named_like_a_different_project_task_is_rejected() {
+        let mut config = selection_project();
+        config
+            .ci
+            .as_mut()
+            .unwrap()
+            .pipelines
+            .get_mut("verify")
+            .unwrap()
+            .tasks = serde_json::from_value(
+            serde_json::json!([{"command": "false", "description": "unchanged"}]),
         )
         .unwrap();
         assert!(
-            plan_selection(&config, TaskSelection::All, &one_changed_file())
+            with_inline_pipeline_tasks(config)
                 .unwrap_err()
                 .to_string()
-                .contains("named task references")
+                .contains("has the name of a project task")
         );
     }
 
