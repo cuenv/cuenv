@@ -465,10 +465,13 @@ impl GitHubActionsEmitter {
         }
 
         if let Some(concurrency) = &cfg.concurrency {
-            let group = concurrency
-                .group
-                .clone()
-                .unwrap_or_else(|| format!("{}-${{{{ github.ref }}}}", task.id));
+            let group = concurrency.group.clone().unwrap_or_else(|| {
+                // Job concurrency groups are repository-wide, so namespace by workflow.
+                format!(
+                    "${{{{ github.workflow }}}}-{}-${{{{ github.ref }}}}",
+                    task.id
+                )
+            });
             let cancel_in_progress = concurrency
                 .cancel_in_progress
                 .as_ref()
@@ -1283,12 +1286,21 @@ impl GitHubActionsEmitter {
             steps: vec![self.build_checkout_step(None, Some(0)), detect_step],
         };
 
+        // A job named `<task>-<suffix>` is a matrix variant of `<task>` only when
+        // no other task owns that job ID (`check` must not capture `check-web`).
+        let task_job_ids: std::collections::HashSet<String> = ir
+            .regular_tasks()
+            .map(|task| sanitize_job_id(&task.id))
+            .collect();
+
         for (lane_name, lane) in &changes.lanes {
             for task_id in &lane.tasks {
                 let sanitized = sanitize_job_id(task_id);
                 let variant_prefix = format!("{sanitized}-");
                 for (job_id, job) in &mut workflow.jobs {
-                    if job_id == &sanitized || job_id.starts_with(&variant_prefix) {
+                    if job_id == &sanitized
+                        || (job_id.starts_with(&variant_prefix) && !task_job_ids.contains(job_id))
+                    {
                         if !job.needs.contains(&changes_job_id) {
                             job.needs.push(changes_job_id.clone());
                         }

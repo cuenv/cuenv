@@ -837,3 +837,67 @@ fn pipeline_gate_and_changes_emit_and_verify_truth_table() {
         Some("./scripts/detect-lanes.sh")
     );
 }
+
+#[test]
+fn change_lane_does_not_capture_other_tasks_sharing_its_job_id_prefix() {
+    use cuenv_core::ci::{PipelineChangeLane, PipelineChanges};
+    use std::collections::BTreeMap;
+
+    let emitter = GitHubActionsEmitter::new()
+        .without_nix()
+        .without_cuenv_build();
+
+    let mut ir = super::make_ir(vec![
+        super::make_task("check", &["cargo", "check"]),
+        super::make_task("check-web", &["bun", "test"]),
+    ]);
+    ir.pipeline.changes = Some(PipelineChanges {
+        job: None,
+        lanes: BTreeMap::from([(
+            "rust".to_string(),
+            PipelineChangeLane {
+                tasks: vec!["check".to_string()],
+            },
+        )]),
+        script: None,
+        runner: None,
+    });
+
+    let yaml = emitter.emit_expanded(&ir).expect("emit expanded workflow");
+    let doc: serde_yaml::Value = serde_yaml::from_str(&yaml).expect("parse yaml");
+
+    assert_eq!(
+        doc["jobs"]["check"]["if"].as_str(),
+        Some("needs.changes.outputs.rust == 'true'")
+    );
+    assert!(doc["jobs"]["check-web"]["if"].is_null());
+    assert!(doc["jobs"]["check-web"]["needs"].is_null());
+}
+
+#[test]
+fn job_concurrency_default_group_is_namespaced_by_workflow() {
+    use cuenv_core::ci::{CancelInProgressConfig, PipelineConcurrency, TaskGitHubJobConfig};
+
+    let emitter = GitHubActionsEmitter::new()
+        .without_nix()
+        .without_cuenv_build();
+
+    let mut task = super::make_task("deploy", &["deploy"]);
+    task.github_job = Some(TaskGitHubJobConfig {
+        concurrency: Some(PipelineConcurrency {
+            group: None,
+            cancel_in_progress: Some(CancelInProgressConfig::Bool(true)),
+        }),
+        ..Default::default()
+    });
+
+    let yaml = emitter
+        .emit_expanded(&super::make_ir(vec![task]))
+        .expect("emit expanded workflow");
+    let doc: serde_yaml::Value = serde_yaml::from_str(&yaml).expect("parse yaml");
+
+    assert_eq!(
+        doc["jobs"]["deploy"]["concurrency"]["group"].as_str(),
+        Some("${{ github.workflow }}-deploy-${{ github.ref }}")
+    );
+}
