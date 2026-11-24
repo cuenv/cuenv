@@ -8,7 +8,7 @@ import (
 
 func TestInstanceSources(t *testing.T) {
 	moduleRoot := writeCueModule(t, map[string]string{
-		"cue.mod/module.cue":             "module: \"example.com/sources@v0\"\nlanguage: version: \"v0.14.1\"\n",
+		"cue.mod/module.cue":             "module: \"example.com/sources@v0\"\nlanguage: version: \"v0.18.0\"\n",
 		"env.cue":                        "package cuenv\n\nroot: true\n",
 		"infra/dns/env.cue":              "package cuenv\n\nimport \"example.com/sources/infra/dns/zones\"\n\nzone: zones.all\n",
 		"infra/dns/other.cue":            "package other\n\nignored: true\n",
@@ -68,7 +68,7 @@ func fieldText(fields map[string]json.RawMessage, name string) string {
 
 func TestInstanceSourcesDescribeEveryImportedPackage(t *testing.T) {
 	moduleRoot := writeCueModule(t, map[string]string{
-		"cue.mod/module.cue": "module: \"example.com/refs@v0\"\nlanguage: version: \"v0.14.1\"\n",
+		"cue.mod/module.cue": "module: \"example.com/refs@v0\"\nlanguage: version: \"v0.18.0\"\n",
 		"env.cue":            "package cuenv\n\nshared: true\n",
 		// The root of `content` is in error; its name can still be read.
 		"content/env.cue":        "package cuenv\n\nname: \"content\"\nbroken: 1\nbroken: 2\n",
@@ -130,7 +130,7 @@ func TestInstanceSourcesDescribeEveryImportedPackage(t *testing.T) {
 
 func TestInstanceSourcesListTransitiveImportsOnce(t *testing.T) {
 	moduleRoot := writeCueModule(t, map[string]string{
-		"cue.mod/module.cue": "module: \"example.com/refs@v0\"\nlanguage: version: \"v0.14.1\"\n",
+		"cue.mod/module.cue": "module: \"example.com/refs@v0\"\nlanguage: version: \"v0.18.0\"\n",
 		"content/env.cue":    "package cuenv\n\nname: \"content\"\n",
 		"shared/shared.cue":  "package shared\n\nimport content \"example.com/refs/content:cuenv\"\n\nfiles: content.name\n",
 		"app/env.cue":        "package cuenv\n\nimport \"example.com/refs/shared:shared\"\n\nname: \"app\"\nuses: shared.files\n",
@@ -178,7 +178,7 @@ other: alternate.name
 
 func TestInstanceSourcesListAnEmptyImportListForAnInstanceThatImportsNothing(t *testing.T) {
 	moduleRoot := writeCueModule(t, map[string]string{
-		"cue.mod/module.cue": "module: \"example.com/refs@v0\"\nlanguage: version: \"v0.14.1\"\n",
+		"cue.mod/module.cue": "module: \"example.com/refs@v0\"\nlanguage: version: \"v0.18.0\"\n",
 		"app/env.cue":        "package cuenv\n\nname: \"app\"\n",
 	})
 
@@ -195,7 +195,7 @@ func TestInstanceSourcesListAnEmptyImportListForAnInstanceThatImportsNothing(t *
 
 func TestInstanceSourcesListNoImportsWithoutFields(t *testing.T) {
 	moduleRoot := writeCueModule(t, map[string]string{
-		"cue.mod/module.cue": "module: \"example.com/refs@v0\"\nlanguage: version: \"v0.14.1\"\n",
+		"cue.mod/module.cue": "module: \"example.com/refs@v0\"\nlanguage: version: \"v0.18.0\"\n",
 		"content/env.cue":    "package cuenv\n\nname: \"content\"\n",
 		"app/env.cue":        "package cuenv\n\nimport content \"example.com/refs/content:cuenv\"\n\nname: content.name\n",
 	})
@@ -214,7 +214,7 @@ func TestInstanceSourcesListNoImportsWithoutFields(t *testing.T) {
 
 func TestInstanceSourcesListWhatEmbedAttributesRead(t *testing.T) {
 	moduleRoot := writeCueModule(t, map[string]string{
-		"cue.mod/module.cue": "module: \"example.com/embeds@v0\"\nlanguage: version: \"v0.14.1\"\n",
+		"cue.mod/module.cue": "module: \"example.com/embeds@v0\"\nlanguage: version: \"v0.18.0\"\n",
 		"env.cue":            "@extern(embed)\n\npackage cuenv\n\nroot: _ @embed(file=\"nix/source-files.json\")\n",
 		"app/env.cue": "@extern(embed)\n\npackage cuenv\n\nimport \"example.com/embeds/shared\"\n\n" +
 			"name: shared.name\nconfig: _ @embed(glob=config/*.yaml, allowEmptyGlob)\nnested: deep: _ @embed(file=data.json, type=json)\n" +
@@ -229,7 +229,7 @@ func TestInstanceSourcesListWhatEmbedAttributesRead(t *testing.T) {
 
 func TestInstanceSourcesLeaveOutAnEmbedThatLeavesTheModule(t *testing.T) {
 	moduleRoot := writeCueModule(t, map[string]string{
-		"cue.mod/module.cue": "module: \"example.com/embeds@v0\"\nlanguage: version: \"v0.14.1\"\n",
+		"cue.mod/module.cue": "module: \"example.com/embeds@v0\"\nlanguage: version: \"v0.18.0\"\n",
 		"env.cue":            "@extern(embed)\n\npackage cuenv\n\nescapes: _ @embed(file=\"../outside.json\")\n",
 	})
 

@@ -2539,9 +2539,43 @@ fn typed_sensitive_registration_preserves_schema_labels_but_masks_runtime_keys()
     let mut stored = record("example_consumer", "consumer", &[]);
     stored.state = json!({"config": {&field: "old-value"}});
     stored.sensitive_attributes = vec!["config".into()];
-    super::sensitivity::register_stored_values(&stored, &[]);
+    super::sensitivity::register_stored_values(&stored, &[], &Type::Dynamic);
     super::sensitivity::register_typed_attributes(&value, &["config".into()], &value_type);
     assert!(!cuenv_events::redact(&annotation).contains(&field));
+}
+
+#[test]
+fn stored_sensitive_objects_register_map_keys_but_not_schema_labels() {
+    let identifier = uuid::Uuid::new_v4().simple().to_string();
+    let label = format!("stored_label_{identifier}");
+    let secret = format!("stored-value-{identifier}");
+    let map_key = format!("stored-map-key-{identifier}");
+    let unexpected = format!("stored-unexpected-{identifier}");
+    let value_type = Type::Object(BTreeMap::from([(
+        "config".into(),
+        Type::Object(BTreeMap::from([
+            (label.clone(), Type::String),
+            ("map".into(), Type::Map(Box::new(Type::String))),
+        ])),
+    )]));
+    let mut row = record("example_consumer", "stored_labels", &[]);
+    row.state = json!({"config": {
+        &label: &secret,
+        "map": {&map_key: "ordinary"},
+        &unexpected: "ordinary",
+    }});
+    row.sensitive_attributes = vec!["config".into()];
+
+    // Before any schema is known, only values are registered.
+    super::sensitivity::register_stored_strings(&row);
+    assert!(!cuenv_events::redact(&secret).contains(&secret));
+    assert_eq!(cuenv_events::redact(&map_key), map_key);
+
+    super::sensitivity::register_stored_values(&row, &[], &value_type);
+    assert_eq!(cuenv_events::redact(&label), label);
+    for hidden in [&map_key, &unexpected] {
+        assert!(!cuenv_events::redact(hidden).contains(hidden.as_str()));
+    }
 }
 
 #[test]
@@ -4870,7 +4904,7 @@ fn schema_upgrades_protect_raw_historical_values_and_every_returned_attribute() 
     };
     let sensitive = super::sensitivity::resource_sensitivity(&row, &schema);
     assert_eq!(sensitive, ["old_secret", "renamed_secret"]);
-    super::sensitivity::register_stored_values(&row, &sensitive);
+    super::sensitivity::register_stored_values(&row, &sensitive, &schema.block.implied_type());
     let new_secret = "upgraded-response-secret-d8dc01c0";
     let response = protocol::DynamicValue {
         message_pack: Vec::new(),
@@ -5000,7 +5034,7 @@ fn sensitive_map_keys_are_redacted_in_data_diagnostics_configuration_and_stored_
     let mut row = record("example_object", "stored", &[]);
     row.state = json!({"credentials": [{"nested": {&stored_key: "ordinary"}}]});
     row.sensitive_attributes = sensitive;
-    super::sensitivity::register_stored_values(&row, &[]);
+    super::sensitivity::register_stored_values(&row, &[], &value_type);
     assert!(!cuenv_events::redact(&stored_key).contains(&stored_key));
 
     let planned_key = format!("planned-map-key-{}", uuid::Uuid::new_v4());

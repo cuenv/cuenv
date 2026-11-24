@@ -58,6 +58,22 @@ For a monorepo with multiple `.rules.cue` files, run workspace sync:
 cuenv sync -A
 ```
 
+Workspace sync walks the whole repository, including hidden directories other
+than VCS metadata (`.git`, `.jj`, `.hg`, `.svn`), and honours ignore files. It
+merges the owners of every `.rules.cue` it finds into one `CODEOWNERS`. To keep
+directories such as test fixtures out, list them in `exclude`, relative to the
+file that declares it:
+
+```cue
+rules.#DirectoryRules & {
+    exclude: ["examples", "tests/fixtures"]
+}
+```
+
+A `.rules.cue` under an excluded directory is neither synced nor merged into
+`CODEOWNERS`. Syncing that directory on its own (`cuenv sync rules` there)
+still works.
+
 ## Commands
 
 Generate or update all generated files, including CODEOWNERS:

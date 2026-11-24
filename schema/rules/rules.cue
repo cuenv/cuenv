@@ -16,4 +16,10 @@ package rules
 	// EditorConfig settings
 	// Generates .editorconfig in the same directory as .rules.cue
 	editorconfig?: #EditorConfig
+
+	// Directories, relative to this file, whose .rules.cue files
+	// `cuenv sync -A` skips (for example test fixtures). Each entry is a
+	// relative path inside this directory; nested .rules.cue files under
+	// it are neither synced nor merged into CODEOWNERS.
+	exclude?: [...string & !="" & !~"^/" & !~"(^|/)\\.{1,2}(/|$)"]
 }

@@ -1362,7 +1362,7 @@ impl InfrastructureEngine {
             .partition(|change| &change.address == address);
         in_flight::refuse(&self.tenant.to_string(), &others)?;
         for record in &stored {
-            sensitivity::register_stored_values(record, &record.sensitive_attributes);
+            sensitivity::register_stored_strings(record);
         }
         if stored.iter().any(|record| &record.address == address) {
             return Err(InfrastructureError::configuration(format!(
@@ -1537,7 +1537,7 @@ impl InfrastructureEngine {
             .map(|resource| (resource.address.clone(), resource))
             .collect();
         for row in stored.values() {
-            sensitivity::register_stored_values(row, &row.sensitive_attributes);
+            sensitivity::register_stored_strings(row);
         }
         let mut warnings = Vec::new();
         let mut changes = Vec::new();
@@ -2306,7 +2306,7 @@ impl InfrastructureEngine {
         let schema = resource_schema(provider, &change.provider, &change.address.resource_type)?;
         let value_type = schema.block.implied_type();
         if let Some(row) = &change.stored {
-            sensitivity::register_stored_values(row, &change.sensitive);
+            sensitivity::register_stored_values(row, &change.sensitive, &value_type);
         }
         register_typed_sensitive_values(change, &value_type);
         // The stored version every write replaces, for saving a record the
@@ -3009,7 +3009,7 @@ impl InfrastructureEngine {
             sensitive.extend(sensitivity::resource_sensitivity(row, schema));
             sensitive.sort();
             sensitive.dedup();
-            sensitivity::register_stored_values(row, &sensitive);
+            sensitivity::register_stored_values(row, &sensitive, &value_type);
         }
         sensitivity::register_typed_attributes(&configuration, &sensitive, &value_type);
         let configuration_bytes = type_system::to_message_pack(&configuration, &value_type)?;
@@ -4063,7 +4063,7 @@ async fn refresh(
     let type_name = &row.address.resource_type;
     let schema = resource_schema(provider, &row.provider, type_name)?;
     let value_type = schema.block.implied_type();
-    sensitivity::register_stored_values(row, sensitive);
+    sensitivity::register_stored_values(row, sensitive, &value_type);
     let (_, upgraded_bytes) = upgrade_state(
         provider,
         UpgradeStateInput {
@@ -4145,7 +4145,7 @@ async fn upgrade_state(
         schema,
         sensitive,
     } = input;
-    sensitivity::register_stored_values(row, sensitive);
+    sensitivity::register_stored_values(row, sensitive, &schema.block.implied_type());
     // Handing newer state to an older provider would silently drop what
     // it does not know; Terraform refuses too.
     if row.schema_version > schema.version {
@@ -4250,7 +4250,7 @@ async fn upgraded_state(
     let row = stored.row;
     let schema = stored.schema;
     let sensitive = sensitivity::resource_sensitivity(row, schema);
-    sensitivity::register_stored_values(row, &sensitive);
+    sensitivity::register_stored_values(row, &sensitive, &schema.block.implied_type());
     if row.schema_version != schema.version {
         return Ok(upgrade_state(
             provider,

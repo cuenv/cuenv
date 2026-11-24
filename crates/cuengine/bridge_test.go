@@ -30,7 +30,7 @@ func writeCueModule(t testing.TB, files map[string]string) string {
 func writeCueModuleAt(t testing.TB, moduleRoot string, files map[string]string) string {
 	t.Helper()
 	allFiles := map[string]string{
-		"cue.mod/module.cue": fmt.Sprintf("module: %q\nlanguage: version: \"v0.14.1\"\n", testModulePath+"@v0"),
+		"cue.mod/module.cue": fmt.Sprintf("module: %q\nlanguage: version: \"v0.18.0\"\n", testModulePath+"@v0"),
 	}
 	for name, contents := range files {
 		allFiles[name] = contents
@@ -493,7 +493,7 @@ groups: {
 
 func TestModuleDependencyVersion(t *testing.T) {
 	moduleRoot := writeCueModule(t, map[string]string{
-		"cue.mod/module.cue": "module: \"example.com/bridge@v0\"\nlanguage: version: \"v0.14.1\"\n" +
+		"cue.mod/module.cue": "module: \"example.com/bridge@v0\"\nlanguage: version: \"v0.18.0\"\n" +
 			"deps: \"example.com/dependency@v0\": v: \"v0.53.1\"\n",
 	})
 	response := moduleDependencyVersionResponse(moduleRoot, "example.com/dependency")

@@ -5,6 +5,10 @@ import "github.com/cuenv/cuenv/schema/rules"
 // Define directory-scoped rules using the canonical struct shape to avoid
 // deserialization ambiguities during isolated .rules.cue evaluation.
 rules.#DirectoryRules & {
+    // Example fixtures carry their own .rules.cue files; they are synced
+    // per directory by their tests, never merged into this repository.
+    exclude: ["examples"]
+
     // Ignore patterns for generated ignore files
     ignore: {
         git: [

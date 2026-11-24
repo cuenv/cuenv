@@ -274,7 +274,7 @@ func extractReferencesFromExpr(expr ast.Expr, fieldPath, instancePath string, re
 				// Skip CUE built-in types and reserved identifiers
 				if !isBuiltinType(ident.Name) {
 					metaKey := makeMetaKey(instancePath, indexPath)
-					refs[metaKey] = ident.Name
+					refs[metaKey] = identPath(ident)
 				}
 			}
 
@@ -332,7 +332,7 @@ func extractReferencesFromExpr(expr ast.Expr, fieldPath, instancePath string, re
 		// Only record if it looks like a reference (not a built-in type)
 		if !isBuiltinType(e.Name) {
 			metaKey := makeMetaKey(instancePath, fieldPath)
-			refs[metaKey] = e.Name
+			refs[metaKey] = identPath(e)
 		}
 
 	case *ast.SelectorExpr:
@@ -378,22 +378,25 @@ func isBuiltinType(name string) bool {
 
 // selectorToPath converts a selector expression to a dotted path string
 func selectorToPath(sel *ast.SelectorExpr) string {
+	return selectorPath(sel, maxAliasDepth)
+}
+
+// maxAliasDepth bounds how many aliases a reference is followed through, so
+// a cycle of aliases cannot loop.
+const maxAliasDepth = 16
+
+func selectorPath(sel *ast.SelectorExpr, depth int) string {
 	var parts []string
 
-	// Get the final selector (Sel is ast.Label, use LabelName to extract)
-	if sel.Sel != nil {
-		name, _, _ := ast.LabelName(sel.Sel)
-		if name != "" {
-			parts = append(parts, name)
-		}
-	}
-
-	// Walk up the selector chain
-	current := sel.X
+	// Walk up the selector chain, collecting labels from the last one.
+	var current ast.Expr = sel
 	for current != nil {
 		switch x := current.(type) {
 		case *ast.Ident:
-			parts = append(parts, x.Name)
+			root := strings.Split(resolveIdent(x, depth), ".")
+			for i := len(root) - 1; i >= 0; i-- {
+				parts = append(parts, root[i])
+			}
 			current = nil
 		case *ast.SelectorExpr:
 			if x.Sel != nil {
@@ -414,6 +417,60 @@ func selectorToPath(sel *ast.SelectorExpr) string {
 	}
 
 	return strings.Join(parts, ".")
+}
+
+// identPath is the path an identifier refers to, following a let binding,
+// a label alias or a hidden field that only renames another reference, so a
+// reference names the field it reaches rather than the alias it went
+// through.
+func identPath(id *ast.Ident) string {
+	return resolveIdent(id, maxAliasDepth)
+}
+
+func resolveIdent(id *ast.Ident, depth int) string {
+	if depth <= 0 {
+		return id.Name
+	}
+	switch node := id.Node.(type) {
+	case *ast.LetClause:
+		if path := referenceExprPath(node.Expr, depth-1); path != "" {
+			return path
+		}
+	case *ast.Field:
+		// A label alias (`tasks~T`) resolves to the field it labels.
+		if name, _, err := ast.LabelName(node.Label); err == nil && name != "" {
+			return name
+		}
+	case *ast.Ident, *ast.SelectorExpr, *ast.ParenExpr:
+		// A hidden field whose whole value is another reference only
+		// renames it; a regular field is a path of its own.
+		if strings.HasPrefix(id.Name, "_") {
+			if path := referenceExprPath(node.(ast.Expr), depth-1); path != "" {
+				return path
+			}
+		}
+	}
+	return id.Name
+}
+
+func referenceExprPath(expr ast.Expr, depth int) string {
+	switch e := expr.(type) {
+	case *ast.Ident:
+		if isBuiltinType(e.Name) || strings.HasPrefix(e.Name, "#") {
+			return ""
+		}
+		return resolveIdent(e, depth)
+	case *ast.SelectorExpr:
+		if _, ok := e.X.(*ast.Ident); !ok {
+			if _, ok := e.X.(*ast.SelectorExpr); !ok {
+				return ""
+			}
+		}
+		return selectorPath(e, depth)
+	case *ast.ParenExpr:
+		return referenceExprPath(e.X, depth)
+	}
+	return ""
 }
 
 // extractReferencesFromValue walks evaluated values to find reference paths.
@@ -604,7 +661,7 @@ func declaredReference(expr ast.Expr) (string, bool) {
 		if isBuiltinType(e.Name) || strings.HasPrefix(e.Name, "#") {
 			return "", true
 		}
-		return e.Name, true
+		return identPath(e), true
 	case *ast.SelectorExpr:
 		if _, ok := e.X.(*ast.Ident); !ok {
 			return "", false

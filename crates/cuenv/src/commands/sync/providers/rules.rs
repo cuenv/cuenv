@@ -107,19 +107,7 @@ fn sync_workspace(request: SyncRequest<'_>) -> Result<SyncResult> {
     // project set would drop every entry outside the subtree.
     let repo_root = find_repo_root(&workspace_root).unwrap_or(workspace_root);
 
-    // Discover all .rules.cue files manually (avoiding closure lifetime issues)
-    let walker = WalkBuilder::new(&repo_root)
-        .follow_links(true)
-        .standard_filters(true)
-        .build();
-
-    let mut discovered_files = Vec::new();
-    for entry in walker.flatten() {
-        let path = entry.path();
-        if path.file_name() == Some(".rules.cue".as_ref()) {
-            discovered_files.push(path.to_path_buf());
-        }
-    }
+    let discovered_files = discover_rules_files(&repo_root);
 
     if discovered_files.is_empty() {
         return Ok(SyncResult::success(
@@ -139,6 +127,57 @@ fn sync_workspace(request: SyncRequest<'_>) -> Result<SyncResult> {
         record_rules_fingerprint(&repo_root, WORKSPACE_KEY, &discovered_files);
     }
     Ok(result)
+}
+
+/// Version-control metadata directories a rules walk never enters.
+const VCS_DIRS: [&str; 4] = [".git", ".jj", ".hg", ".svn"];
+
+/// Find every `.rules.cue` file in the repository.
+///
+/// The file is itself a dotfile, so the walk must not skip hidden entries;
+/// ignore files still apply and VCS metadata directories are pruned.
+fn discover_rules_files(repo_root: &Path) -> Vec<PathBuf> {
+    let walker = WalkBuilder::new(repo_root)
+        .follow_links(true)
+        .standard_filters(true)
+        .hidden(false)
+        .filter_entry(|entry| {
+            !(entry.file_type().is_some_and(|kind| kind.is_dir())
+                && entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|name| VCS_DIRS.contains(&name)))
+        })
+        .build();
+
+    walker
+        .flatten()
+        .filter(|entry| entry.file_name() == ".rules.cue")
+        .map(ignore::DirEntry::into_path)
+        .collect()
+}
+
+/// Resolve a `.rules.cue` file's `exclude` entries against its directory.
+fn excluded_directories(directory: &Path, config: &DirectoryRules) -> Result<Vec<PathBuf>> {
+    config
+        .exclude
+        .iter()
+        .map(|entry| {
+            let relative = Path::new(entry);
+            let inside = !entry.is_empty()
+                && relative
+                    .components()
+                    .all(|part| matches!(part, std::path::Component::Normal(_)));
+            if inside {
+                Ok(directory.join(relative))
+            } else {
+                Err(cuenv_core::Error::configuration(format!(
+                    "exclude entry {entry:?} in {} must be a relative path inside that directory",
+                    directory.join(".rules.cue").display()
+                )))
+            }
+        })
+        .collect()
 }
 
 /// Fingerprint key of a workspace rules sync.
@@ -231,11 +270,23 @@ fn sync_rules_files(
     let mut had_error = false;
     let mut owner_projects = Vec::new();
 
-    for rules_file in files {
+    // Parents first, so an `exclude` is known before the files it covers.
+    let mut ordered: Vec<&PathBuf> = files.iter().collect();
+    ordered.sort_by(|a, b| {
+        a.components()
+            .count()
+            .cmp(&b.components().count())
+            .then_with(|| a.cmp(b))
+    });
+    let mut excluded: Vec<PathBuf> = Vec::new();
+    for rules_file in ordered {
         let directory = match rules_file.parent() {
             Some(d) => d.to_path_buf(),
             None => continue,
         };
+        if excluded.iter().any(|dir| directory.starts_with(dir)) {
+            continue;
+        }
 
         // Evaluate the .rules.cue file
         let config = match evaluate_rules_file(rules_file, executor) {
@@ -251,6 +302,15 @@ fn sync_rules_files(
                 continue;
             }
         };
+
+        match excluded_directories(&directory, &config) {
+            Ok(dirs) => excluded.extend(dirs),
+            Err(e) => {
+                outputs.push(format!("[{}] Error: {}", directory.display(), e));
+                had_error = true;
+                continue;
+            }
+        }
 
         // Sync per-directory config (ignore, editorconfig)
         let result = sync_directory_rules(
@@ -592,6 +652,61 @@ fn find_repo_root(start: &Path) -> Option<std::path::PathBuf> {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    #[test]
+    fn discover_rules_files_finds_dotfiles_and_skips_vcs_metadata() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path();
+        for dir in ["", "services/api", ".github", ".git/hooks"] {
+            std::fs::create_dir_all(root.join(dir)).expect("mkdir");
+            std::fs::write(root.join(dir).join(".rules.cue"), "").expect("write");
+        }
+
+        let mut found: Vec<PathBuf> = discover_rules_files(root)
+            .into_iter()
+            .map(|file| file.strip_prefix(root).expect("inside root").to_path_buf())
+            .collect();
+        found.sort();
+
+        assert_eq!(
+            found,
+            vec![
+                PathBuf::from(".github/.rules.cue"),
+                PathBuf::from(".rules.cue"),
+                PathBuf::from("services/api/.rules.cue"),
+            ]
+        );
+    }
+
+    #[test]
+    fn excluded_directories_resolve_relative_entries() {
+        let config = DirectoryRules {
+            exclude: vec!["examples".into(), "tests/fixtures".into()],
+            ..DirectoryRules::default()
+        };
+        let dirs = excluded_directories(Path::new("/repo"), &config).expect("valid");
+        assert_eq!(
+            dirs,
+            vec![
+                PathBuf::from("/repo/examples"),
+                PathBuf::from("/repo/tests/fixtures")
+            ]
+        );
+    }
+
+    #[test]
+    fn excluded_directories_reject_paths_outside_the_directory() {
+        for entry in ["", "/abs", "../sibling", "a/../../b", "./a"] {
+            let config = DirectoryRules {
+                exclude: vec![entry.into()],
+                ..DirectoryRules::default()
+            };
+            assert!(
+                excluded_directories(Path::new("/repo"), &config).is_err(),
+                "{entry:?} should be rejected"
+            );
+        }
+    }
 
     #[test]
     fn sync_codeowners_dry_run_reports_action() {
