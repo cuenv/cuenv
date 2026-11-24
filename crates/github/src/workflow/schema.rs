@@ -315,12 +315,30 @@ pub struct Strategy {
     pub max_parallel: Option<u32>,
 }
 
+/// Value for `strategy.matrix.include` in GitHub Actions YAML.
+#[derive(Debug, Clone, Serialize)]
+#[serde(untagged)]
+pub enum MatrixInclude {
+    /// Static list of matrix entries.
+    Static(Vec<IndexMap<String, serde_yaml::Value>>),
+    /// Dynamic expression string (e.g., `${{ fromJSON(needs.plan.outputs.matrix) }}`).
+    Expression(String),
+}
+
+impl MatrixInclude {
+    /// Returns `true` when this include list is an empty static list.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        matches!(self, Self::Static(entries) if entries.is_empty())
+    }
+}
+
 /// Matrix configuration for strategy.
 #[derive(Debug, Clone, Serialize)]
 pub struct Matrix {
-    /// Include specific combinations
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub include: Vec<IndexMap<String, serde_yaml::Value>>,
+    /// Include specific combinations or a dynamic `fromJSON(...)` expression.
+    #[serde(skip_serializing_if = "MatrixInclude::is_empty")]
+    pub include: MatrixInclude,
 }
 
 /// A job in a GitHub Actions workflow.
@@ -347,6 +365,10 @@ pub struct Job {
     /// Conditional execution expression
     #[serde(rename = "if", skip_serializing_if = "Option::is_none")]
     pub if_condition: Option<String>,
+
+    /// Job outputs exposed to downstream jobs via `needs.<job>.outputs.<name>`
+    #[serde(skip_serializing_if = "IndexMap::is_empty")]
+    pub outputs: IndexMap<String, String>,
 
     /// Matrix strategy for parallel job execution
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -622,6 +644,7 @@ mod tests {
             runs_on: RunsOn::Label("ubuntu-latest".to_string()),
             needs: vec!["build".to_string()],
             if_condition: None,
+            outputs: IndexMap::new(),
             strategy: None,
             environment: None,
             container: None,

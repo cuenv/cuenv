@@ -208,9 +208,10 @@ impl ReleaseWorkflowBuilder {
             runs_on: RunsOn::Label("${{ matrix.runs-on }}".to_string()),
             needs: Vec::new(),
             if_condition: None,
+            outputs: IndexMap::new(),
             strategy: Some(Strategy {
                 matrix: Matrix {
-                    include: matrix_include,
+                    include: crate::workflow::schema::MatrixInclude::Static(matrix_include),
                 },
                 fail_fast: Some(false),
                 max_parallel: None,
@@ -305,6 +306,7 @@ impl ReleaseWorkflowBuilder {
             runs_on: RunsOn::Label(self.emitter.runner.clone()),
             needs: vec!["build".to_string()],
             if_condition: None,
+            outputs: IndexMap::new(),
             strategy: None,
             container: None,
             defaults: None,

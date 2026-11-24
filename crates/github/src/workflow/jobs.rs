@@ -270,6 +270,7 @@ impl GitHubActionsEmitter {
             runs_on: options.runs_on,
             needs: Vec::new(),
             if_condition: None,
+            outputs: IndexMap::new(),
             strategy: None,
             environment: None,
             container: None,
@@ -500,6 +501,7 @@ impl GitHubActionsEmitter {
             runs_on: self.runner_as_runs_on(),
             needs: Vec::new(),
             if_condition: None,
+            outputs: IndexMap::new(),
             strategy: None,
             environment,
             container: None,
@@ -617,6 +619,7 @@ impl GitHubActionsEmitter {
             runs_on: self.runner_as_runs_on(),
             needs: options.previous_jobs.to_vec(),
             if_condition: None,
+            outputs: IndexMap::new(),
             strategy: None,
             environment,
             container: None,
@@ -766,6 +769,7 @@ impl GitHubActionsEmitter {
                     runs_on: RunsOn::Label(runner),
                     needs: options.previous_jobs.to_vec(),
                     if_condition: None,
+                    outputs: IndexMap::new(),
                     strategy: None,
                     environment,
                     container: None,
@@ -797,8 +801,11 @@ impl GitHubActionsEmitter {
             .is_some_and(|m| !m.dimensions.is_empty())
     }
 
-    /// Push any `steps.before`, then `task_step`, then any `steps.after`.
-    fn push_task_step_with_custom(steps: &mut Vec<Step>, task: &Task, task_step: Step) {
+    /// Push any `steps.before`, then `task_step` (with its resolved step `id`), then any `steps.after`.
+    fn push_task_step_with_custom(steps: &mut Vec<Step>, task: &Task, mut task_step: Step) {
+        if task_step.id.is_none() {
+            task_step.id = Self::task_step_id(task);
+        }
         if let Some(custom) = task.github_job.as_ref().and_then(|j| j.steps.as_ref()) {
             for before in &custom.before {
                 steps.push(Self::render_custom_step(before));

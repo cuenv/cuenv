@@ -706,6 +706,45 @@ tasks: "web.build": ci: github: {
 must set exactly one of `uses` or `run`, and `pins` / `requirePinnedActions`
 apply to every emitted `uses:` step.
 
+### Job outputs and dynamic matrices
+
+Tasks in expanded GitHub workflows can publish values to `$GITHUB_OUTPUT` and
+expose them to downstream jobs via `ci.github.outputs` (and an optional
+`ci.github.stepId`, which defaults to the sanitized task ID). Downstream tasks
+can reference those outputs in `env`, `if`, or `ci.github.matrix.include` using
+the plain-CUE `#GitHubJobOutput` helper (or literal `${{ needs.<job>.outputs.<name> }}`
+strings); `cuenv sync ci` validates that every referenced job output is declared
+on the upstream job:
+
+```cue
+tasks: {
+	"release-plan": ci: github: {
+		stepId:  "plan"
+		outputs: ["matrix", "web_digest"]
+	}
+	"release.build": {
+		dependsOn: ["release-plan"]
+		env: TESTED_DIGEST: (schema.#GitHubJobOutput & {job: "release-plan", output: "web_digest"}).ref
+		ci: github: {
+			if: "needs.release-plan.outputs.matrix != '[]'"
+			matrix: {
+				include:     (schema.#GitHubJobOutput & {job: "release-plan", output: "matrix"}).ref
+				failFast:    false
+				maxParallel: 4
+				runsOn:      "${{ matrix.runner }}"
+			}
+		}
+	}
+}
+```
+
+Expression strings passed to `matrix.include` are automatically wrapped in
+`${{ fromJSON(...) }}` unless already wrapped. Outside GitHub Actions, `cuenv ci`
+runs tasks in a single local process without a GitHub runner: set `GITHUB_OUTPUT`
+to a temp file or pass fallback environment variables directly when testing
+output-producing tasks locally, and note that dynamic GitHub matrix fan-out only
+expands on GitHub Actions.
+
 ## Secrets in CI
 
 Use task-local secret refs when cuenv should resolve the value at runtime:
