@@ -50,6 +50,8 @@ fn test_derive_paths_from_task_group() {
         when: Some(PipelineCondition {
             branch: Some(StringOrVec::String("main".to_string())),
             pull_request: None,
+            merge_group: None,
+            workflow_run: None,
             tag: None,
             default_branch: None,
             scheduled: None,
@@ -121,6 +123,8 @@ fn test_derive_paths_root_project_no_dot_prefix() {
         when: Some(PipelineCondition {
             branch: Some(StringOrVec::String("main".to_string())),
             pull_request: None,
+            merge_group: None,
+            workflow_run: None,
             tag: None,
             default_branch: None,
             scheduled: None,
@@ -186,6 +190,8 @@ fn test_derive_paths_subproject_has_prefix() {
         when: Some(PipelineCondition {
             branch: Some(StringOrVec::String("main".to_string())),
             pull_request: None,
+            merge_group: None,
+            workflow_run: None,
             tag: None,
             default_branch: None,
             scheduled: None,
@@ -489,6 +495,8 @@ fn pipeline_paths(project: Project, pipeline_tasks: &[&str]) -> Vec<String> {
         when: Some(PipelineCondition {
             branch: Some(StringOrVec::String("main".to_string())),
             pull_request: None,
+            merge_group: None,
+            workflow_run: None,
             tag: None,
             default_branch: None,
             scheduled: None,

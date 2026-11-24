@@ -24,6 +24,8 @@ fn test_derive_trigger_paths_with_project_path() {
         when: Some(PipelineCondition {
             branch: Some(StringOrVec::String("main".to_string())),
             pull_request: None,
+            merge_group: None,
+            workflow_run: None,
             tag: None,
             default_branch: None,
             scheduled: None,
@@ -94,6 +96,8 @@ fn test_derive_trigger_paths_fallback_to_project_dir() {
         when: Some(PipelineCondition {
             branch: Some(StringOrVec::String("main".to_string())),
             pull_request: None,
+            merge_group: None,
+            workflow_run: None,
             tag: None,
             default_branch: None,
             scheduled: None,
@@ -151,6 +155,8 @@ fn test_derive_trigger_paths_root_project() {
         when: Some(PipelineCondition {
             branch: Some(StringOrVec::String("main".to_string())),
             pull_request: None,
+            merge_group: None,
+            workflow_run: None,
             tag: None,
             default_branch: None,
             scheduled: None,
@@ -205,6 +211,8 @@ fn test_derive_trigger_paths_root_project_no_inputs_fallback() {
         when: Some(PipelineCondition {
             branch: Some(StringOrVec::String("main".to_string())),
             pull_request: None,
+            merge_group: None,
+            workflow_run: None,
             tag: None,
             default_branch: None,
             scheduled: None,

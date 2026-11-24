@@ -81,7 +81,37 @@ impl Compiler {
             .and_then(|w| w.tag.as_ref())
             .map_or_default(cuenv_core::ci::StringOrVec::to_vec);
 
-        let pull_request = when.and_then(|w| w.pull_request);
+        let pull_request = when
+            .and_then(|w| w.pull_request.as_ref())
+            .map(cuenv_core::ci::PullRequestTrigger::is_enabled);
+
+        let pull_request_config = when
+            .and_then(|w| w.pull_request.as_ref())
+            .and_then(cuenv_core::ci::PullRequestTrigger::as_detailed)
+            .map(|cfg| crate::ir::PullRequestTriggerIr {
+                types: cfg.types.clone(),
+                branches: cfg.branches.clone(),
+                paths: cfg.paths.clone(),
+                paths_ignore: cfg.paths_ignore.clone(),
+            });
+
+        let merge_group = when
+            .and_then(|w| w.merge_group.as_ref())
+            .and_then(cuenv_core::ci::MergeGroupTrigger::resolved_types)
+            .map(|types| crate::ir::MergeGroupTriggerIr { types });
+
+        let workflow_run = when.and_then(|w| w.workflow_run.as_ref()).map(|wr| {
+            let types = if wr.types.is_empty() {
+                vec!["completed".to_string()]
+            } else {
+                wr.types.clone()
+            };
+            crate::ir::WorkflowRunTriggerIr {
+                workflows: wr.workflows.clone(),
+                types,
+                branches: wr.branches.clone(),
+            }
+        });
 
         let scheduled = when
             .and_then(|w| w.scheduled.as_ref())
@@ -116,7 +146,7 @@ impl Compiler {
 
         let should_derive_paths = pipeline
             .derive_paths
-            .unwrap_or_else(|| !branches.is_empty() || pull_request.is_some());
+            .unwrap_or_else(|| !branches.is_empty() || pull_request == Some(true));
 
         let paths = if should_derive_paths {
             self.derive_trigger_paths(inputs)
@@ -128,6 +158,9 @@ impl Compiler {
             branches,
             tags,
             pull_request,
+            pull_request_config,
+            merge_group,
+            workflow_run,
             scheduled,
             release,
             manual,

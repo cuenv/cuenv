@@ -789,7 +789,37 @@ fn build_github_trigger_condition(
         .and_then(|w| w.tag.as_ref())
         .map_or_default(cuenv_core::ci::StringOrVec::to_vec);
 
-    let pull_request = when.and_then(|w| w.pull_request);
+    let pull_request = when
+        .and_then(|w| w.pull_request.as_ref())
+        .map(cuenv_core::ci::PullRequestTrigger::is_enabled);
+
+    let pull_request_config = when
+        .and_then(|w| w.pull_request.as_ref())
+        .and_then(cuenv_core::ci::PullRequestTrigger::as_detailed)
+        .map(|cfg| cuenv_ci::ir::PullRequestTriggerIr {
+            types: cfg.types.clone(),
+            branches: cfg.branches.clone(),
+            paths: cfg.paths.clone(),
+            paths_ignore: cfg.paths_ignore.clone(),
+        });
+
+    let merge_group = when
+        .and_then(|w| w.merge_group.as_ref())
+        .and_then(cuenv_core::ci::MergeGroupTrigger::resolved_types)
+        .map(|types| cuenv_ci::ir::MergeGroupTriggerIr { types });
+
+    let workflow_run = when.and_then(|w| w.workflow_run.as_ref()).map(|wr| {
+        let types = if wr.types.is_empty() {
+            vec!["completed".to_string()]
+        } else {
+            wr.types.clone()
+        };
+        cuenv_ci::ir::WorkflowRunTriggerIr {
+            workflows: wr.workflows.clone(),
+            types,
+            branches: wr.branches.clone(),
+        }
+    });
 
     let scheduled = when
         .and_then(|w| w.scheduled.as_ref())
@@ -826,6 +856,9 @@ fn build_github_trigger_condition(
         branches,
         tags,
         pull_request,
+        pull_request_config,
+        merge_group,
+        workflow_run,
         scheduled,
         release,
         manual,
@@ -1001,15 +1034,7 @@ mod tests {
             cuenv_source,
             mode: PipelineMode::Expanded,
             github_config: cuenv_github::config::GitHubConfig::default(),
-            trigger: cuenv_ci::ir::TriggerCondition {
-                branches: vec![],
-                tags: vec![],
-                pull_request: None,
-                scheduled: vec![],
-                release: vec![],
-                manual: None,
-                paths: vec![],
-            },
+            trigger: cuenv_ci::ir::TriggerCondition::default(),
             concurrency: None,
             project_name: Some("test".to_string()),
             project_path: None,

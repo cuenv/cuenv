@@ -139,6 +139,52 @@ pub struct PipelineMetadata {
     pub pipeline_task_defs: Vec<PipelineTask>,
 }
 
+/// Detailed pull request trigger overrides in the IR
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct PullRequestTriggerIr {
+    /// Activity types (e.g., `["opened", "edited", "synchronize", "reopened"]`)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub types: Vec<String>,
+
+    /// Explicit target branches (`None` emits no branch filter)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branches: Option<Vec<String>>,
+
+    /// Explicit path filters (overrides derived paths when set)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paths: Option<Vec<String>>,
+
+    /// Path patterns to ignore (`paths-ignore`)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub paths_ignore: Vec<String>,
+}
+
+/// Merge queue (`merge_group`) trigger configuration in the IR
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct MergeGroupTriggerIr {
+    /// Activity types (e.g., `["checks_requested"]`)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub types: Vec<String>,
+}
+
+/// Workflow run (`workflow_run`) trigger configuration in the IR
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct WorkflowRunTriggerIr {
+    /// Upstream workflow names
+    pub workflows: Vec<String>,
+
+    /// Activity types (e.g., `["completed"]`)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub types: Vec<String>,
+
+    /// Optional branch filter
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub branches: Vec<String>,
+}
+
 /// Trigger conditions for pipeline execution
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
@@ -154,6 +200,18 @@ pub struct TriggerCondition {
     /// Enable pull request triggers
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pull_request: Option<bool>,
+
+    /// Detailed pull request trigger overrides (when object form is used)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pull_request_config: Option<PullRequestTriggerIr>,
+
+    /// Merge queue (`merge_group`) trigger configuration
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merge_group: Option<MergeGroupTriggerIr>,
+
+    /// Upstream workflow (`workflow_run`) trigger configuration
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_run: Option<WorkflowRunTriggerIr>,
 
     /// Cron expressions for scheduled runs
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

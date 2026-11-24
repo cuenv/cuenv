@@ -353,7 +353,7 @@ fn shell_quote(value: &str) -> String {
 fn plan_pipeline() -> Pipeline {
     Pipeline {
         when: Some(PipelineCondition {
-            pull_request: Some(true),
+            pull_request: Some(cuenv_core::ci::PullRequestTrigger::Enabled(true)),
             ..PipelineCondition::default()
         }),
         derive_paths: Some(true),

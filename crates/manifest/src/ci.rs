@@ -74,12 +74,117 @@ impl ManualTrigger {
     }
 }
 
+/// Detailed pull request trigger configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PullRequestTriggerConfig {
+    /// Activity types to trigger on (e.g., `["opened", "edited", "synchronize", "reopened"]`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub types: Vec<String>,
+    /// Target branches to filter on (`None` emits no branch filter).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branches: Option<Vec<String>>,
+    /// Explicit path filters (overrides `derivePaths` when set).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paths: Option<Vec<String>>,
+    /// Path patterns to ignore (`paths-ignore`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub paths_ignore: Vec<String>,
+}
+
+/// Pull request trigger configuration - simple bool or detailed object.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum PullRequestTrigger {
+    /// Simple enabled/disabled flag (inherits pipeline branches and derived paths).
+    Enabled(bool),
+    /// Detailed pull_request trigger configuration.
+    Detailed(PullRequestTriggerConfig),
+}
+
+impl PullRequestTrigger {
+    /// Returns `true` if pull request triggers are enabled.
+    #[must_use]
+    pub const fn is_enabled(&self) -> bool {
+        match self {
+            Self::Enabled(enabled) => *enabled,
+            Self::Detailed(_) => true,
+        }
+    }
+
+    /// Returns the detailed config if this is the object form.
+    #[must_use]
+    pub const fn as_detailed(&self) -> Option<&PullRequestTriggerConfig> {
+        match self {
+            Self::Enabled(_) => None,
+            Self::Detailed(cfg) => Some(cfg),
+        }
+    }
+}
+
+/// Detailed merge group trigger configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct MergeGroupTriggerConfig {
+    /// Activity types to trigger on (defaults to `["checks_requested"]`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub types: Vec<String>,
+}
+
+/// Merge queue (`merge_group`) trigger configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum MergeGroupTrigger {
+    /// Simple enabled/disabled flag (`true` emits `types: [checks_requested]`).
+    Enabled(bool),
+    /// Detailed merge_group trigger configuration.
+    Detailed(MergeGroupTriggerConfig),
+}
+
+impl MergeGroupTrigger {
+    /// Resolve enabled merge_group activity types, or `None` when disabled.
+    #[must_use]
+    pub fn resolved_types(&self) -> Option<Vec<String>> {
+        match self {
+            Self::Enabled(false) => None,
+            Self::Enabled(true) => Some(vec!["checks_requested".to_string()]),
+            Self::Detailed(cfg) => {
+                if cfg.types.is_empty() {
+                    Some(vec!["checks_requested".to_string()])
+                } else {
+                    Some(cfg.types.clone())
+                }
+            }
+        }
+    }
+}
+
+/// Workflow run (`workflow_run`) trigger configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowRunTrigger {
+    /// Upstream workflow names that trigger this pipeline.
+    pub workflows: Vec<String>,
+    /// Activity types (defaults to `["completed"]`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub types: Vec<String>,
+    /// Optional branch filter.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub branches: Vec<String>,
+}
+
 /// Trigger conditions controlling when a pipeline runs.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct PipelineCondition {
-    /// Run on pull requests
-    pub pull_request: Option<bool>,
+    /// Run on pull requests (bool shorthand or detailed object)
+    pub pull_request: Option<PullRequestTrigger>,
+    /// Run on GitHub merge queue (`merge_group`) events
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merge_group: Option<MergeGroupTrigger>,
+    /// Chain after upstream GitHub workflows (`workflow_run`)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_run: Option<WorkflowRunTrigger>,
     /// Branch name(s) that trigger the pipeline
     #[serde(default)]
     pub branch: Option<StringOrVec>,
