@@ -4,7 +4,9 @@
 _tests
 .cache
 .claude/worktrees
-.cargo
+.cargo/*
+!.cargo/audit.toml
+!.cargo/config.toml
 .cuenv
 .test
 .worktrees
