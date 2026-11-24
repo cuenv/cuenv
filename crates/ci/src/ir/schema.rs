@@ -68,15 +68,30 @@ impl IntermediateRepresentation {
         self.tasks.iter().filter(|t| t.phase.is_none())
     }
 
-    /// Get phase tasks sorted by priority (lower = earlier).
+    /// Get phase tasks in the order they run: a task after every task of
+    /// the same stage it depends on, and otherwise by priority (lower =
+    /// earlier, 10 when unset), then declaration order.
     ///
-    /// Collects phase tasks into a Vec and sorts them by priority.
-    /// Uses priority 10 as default if not specified.
+    /// Tasks caught in a dependency cycle keep their priority order after
+    /// the tasks that could be ordered.
     #[must_use]
     pub fn sorted_phase_tasks(&self, stage: BuildStage) -> Vec<&Task> {
-        let mut tasks: Vec<_> = self.phase_tasks(stage).collect();
-        tasks.sort_by_key(|t| t.priority.unwrap_or(10));
-        tasks
+        let mut pending: Vec<&Task> = self.phase_tasks(stage).collect();
+        pending.sort_by_key(|t| t.priority.unwrap_or(10));
+        let mut ordered: Vec<&Task> = Vec::with_capacity(pending.len());
+        while !pending.is_empty() {
+            let waits_on_pending = |task: &Task| {
+                task.depends_on
+                    .iter()
+                    .any(|dependency| pending.iter().any(|other| other.id == *dependency))
+            };
+            let next = pending
+                .iter()
+                .position(|task| !waits_on_pending(task))
+                .unwrap_or(0);
+            ordered.push(pending.remove(next));
+        }
+        ordered
     }
 }
 

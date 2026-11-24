@@ -449,3 +449,50 @@ fn test_sorted_phase_tasks_uses_default_priority() {
     assert_eq!(sorted[1].id, "default");
     assert_eq!(sorted[2].id, "high");
 }
+
+fn phase_task(id: &str, priority: i32, depends_on: &[&str]) -> Task {
+    let mut task = make_test_task(id);
+    task.phase = Some(BuildStage::Bootstrap);
+    task.priority = Some(priority);
+    task.depends_on = depends_on.iter().map(|d| (*d).to_string()).collect();
+    task
+}
+
+fn phase_order(ir: &IntermediateRepresentation) -> Vec<&str> {
+    ir.sorted_phase_tasks(BuildStage::Bootstrap)
+        .into_iter()
+        .map(|task| task.id.as_str())
+        .collect()
+}
+
+/// A phase task runs after the tasks of its stage it depends on, even
+/// when its priority would put it first (issue 383).
+#[test]
+fn a_phase_task_runs_after_what_it_depends_on() {
+    let mut ir = IntermediateRepresentation::new("test");
+    ir.tasks
+        .push(phase_task("install-nix", 0, &["cache-setup"]));
+    ir.tasks.push(phase_task("cache-setup", 5, &[]));
+    ir.tasks.push(phase_task("other", 1, &[]));
+
+    assert_eq!(phase_order(&ir), ["other", "cache-setup", "install-nix"]);
+}
+
+#[test]
+fn a_dependency_outside_the_stage_does_not_hold_a_task_back() {
+    let mut ir = IntermediateRepresentation::new("test");
+    ir.tasks.push(phase_task("late", 5, &[]));
+    ir.tasks.push(phase_task("early", 1, &["elsewhere"]));
+
+    assert_eq!(phase_order(&ir), ["early", "late"]);
+}
+
+#[test]
+fn tasks_in_a_dependency_cycle_keep_their_priority_order() {
+    let mut ir = IntermediateRepresentation::new("test");
+    ir.tasks.push(phase_task("b", 2, &["a"]));
+    ir.tasks.push(phase_task("a", 1, &["b"]));
+    ir.tasks.push(phase_task("free", 9, &[]));
+
+    assert_eq!(phase_order(&ir), ["free", "a", "b"]);
+}

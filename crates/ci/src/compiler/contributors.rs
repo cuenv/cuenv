@@ -413,7 +413,8 @@ impl Compiler {
         }
 
         match priority {
-            0..=9 => BuildStage::Bootstrap,
+            // Lower runs earlier, so a negative priority is bootstrap too.
+            ..=9 => BuildStage::Bootstrap,
             10..=49 => BuildStage::Setup,
             _ => BuildStage::Success,
         }

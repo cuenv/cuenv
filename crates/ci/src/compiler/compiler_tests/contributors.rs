@@ -861,6 +861,20 @@ fn test_derive_stage_from_priority_bootstrap() {
     );
 }
 
+/// Lower runs earlier, so a negative priority is bootstrap rather than a
+/// success step after the pipeline (issue 383).
+#[test]
+fn a_negative_priority_is_bootstrap() {
+    assert_eq!(
+        Compiler::derive_stage_from_priority(-1, None),
+        BuildStage::Bootstrap
+    );
+    assert_eq!(
+        Compiler::derive_stage_from_priority(i32::MIN, None),
+        BuildStage::Bootstrap
+    );
+}
+
 #[test]
 fn test_derive_stage_from_priority_setup() {
     // Priority 10-49 = Setup
