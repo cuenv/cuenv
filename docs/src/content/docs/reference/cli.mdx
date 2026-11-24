@@ -1109,8 +1109,8 @@ needed by hand:
 
 - `scripts.gen.cue`, when a file of `scriptDirs` was added, removed or renamed.
   The project is then evaluated again. When a reference to a new script fails
-  evaluation, cuenv rewrites the file from the `scriptDirs` it last saw and
-  evaluates once more.
+  evaluation, cuenv evaluates `scriptDirs` alone, which does not
+  read the failing reference, rewrites the file and evaluates once more.
 - Codegen files, when the codegen configuration, its formatters or a generated
   file changed since the last sync. Syncing runs the project's configured
   formatters, which are external programs; they run only when something
@@ -1125,7 +1125,8 @@ kept in `.cuenv/autosync.json` at the module root. Two cuenv processes never
 sync at once.
 
 When the `CI` environment variable is set, nothing is written and a stale
-`scripts.gen.cue` fails the command; `cuenv ci` fails the same way. Set
+`scripts.gen.cue` fails the command; `cuenv ci` fails the same way, and outside
+CI brings the files up to date before it starts. Set
 `CUENV_AUTOSYNC=0` to turn automatic sync off. `cuenv sync` itself never
 syncs automatically. CI workflows, `cuenv.lock`, Git dependencies,
 infrastructure provider types and the pre-push hook are only synced by

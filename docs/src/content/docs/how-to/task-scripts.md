@@ -140,8 +140,9 @@ A script's own `dependsOn` takes tasks and other scripts. `cuenv ci` and
 
 Every cuenv command checks the file against `scriptDirs` and rewrites it when a
 script was added, removed or renamed, before it evaluates the project again.
-When a reference to a new script fails evaluation, cuenv rewrites the file from
-the `scriptDirs` it last saw and evaluates once more. The check costs a
+When a reference to a new script fails evaluation, cuenv evaluates `scriptDirs`
+alone, which does not read the failing reference, rewrites the file and
+evaluates once more. Outside CI, `cuenv ci` does the same before it starts. The check costs a
 directory read per script directory.
 
 - `cuenv sync scripts` writes the file explicitly; `--check` fails when it is

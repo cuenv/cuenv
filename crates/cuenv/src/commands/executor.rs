@@ -78,7 +78,9 @@ impl CommandExecutor {
             // A reference to a script added since the last sync fails the
             // evaluation before cuenv can see the script: sync from the
             // directories the project last declared, then try once more.
-            Err(error) if self.recover_scripts(&target_path) => {
+            Err(error)
+                if self.recover_scripts(super::autosync::RecoveryScope::Project(&target_path)) =>
+            {
                 tracing::debug!(%error, "evaluating again after updating scripts.gen.cue");
                 self.load_local_module(&target_path)?
             }
@@ -218,7 +220,9 @@ impl CommandExecutor {
         })?;
         let projects = match self.load_workspace_module(&module_root) {
             Ok(projects) => projects,
-            Err(error) if self.recover_workspace_scripts(&module_root) => {
+            Err(error)
+                if self.recover_scripts(super::autosync::RecoveryScope::Module(&module_root)) =>
+            {
                 tracing::debug!(%error, "evaluating again after updating scripts.gen.cue");
                 self.load_workspace_module(&module_root)?
             }
@@ -276,15 +280,6 @@ impl CommandExecutor {
                 })
                 .collect()
         }))
-    }
-
-    /// [`Self::recover_scripts`] for every project of the module that
-    /// declared `scriptDirs` before.
-    fn recover_workspace_scripts(&self, module_root: &Path) -> bool {
-        super::autosync::known_script_projects(module_root)
-            .keys()
-            .map(|project| self.recover_scripts(Path::new(project)))
-            .fold(false, |any, recovered| any | recovered)
     }
 
     /// Get the module root path if at least one module has been loaded.

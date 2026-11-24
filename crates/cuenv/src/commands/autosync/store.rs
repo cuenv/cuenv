@@ -68,10 +68,6 @@ pub struct Fingerprints {
     /// Keyed by the synced directory, or `*` for a workspace sync.
     #[serde(default)]
     pub rules: BTreeMap<String, RulesPrint>,
-    /// The `scriptDirs` each project last evaluated with, by project
-    /// directory, to rewrite `scripts.gen.cue` when an evaluation fails.
-    #[serde(default)]
-    pub scripts: BTreeMap<String, serde_json::Value>,
 }
 
 /// SHA-256 of a value's JSON with object keys sorted, as hex, so that a

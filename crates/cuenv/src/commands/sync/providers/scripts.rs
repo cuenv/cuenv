@@ -11,7 +11,6 @@ use cuenv_core::scripts::{self, Drift, ScriptDirectory};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-use crate::commands::CommandExecutor;
 use crate::commands::autosync;
 use crate::commands::sync::provider::{SyncMode, SyncProvider, SyncRequest, SyncResult, SyncScope};
 
@@ -25,7 +24,7 @@ impl SyncProvider for ScriptsSyncProvider {
     }
 
     async fn sync(&self, request: SyncRequest<'_>) -> Result<SyncResult> {
-        let projects = declared_projects(request.executor, request.path, request.scope)?;
+        let projects = declared_projects(request)?;
         let lines = projects
             .iter()
             .map(|(project_dir, directories)| {
@@ -57,11 +56,14 @@ type Declared = (PathBuf, Option<Vec<ScriptDirectory>>);
 /// When evaluation fails, which a reference to a script missing from a
 /// stale `scripts.gen.cue` causes, the `scriptDirs` each project last
 /// evaluated with stand in.
-fn declared_projects(
-    executor: &CommandExecutor,
-    path: &Path,
-    scope: SyncScope,
-) -> Result<Vec<Declared>> {
+fn declared_projects(request: SyncRequest<'_>) -> Result<Vec<Declared>> {
+    let SyncRequest {
+        path,
+        package,
+        scope,
+        executor,
+        ..
+    } = request;
     let evaluated = match scope {
         SyncScope::Path => executor.module(path),
         SyncScope::Workspace => executor.discover_all_modules(path),
@@ -77,33 +79,40 @@ fn declared_projects(
             })
             .collect()),
         Err(error) => {
+            // A reference to a script the file does not list yet fails
+            // evaluation; the `scriptDirs` alone still evaluate.
             let canonical = path.canonicalize().map_err(|io| {
                 cuenv_core::Error::io_with_path("canonicalize path", path.to_path_buf(), io)
             })?;
-            let Some(module_root) = crate::commands::env_file::find_cue_module_root(&canonical)
-            else {
-                return Err(error);
+            let scope = match scope {
+                SyncScope::Path => autosync::RecoveryScope::Project(&canonical),
+                SyncScope::Workspace => {
+                    let Some(module_root) =
+                        crate::commands::env_file::find_cue_module_root(&canonical)
+                    else {
+                        return Err(error);
+                    };
+                    return declared(
+                        autosync::declared_script_dirs(
+                            autosync::RecoveryScope::Module(&module_root),
+                            package,
+                        ),
+                        error,
+                    );
+                }
             };
-            let known: Vec<_> = autosync::known_script_projects(&module_root)
-                .into_iter()
-                .map(|(project, declared)| (PathBuf::from(project), declared))
-                .filter(|(project, _)| match scope {
-                    SyncScope::Path => *project == canonical,
-                    SyncScope::Workspace => true,
-                })
-                .map(|(project, declared)| {
-                    let directories =
-                        scripts::directories(&serde_json::json!({ "scriptDirs": declared }));
-                    (project, directories)
-                })
-                .collect();
-            if known.is_empty() {
-                return Err(error);
-            }
-            tracing::debug!(%error, "syncing scripts from the scriptDirs last evaluated");
-            Ok(known)
+            declared(autosync::declared_script_dirs(scope, package), error)
         }
     }
+}
+
+/// The projects found, or the evaluation's error when there are none.
+fn declared(found: Vec<Declared>, error: cuenv_core::Error) -> Result<Vec<Declared>> {
+    if found.is_empty() {
+        return Err(error);
+    }
+    tracing::debug!(%error, "syncing scripts from scriptDirs evaluated alone");
+    Ok(found)
 }
 
 struct Line {

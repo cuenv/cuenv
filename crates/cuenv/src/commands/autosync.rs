@@ -17,7 +17,7 @@
 
 mod store;
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -153,7 +153,7 @@ impl CommandExecutor {
             return Ok(Evaluated::Current);
         }
         let evaluated = match value {
-            Some(value) => self.sync_scripts(module_root, project_dir, value)?,
+            Some(value) => self.sync_scripts(project_dir, value)?,
             None => Evaluated::Current,
         };
         if self.autosync.mode() == AutoSyncMode::Write && evaluated == Evaluated::Current {
@@ -166,16 +166,8 @@ impl CommandExecutor {
     }
 
     /// Bring `scripts.gen.cue` in line with the project's `scriptDirs`.
-    fn sync_scripts(
-        &self,
-        module_root: &Path,
-        project_dir: &Path,
-        value: &Value,
-    ) -> Result<Evaluated> {
+    fn sync_scripts(&self, project_dir: &Path, value: &Value) -> Result<Evaluated> {
         let directories = scripts::directories(value);
-        if self.autosync.mode() == AutoSyncMode::Write {
-            remember_script_dirs(module_root, project_dir, value.get("scriptDirs"));
-        }
         let (drift, scan) = scripts::drift(project_dir, directories.as_deref());
         for clash in &scan.clashes {
             cuenv_events::emit_stderr!(format!("cuenv: {clash}"));
@@ -194,24 +186,13 @@ impl CommandExecutor {
         Ok(Evaluated::Stale)
     }
 
-    /// After an evaluation failed: rewrite `scripts.gen.cue` from the
-    /// `scriptDirs` the project last evaluated with, so that a reference to
-    /// a script added since resolves. True when the file was rewritten.
-    pub(super) fn recover_scripts(&self, project_dir: &Path) -> bool {
-        if self.autosync.mode() != AutoSyncMode::Write {
-            return false;
-        }
-        let Some(module_root) = super::env_file::find_cue_module_root(project_dir) else {
-            return false;
-        };
-        let Some(declared) =
-            known_script_projects(&module_root).remove(&project_dir.display().to_string())
-        else {
-            return false;
-        };
-        let directories = scripts::directories(&serde_json::json!({ "scriptDirs": declared }));
-        let (drift, scan) = scripts::drift(project_dir, directories.as_deref());
-        drift == Drift::Stale && write_generated(project_dir, &self.package, Some(&scan)).is_ok()
+    /// After an evaluation failed: rewrite each stale `scripts.gen.cue` of
+    /// the project at `project_dir`, or of every project of the module at
+    /// `module_root` when there is none, from its `scriptDirs` alone, so that
+    /// a reference to a script added since resolves. True when a file was
+    /// rewritten.
+    pub(super) fn recover_scripts(&self, scope: RecoveryScope<'_>) -> bool {
+        self.autosync.mode() == AutoSyncMode::Write && recover(scope, &self.package)
     }
 
     fn autosync_codegen(&self, module_root: &Path, project_dir: &Path) -> Result<()> {
@@ -329,47 +310,79 @@ pub fn written<'scan>(drift: &Drift, scan: &'scan scripts::Scan) -> Option<&'sca
     (*drift != Drift::Orphaned).then_some(scan)
 }
 
-/// Keep the project's `scriptDirs` for [`CommandExecutor::recover_scripts`],
-/// writing the store only when they changed.
-fn remember_script_dirs(module_root: &Path, project_dir: &Path, declared: Option<&Value>) {
-    let key = project_dir.display().to_string();
-    let known = known_script_projects(module_root).remove(&key);
-    if known.as_ref() == declared {
-        return;
-    }
-    if let Some(mut store) = Store::open(module_root) {
-        match declared {
-            Some(declared) => store.prints.scripts.insert(key, declared.clone()),
-            None => store.prints.scripts.remove(&key),
-        };
-        store.save();
-    }
+/// Where [`recover`] looks for projects.
+#[derive(Debug, Clone, Copy)]
+pub enum RecoveryScope<'path> {
+    /// The project in this canonical directory.
+    Project(&'path Path),
+    /// Every project of the module with this root.
+    Module(&'path Path),
 }
 
-/// Outside CI, rewrite each stale `scripts.gen.cue` of the module around
-/// `start` from the `scriptDirs` its project last evaluated with. Costs a
-/// directory scan per project and no evaluation.
-pub fn refresh_known_scripts(start: &Path) {
+/// Rewrite each stale `scripts.gen.cue` in `scope` from the `scriptDirs` of
+/// its project, read by an evaluation that exports nothing else: a
+/// reference elsewhere to a script the file does not list yet cannot fail
+/// it. True when a file was rewritten.
+pub fn recover(scope: RecoveryScope<'_>, package: &str) -> bool {
+    declared_script_dirs(scope, package)
+        .into_iter()
+        .map(|(project_dir, directories)| {
+            let (drift, scan) = scripts::drift(&project_dir, directories.as_deref());
+            drift != Drift::None
+                && report_ok(write_generated(
+                    &project_dir,
+                    package,
+                    written(&drift, &scan),
+                ))
+        })
+        .fold(false, |any, rewritten| any | rewritten)
+}
+
+/// Outside CI, [`recover`] every project of the module around `start`.
+pub fn recover_outside_ci(start: &Path, package: &str) {
     if AutoSyncMode::from_environment() != AutoSyncMode::Write {
         return;
     }
-    let Some(module_root) = super::env_file::find_cue_module_root(start) else {
-        return;
-    };
-    for (project, declared) in known_script_projects(&module_root) {
-        let project_dir = PathBuf::from(project);
-        let directories = scripts::directories(&serde_json::json!({ "scriptDirs": declared }));
-        let (drift, scan) = scripts::drift(&project_dir, directories.as_deref());
-        if drift == Drift::Stale {
-            report(write_generated(&project_dir, "cuenv", Some(&scan)));
-        }
+    if let Some(module_root) = super::env_file::find_cue_module_root(start) {
+        recover(RecoveryScope::Module(&module_root), package);
     }
 }
 
-/// The `scriptDirs` of each project of a module that declared any, by
-/// project directory, as last evaluated.
-pub fn known_script_projects(module_root: &Path) -> BTreeMap<String, Value> {
-    Store::open_existing(module_root).map_or_else(BTreeMap::new, |store| store.prints.scripts)
+/// Each project in `scope` with the `scriptDirs` it declares, evaluated
+/// alone. A directory that does not evaluate even so is left out.
+pub fn declared_script_dirs(
+    scope: RecoveryScope<'_>,
+    package: &str,
+) -> Vec<(PathBuf, Option<Vec<scripts::ScriptDirectory>>)> {
+    let (module_root, target) = match scope {
+        RecoveryScope::Project(project_dir) => {
+            let Some(root) = super::env_file::find_cue_module_root(project_dir) else {
+                return Vec::new();
+            };
+            (root, Some(project_dir))
+        }
+        RecoveryScope::Module(root) => (root.to_path_buf(), None),
+    };
+    let options = cuengine::ModuleEvalOptions {
+        recursive: target.is_none(),
+        target_dir: target.map(|dir| dir.to_string_lossy().to_string()),
+        export_paths: vec!["scriptDirs".to_string()],
+        ..Default::default()
+    };
+    let Ok(raw) = cuengine::evaluate_module(&module_root, package, Some(&options)) else {
+        return Vec::new();
+    };
+    raw.instances
+        .into_iter()
+        .filter(|(path, _)| raw.projects.contains(path))
+        .map(|(path, value)| {
+            let project_dir = match (target, path.as_str()) {
+                (Some(dir), ".") => dir.to_path_buf(),
+                _ => module_root.join(path),
+            };
+            (project_dir, scripts::directories(&value))
+        })
+        .collect()
 }
 
 /// Every file codegen of a project writes, `.gitignore` included.
@@ -383,6 +396,13 @@ fn codegen_outputs(
         .map(|file| project_dir.join(file))
         .chain(std::iter::once(project_dir.join(".gitignore")))
         .collect()
+}
+
+/// [`report`], then whether `result` was a success.
+fn report_ok(result: Result<()>) -> bool {
+    let ok = result.is_ok();
+    report(result);
+    ok
 }
 
 fn report(result: Result<()>) {
