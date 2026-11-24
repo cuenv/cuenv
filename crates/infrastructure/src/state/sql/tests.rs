@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use tokio::sync::Notify;
 
 use super::{
-    Attempted, CREATE_SCHEMA_TABLE, Dialect, Disclosure, ExecuteResult, Failure,
+    Attempted, CREATE_SCHEMA_TABLE, Dialect, Disclosure, ExecuteResult, Failure, FailureKind,
     LATEST_SCHEMA_VERSION, MIGRATIONS, SqlStateStore, SqlTransport, Statement, StatementError,
     TransactionResult,
 };
@@ -61,6 +61,76 @@ impl<T: SqlTransport> SqlTransport for PausedVersionRead<'_, T> {
         {
             self.observed.notify_one();
             self.resume.notified().await;
+        }
+        outcome
+    }
+
+    async fn transaction_once(&self, statements: &[Statement]) -> Attempted<TransactionResult> {
+        self.inner.transaction_once(statements).await
+    }
+
+    fn secret(&self) -> Option<&str> {
+        self.inner.secret()
+    }
+
+    fn statement_failure(&self, error: &StatementError, disclosure: Disclosure) -> Failure {
+        self.inner.statement_failure(error, disclosure)
+    }
+}
+
+/// A lock release commits but its response is lost, so the store retries the
+/// DELETE, which finds nothing. The release must not report the lock as
+/// already gone: it is an error, which the CLI reports as uncertain. The same
+/// holds for a forced unlock.
+pub(in crate::state) async fn lost_lock_release_response<T: SqlTransport>(
+    store: &SqlStateStore<T>,
+) {
+    store.migrate().await.unwrap();
+    let tenant = TenantKey::try_new("example.com/lost-release", "fresh").unwrap();
+    let mut lossy = SqlStateStore::new(LoseFirstLockDelete {
+        inner: &store.transport,
+        lose: AtomicBool::new(true),
+    });
+    lossy.retry_policy.initial_delay = Duration::ZERO;
+
+    let lock = acquire_lock(store, &tenant).await;
+    let released = lossy.unlock(&tenant, &lock).await;
+    assert!(
+        released.is_err(),
+        "a retried release that finds nothing must not claim the lock was gone: {released:?}"
+    );
+    assert!(store.current_lock(&tenant).await.unwrap().is_none());
+    // A release without a lost response still answers truthfully.
+    assert!(!lossy.unlock(&tenant, &lock).await.unwrap());
+
+    let forced = acquire_lock(store, &tenant).await;
+    lossy.transport.lose.store(true, Ordering::SeqCst);
+    let released = lossy.force_unlock(&tenant, &forced.lock_identifier).await;
+    assert!(released.is_err(), "{released:?}");
+    assert!(store.current_lock(&tenant).await.unwrap().is_none());
+}
+
+/// Run the first lock DELETE against the database, then answer it with a
+/// transient failure, as if the response were lost on the way back.
+struct LoseFirstLockDelete<'transport, T> {
+    inner: &'transport T,
+    lose: AtomicBool,
+}
+
+#[async_trait]
+impl<T: SqlTransport> SqlTransport for LoseFirstLockDelete<'_, T> {
+    const NAME: &'static str = T::NAME;
+    const DIALECT: Dialect = T::DIALECT;
+
+    async fn execute_once(&self, statements: &[Statement]) -> Attempted<Vec<ExecuteResult>> {
+        let outcome = self.inner.execute_once(statements).await;
+        let deletes_lock = statements.iter().any(|statement| {
+            statement
+                .sql
+                .starts_with("DELETE FROM cuenv_infrastructure_locks")
+        });
+        if deletes_lock && outcome.is_ok() && self.lose.swap(false, Ordering::SeqCst) {
+            return Err(Failure::new(FailureKind::Transient, "response lost"));
         }
         outcome
     }

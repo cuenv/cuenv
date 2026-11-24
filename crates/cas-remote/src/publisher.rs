@@ -12,6 +12,7 @@
 
 use crate::action_cache::RemoteActionCache;
 use crate::cas::RemoteCas;
+use crate::corruption::CorruptBlobs;
 use crate::http::{HttpActionCache, HttpCas};
 use async_trait::async_trait;
 use cuenv_cas::{
@@ -20,7 +21,7 @@ use cuenv_cas::{
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use tracing::debug;
+use tracing::{debug, warn};
 use uuid::Uuid;
 
 /// Upper bound for loading a blob into memory during HTTP publication;
@@ -31,6 +32,7 @@ const HTTP_IN_MEMORY_THRESHOLD: u64 = 4 * 1024 * 1024;
 #[derive(Debug, Clone)]
 pub struct RemotePublisher {
     backend: PublisherBackend,
+    corrupt: Option<Arc<CorruptBlobs>>,
 }
 
 #[derive(Debug, Clone)]
@@ -49,6 +51,10 @@ struct ActionPublication<'request> {
     request: PublishActionRequest<'request>,
     inline_blobs: HashMap<Digest, Vec<u8>>,
     all_digests: Vec<Digest>,
+    /// Digests the read side saw served corrupt. They are uploaded even when
+    /// the server reports them present, and read back before the result is
+    /// published.
+    known_corrupt: Vec<Digest>,
 }
 
 impl RemotePublisher {
@@ -57,6 +63,7 @@ impl RemotePublisher {
     pub fn grpc(cas: Arc<RemoteCas>, action_cache: Arc<RemoteActionCache>) -> Self {
         Self {
             backend: PublisherBackend::Grpc { cas, action_cache },
+            corrupt: None,
         }
     }
 
@@ -65,7 +72,20 @@ impl RemotePublisher {
     pub fn http(cas: Arc<HttpCas>, action_cache: Arc<HttpActionCache>) -> Self {
         Self {
             backend: PublisherBackend::Http { cas, action_cache },
+            corrupt: None,
         }
+    }
+
+    /// Share the read side's record of blobs the server served corrupt.
+    ///
+    /// A REAPI server answers `FindMissingBlobs` from its index, so a rotten
+    /// blob stays "present" and would never be re-uploaded. With a record,
+    /// the publisher replaces every recorded blob an action names and reads
+    /// it back; the `ActionResult` is published only if every one verifies.
+    #[must_use]
+    pub fn with_corrupt_blobs(mut self, corrupt: Arc<CorruptBlobs>) -> Self {
+        self.corrupt = Some(corrupt);
+        self
     }
 
     async fn publish_grpc(
@@ -77,8 +97,14 @@ impl RemotePublisher {
             request,
             inline_blobs,
             all_digests,
+            known_corrupt,
         } = publication;
-        let missing = cas.find_missing(all_digests).await?;
+        let mut missing = cas.find_missing(all_digests).await?;
+        for digest in known_corrupt {
+            if !missing.contains(digest) {
+                missing.push(digest.clone());
+            }
+        }
         debug!(
             action = %request.action_digest,
             total = all_digests.len(),
@@ -105,7 +131,9 @@ impl RemotePublisher {
                 small_batch.push((digest, bytes));
                 batch_bytes += item_bytes;
             } else if let Some(inline) = inline_blobs.get(&digest) {
-                cas.put_bytes(inline).await?;
+                // Already known to be missing (or corrupt): skip the
+                // second presence check `put_bytes` would make.
+                cas.replace_bytes(inline).await?;
             } else {
                 upload_large_blob_via_file(request.local_cas, cas, &digest).await?;
             }
@@ -114,6 +142,7 @@ impl RemotePublisher {
         if !small_batch.is_empty() {
             cas.batch_update_blobs(&small_batch).await?;
         }
+        confirm_repairs(cas, known_corrupt, request.action_digest).await?;
 
         // Publish the ActionResult LAST, only after Action, Command, logs,
         // outputs, and all nested Tree leaves have succeeded.
@@ -132,9 +161,10 @@ impl RemotePublisher {
             request,
             inline_blobs,
             all_digests,
+            known_corrupt,
         } = publication;
         for digest in all_digests {
-            if cas.contains(digest).await? {
+            if !known_corrupt.contains(digest) && cas.contains(digest).await? {
                 continue;
             }
             if let Some(inline) = inline_blobs.get(digest) {
@@ -146,6 +176,7 @@ impl RemotePublisher {
                 upload_large_blob_via_file(request.local_cas, cas, digest).await?;
             }
         }
+        confirm_repairs(cas, known_corrupt, request.action_digest).await?;
 
         // Publish the ActionResult LAST.
         action_cache
@@ -163,7 +194,7 @@ async fn upload_large_blob_via_file(
     let temp_path = std::env::temp_dir().join(format!("cuenv-upload-{}.blob", Uuid::new_v4()));
     let result = async {
         local_cas.get_to_file(digest, &temp_path).await?;
-        let uploaded = remote_cas.put_file(&temp_path).await?;
+        let uploaded = remote_cas.replace_file(&temp_path).await?;
         if &uploaded != digest {
             return Err(cuenv_cas::Error::digest_mismatch(
                 digest.to_resource(),
@@ -175,6 +206,35 @@ async fn upload_large_blob_via_file(
     .await;
     let _ = tokio::fs::remove_file(&temp_path).await;
     result
+}
+
+/// Read back every blob that was served corrupt and has just been replaced.
+///
+/// A server that keeps serving the old bytes cannot be repaired from the
+/// client. Publishing a result that names such a blob would hand every
+/// reader a hit it cannot use, so the publication fails instead.
+async fn confirm_repairs(
+    remote_cas: &dyn Cas,
+    known_corrupt: &[Digest],
+    action_digest: &Digest,
+) -> cuenv_cas::Result<()> {
+    for digest in known_corrupt {
+        let readback = crate::temporary::TemporaryFile::new()?;
+        match remote_cas.get_to_file(digest, readback.path()).await {
+            Ok(()) => warn!(digest = %digest, "replaced a corrupt blob in the remote CAS"),
+            Err(error) => {
+                warn!(
+                    digest = %digest,
+                    action = %action_digest,
+                    %error,
+                    "the remote CAS still serves a corrupt blob after it was re-uploaded; \
+                     not publishing the action result; the server must evict or repair the blob"
+                );
+                return Err(error);
+            }
+        }
+    }
+    Ok(())
 }
 
 #[async_trait]
@@ -200,18 +260,35 @@ impl ActionPublisher for RemotePublisher {
             }
         }
 
+        let known_corrupt: Vec<Digest> = self.corrupt.as_ref().map_or_else(Vec::new, |corrupt| {
+            all_digests
+                .iter()
+                .filter(|digest| corrupt.contains(digest))
+                .cloned()
+                .collect()
+        });
+
         let publication = ActionPublication {
             request,
             inline_blobs,
             all_digests,
+            known_corrupt,
         };
-        match &self.backend {
+        let outcome = match &self.backend {
             PublisherBackend::Grpc { cas, action_cache } => {
                 Self::publish_grpc(cas, action_cache, &publication).await
             }
             PublisherBackend::Http { cas, action_cache } => {
                 Self::publish_http(cas, action_cache, &publication).await
             }
+        };
+        if outcome.is_ok()
+            && let Some(corrupt) = &self.corrupt
+        {
+            for digest in &publication.known_corrupt {
+                corrupt.remove(digest);
+            }
         }
+        outcome
     }
 }

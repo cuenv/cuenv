@@ -73,12 +73,45 @@ package schema
 	upload?: bool | *false
 
 	// Credentials. Values are never written in CUE — only the name of the
-	// environment variable holding them.
+	// environment variable holding them or a credential helper executable.
 	auth?: #CacheAuth
+
+	// Custom CA bundle and/or mTLS client certificate paths.
+	tls?: #CacheTls
 
 	// CI trust-boundary settings for generated workflows (`cuenv sync ci`).
 	ci?: #RemoteCacheCi
 }
+
+// TLS settings for a remote cache (custom CA bundle and/or mTLS client
+// identity). Paths point to PEM-encoded files on disk (for example Namespace
+// workload mTLS certificates or a private cluster CA).
+#CacheTls: {
+	// Path to a PEM-encoded CA certificate bundle added to the TLS root store.
+	// Overridden by $CUENV_REMOTE_CACHE_CA_CERT.
+	caCertPath?: string & !=""
+
+	// Path to a PEM-encoded client certificate chain for mTLS.
+	// Must be paired with `clientKeyPath`.
+	// Overridden by $CUENV_REMOTE_CACHE_CLIENT_CERT.
+	clientCertPath?: string & !=""
+
+	// Path to a PEM-encoded client private key for mTLS.
+	// Must be paired with `clientCertPath`.
+	// Overridden by $CUENV_REMOTE_CACHE_CLIENT_KEY.
+	clientKeyPath?: string & !=""
+}
+
+// Credential provisioning mode for generated CI workflows (`cuenv sync ci`).
+//
+//   "secrets" — (default) inject static CI secrets (`readSecret` / `writeSecret`)
+//               gated by `writeEnvironment` (GitHub) or `writeQueue` (Buildkite).
+//   "ambient" — credentials are supplied outside static CI secrets (for example
+//               via a Bazel `credentialHelper` such as `bazel-credential-nsc` or
+//               an OIDC step writing to `$GITHUB_ENV`). Preserves
+//               `isolatedCacheDir` and protected-trigger upload gating without
+//               requiring `readSecret`, `writeSecret`, or `writeEnvironment`.
+#RemoteCacheCiAuthMode: "secrets" | "ambient"
 
 // CI trust-boundary settings for remote cache credentials in generated
 // workflows (`cuenv sync ci`).
@@ -87,13 +120,16 @@ package schema
 // credential-issuance boundary (GitHub Environments / Buildkite secret access
 // policies) rather than relying on client-side flags alone.
 #RemoteCacheCi: {
+	// Credential provisioning mode for generated workflows.
+	authMode?: #RemoteCacheCiAuthMode | *"secrets"
+
 	// Secret name holding a read-only cache credential for untrusted triggers
 	// (pull requests, forks). Omit to disable remote cache access on untrusted
-	// jobs.
+	// jobs when `authMode` is "secrets".
 	readSecret?: string
 
 	// Secret name holding a read-write cache credential, exposed only to
-	// explicitly authorized jobs on protected refs.
+	// explicitly authorized jobs on protected refs when `authMode` is "secrets".
 	writeSecret?: string
 
 	// GitHub Actions Environment name gating `writeSecret` to protected
@@ -110,21 +146,31 @@ package schema
 	isolatedCacheDir?: bool | *true
 }
 
-// How to authenticate to a remote cache: exactly one of a bearer token or a
-// named header. Each alternative forbids the other's field, so a project that
-// sets one resolves to it; without that the two alternatives stay ambiguous
-// and the whole `auth` value cannot be exported.
+// How to authenticate to a remote cache: exactly one of a bearer token, a
+// named header, or a Bazel-compatible credential helper. Each alternative
+// forbids the other fields, so a project that sets one resolves to it; without
+// that the alternatives stay ambiguous and the whole `auth` value cannot be
+// exported.
 #CacheAuth: {
 	// Environment variable holding a bearer token. Sent as
 	// `authorization: Bearer <token>`, which is what the hosted providers
 	// issue.
-	bearerTokenEnv!: string
-	header?:         _|_
+	bearerTokenEnv!:   string
+	header?:           _|_
+	credentialHelper?: _|_
 } | {
 	// An arbitrary header, for a provider that names its own.
 	header!: {
 		name!:     string
 		valueEnv!: string
 	}
-	bearerTokenEnv?: _|_
+	bearerTokenEnv?:   _|_
+	credentialHelper?: _|_
+} | {
+	// Path or command name of a Bazel-compatible credential helper
+	// (e.g. "bazel-credential-nsc"). Invoked as `<helper> get` with
+	// `{"uri": "<endpoint>"}` on stdin; expects `{"headers": {...}}` on stdout.
+	credentialHelper!: string & !=""
+	bearerTokenEnv?:   _|_
+	header?:           _|_
 }

@@ -121,6 +121,10 @@ pub enum Command {
         continue_on_error: bool,
         /// Dry run mode: export DAG without executing.
         dry_run: DryRun,
+        /// Only run tasks affected by changed files.
+        affected: bool,
+        /// Base git ref for affected-task comparison (implies --affected).
+        from: Option<String>,
         /// Additional arguments to pass to the task.
         task_args: Vec<String>,
     },
@@ -433,6 +437,26 @@ pub enum Command {
         path: String,
         /// Preview deletions without removing files.
         dry_run: bool,
+        /// Output format (`text` or `json`).
+        format: String,
+    },
+    /// Inspect a cached action's command, environment, platform, and input tree.
+    CacheInspect {
+        /// Action digest (`<sha256>` or `<sha256>/<size>`).
+        digest: String,
+        /// Path to the CUE module or project directory.
+        path: String,
+        /// Output format (`text` or `json`).
+        format: String,
+    },
+    /// Diff two cached action digests to explain cache misses.
+    CacheDiff {
+        /// Baseline action digest (`<sha256>` or `<sha256>/<size>`).
+        left: String,
+        /// Target action digest (`<sha256>` or `<sha256>/<size>`).
+        right: String,
+        /// Path to the CUE module or project directory.
+        path: String,
         /// Output format (`text` or `json`).
         format: String,
     },

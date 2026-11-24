@@ -35,24 +35,41 @@ impl HttpCas {
 
     async fn has_blob(&self, digest: &Digest) -> Result<bool> {
         let url = self.client.cas_url(digest)?;
-        let response = self
-            .client
-            .request(Method::HEAD, url)
-            .send()
-            .await
-            .map_err(|e| Error::Rpc {
-                operation: "HTTP.HEAD.cas",
-                message: format_reqwest_error(&e),
-            })?;
+        self.client
+            .retry_runner()
+            .run("HTTP.HEAD.cas", || {
+                let url = url.clone();
+                async move {
+                    let response = self
+                        .client
+                        .request(Method::HEAD, url)
+                        .send()
+                        .await
+                        .map_err(|e| {
+                            let retryable = e.is_timeout() || e.is_connect() || e.is_request();
+                            (
+                                Error::Rpc {
+                                    operation: "HTTP.HEAD.cas",
+                                    message: format_reqwest_error(&e),
+                                },
+                                retryable,
+                            )
+                        })?;
 
-        match response.status() {
-            StatusCode::OK => Ok(true),
-            StatusCode::NOT_FOUND => Ok(false),
-            status => Err(Error::Rpc {
-                operation: "HTTP.HEAD.cas",
-                message: format!("HTTP status {status}"),
-            }),
-        }
+                    match response.status() {
+                        StatusCode::OK => Ok(true),
+                        StatusCode::NOT_FOUND => Ok(false),
+                        status => Err((
+                            Error::Rpc {
+                                operation: "HTTP.HEAD.cas",
+                                message: format!("HTTP status {status}"),
+                            },
+                            crate::retry::is_transient_http_status(status),
+                        )),
+                    }
+                }
+            })
+            .await
     }
 
     async fn read_bytes(&self, digest: &Digest) -> Result<Vec<u8>> {

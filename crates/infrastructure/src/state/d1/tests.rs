@@ -493,6 +493,13 @@ async fn stale_first_migrator_does_not_wait_on_current_schema_locks() {
 }
 
 #[tokio::test]
+async fn a_lost_release_response_is_not_reported_as_already_released() {
+    let database = EmulatedD1::new();
+    let server = database.serve().await;
+    crate::state::sql::tests::lost_lock_release_response(&store_at(&server).inner).await;
+}
+
+#[tokio::test]
 async fn completed_migrations_leave_no_pending_announcements() {
     let database = EmulatedD1::new();
     let server = database.serve().await;

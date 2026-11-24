@@ -115,6 +115,46 @@ cargo build -p cuengine
 cargo test -p cuenv-core
 ```
 
+## Formal specs (Quint)
+
+`specs/quint` holds [Quint](https://quint-lang.org) models of protocols
+whose bugs only show up under concurrency, lost responses and partial
+failures:
+
+- `object_state_cas.qnt`: the object-store state backend's lock and
+  compare-and-swap writes
+  (`crates/infrastructure/src/state/object/store/object_state_store.rs`), and
+  the CLI's release retry (`crates/cuenv/src/commands/infrastructure/lock.rs`).
+- `hook_runs.qnt`: hook runs in one directory across processes: reservation,
+  worker, hook child, cancellation, publish and operator recovery
+  (`crates/hooks/src/state/coordinator.rs`, `crates/cuenv/src/hook_supervisor.rs`).
+- `infrastructure_changes.qnt`: provider changes whose outcome the state may
+  not learn: in-flight markers, unrecorded-change files and `state recover`
+  (`crates/infrastructure/src/engine/infrastructure_engine.rs`,
+  `crates/infrastructure/src/unrecorded.rs`).
+- `state_migration.qnt`: `state migrate` forward, rollback and copy-back
+  (`crates/cuenv/src/commands/infrastructure/migrate.rs`,
+  `crates/infrastructure/src/state/object/store/legacy_migration.rs`).
+- `sql_state_store.qnt`: the SQL state backends (Turso, D1): lock row,
+  fenced writes, retried statements and the CLI's release retry
+  (`crates/infrastructure/src/state/sql/implementation.rs`).
+- `task_cache.qnt`: the layered task cache, local and remote CAS and action
+  cache (`crates/cas`, `crates/cas-remote`, `crates/task-exec/src/cache.rs`).
+
+CI runs `checks.quint`, which builds the flake check `cuenv-quint-specs`. TLC
+explores every reachable state of each model's finite instance (about a
+million distinct states each, about a minute in all) and fails on a violated invariant:
+
+```bash
+nix build .#checks.x86_64-linux.cuenv-quint-specs -L --accept-flake-config
+```
+
+The models are written by hand from the code. CI proves the model, not the
+Rust: when you change one of those protocols, change its model in the same
+pull request and keep the invariant list in `flake.nix` in step. Each model
+has mutation switches (constants at the top) that turn off one mechanism, so
+you can confirm an invariant still catches the bug it exists for.
+
 ## Working with FFI
 
 The cuengine crate uses FFI to call Go from Rust.

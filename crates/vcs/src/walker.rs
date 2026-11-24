@@ -1,11 +1,13 @@
 //! [`WalkHasher`]: a VCS-free [`VcsHasher`] implementation.
 //!
 //! `WalkHasher` resolves glob/directory/file patterns against a workspace
-//! root and computes a streaming SHA-256 over every matched file. It is the
-//! default fallback when a VCS-specific implementation isn't available.
+//! root and computes a streaming SHA-256 over every matched file. It walks
+//! the file system itself, but inside a git repository a glob or directory
+//! leaves out what the repository ignores (see `crate::ignored`).
 
 use crate::error::{Error, Result};
 use crate::hasher::{HashedInput, VcsHasher};
+use crate::ignored::{Checkout, Kind, Rules, Verdict};
 use crate::pattern;
 use async_trait::async_trait;
 use globset::{Glob, GlobSet, GlobSetBuilder};
@@ -14,6 +16,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 use tracing::{debug, trace};
 
 /// Name prefix of the transient directories cuenv creates inside a workspace
@@ -224,6 +227,12 @@ impl WalkHasher {
             .iter()
             .filter_map(|directory| fs::canonicalize(directory).ok())
             .collect();
+        // Globs select what the repository holds, not what git ignores; see
+        // `crate::ignored`. Outside a repository every file counts.
+        let checkout = Checkout::discover(&workspace)?.map(Arc::new);
+        let repository = checkout
+            .as_ref()
+            .and_then(|checkout| Some((checkout, checkout.relative(&workspace)?)));
 
         for raw in &explicit_files {
             let abs = self.workspace_root.join(raw);
@@ -254,18 +263,24 @@ impl WalkHasher {
             }
             let physical = fs::canonicalize(&walk_root)
                 .map_err(|e| Error::io(e, &walk_root, "canonicalize"))?;
+            let base = normalize_rel_path(Path::new(base_dir));
+            let ignore = match &repository {
+                Some((checkout, prefix)) => Rules::at(Arc::clone(checkout), &prefix.join(&base))?
+                    .map(|rules| Ignore {
+                        prefix: prefix.clone(),
+                        rules: vec![rules],
+                    }),
+                None => None,
+            };
             let mut walk = Walk {
                 globset,
                 workspace: &workspace,
                 excluded: &excluded,
                 reach: options.reach,
                 descent: Vec::new(),
+                ignore,
             };
-            walk.directory(
-                &mut collected,
-                &physical,
-                &normalize_rel_path(Path::new(base_dir)),
-            )?;
+            walk.directory(&mut collected, &physical, &base)?;
         }
 
         let mut results = collected.results;
@@ -500,6 +515,42 @@ struct Walk<'walk> {
     /// Canonical directories on the current descent, so a symlink back to an
     /// ancestor is not followed forever.
     descent: Vec<PathBuf>,
+    /// What git ignores, when the walk is in a repository and its pattern
+    /// does not name an ignored location.
+    ignore: Option<Ignore>,
+}
+
+/// The ignore rules of a walk, one entry per directory on the descent.
+struct Ignore {
+    /// The workspace root relative to the repository's work tree.
+    prefix: PathBuf,
+    /// Rules in force in each directory entered, innermost last.
+    rules: Vec<Rules>,
+}
+
+impl Ignore {
+    fn verdict(&self, logical: &Path, kind: Kind) -> Verdict {
+        if logical.file_name().is_some_and(|name| name == ".git") {
+            return Verdict::Skip;
+        }
+        self.rules.last().map_or(Verdict::Keep, |rules| {
+            rules.verdict(&self.prefix.join(logical), kind)
+        })
+    }
+
+    /// Enter the directory `logical`, read from `physical`, that `verdict`
+    /// let the walk into.
+    fn enter(&mut self, physical: &Path, logical: &Path, verdict: Verdict) -> Result<()> {
+        let Some(current) = self.rules.last() else {
+            return Ok(());
+        };
+        let inner = match verdict {
+            Verdict::TrackedOnly => current.tracked_only(),
+            Verdict::Keep | Verdict::Skip => current.enter(physical, &self.prefix.join(logical))?,
+        };
+        self.rules.push(inner);
+        Ok(())
+    }
 }
 
 impl Walk<'_> {
@@ -541,10 +592,21 @@ impl Walk<'_> {
                 trace!(path = %logical_child.display(), "not entering what lies outside the repository's real directories");
                 continue;
             }
+            // Git records a symbolic link as a file, whatever it points at.
+            let kind = if file_type.is_dir() {
+                Kind::Directory
+            } else {
+                Kind::File
+            };
+            let verdict = self.verdict(&logical_child, kind);
+            if verdict == Verdict::Skip {
+                trace!(path = %logical_child.display(), "not walking what git ignores");
+                continue;
+            }
             if file_type.is_symlink() {
                 self.symlink(collected, &path, &logical_child)?;
             } else if file_type.is_dir() {
-                self.directory(collected, &path, &logical_child)?;
+                self.descend(collected, &path, (&logical_child, verdict))?;
             } else if file_type.is_file() && self.globset.is_match(&logical_child) {
                 collected.push(logical_child, &path)?;
             }
@@ -552,6 +614,30 @@ impl Walk<'_> {
 
         self.descent.pop();
         Ok(())
+    }
+
+    fn verdict(&self, logical: &Path, kind: Kind) -> Verdict {
+        self.ignore
+            .as_ref()
+            .map_or(Verdict::Keep, |ignore| ignore.verdict(logical, kind))
+    }
+
+    /// Walk the directory `logical`, read from `physical`, under the ignore
+    /// rules `verdict` puts it under.
+    fn descend(
+        &mut self,
+        collected: &mut Collected,
+        physical: &Path,
+        (logical, verdict): (&Path, Verdict),
+    ) -> Result<()> {
+        if let Some(ignore) = &mut self.ignore {
+            ignore.enter(physical, logical, verdict)?;
+        }
+        let walked = self.directory(collected, physical, logical);
+        if let Some(ignore) = &mut self.ignore {
+            ignore.rules.pop();
+        }
+        walked
     }
 
     /// Whether `entry` lies outside the real directories of the repository:
@@ -587,7 +673,7 @@ impl Walk<'_> {
                 );
                 return Ok(());
             }
-            return self.directory(collected, &target, logical);
+            return self.descend(collected, &target, (logical, Verdict::Keep));
         }
         if selected && target.is_file() {
             collected.push(logical.to_path_buf(), &target)?;
@@ -1189,5 +1275,88 @@ mod tests {
 
         let rels: Vec<_> = inputs.iter().map(|f| f.relative_path.clone()).collect();
         assert_eq!(rels, vec![PathBuf::from("src/main.rs")]);
+    }
+
+    fn relative_paths(inputs: &[HashedInput]) -> Vec<String> {
+        inputs
+            .iter()
+            .map(|input| input.relative_path.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    /// A repository with ignored build output, logs and a dependency tree.
+    fn repository_with_ignored_files() -> TempDir {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        gix::init(root).unwrap();
+        fs::create_dir_all(root.join("crates/app/src")).unwrap();
+        fs::create_dir_all(root.join("crates/app/target/debug")).unwrap();
+        fs::create_dir_all(root.join("node_modules/pkg")).unwrap();
+        fs::write(root.join(".gitignore"), "target/\nnode_modules/\n*.log\n").unwrap();
+        fs::write(root.join("crates/app/src/lib.rs"), "lib").unwrap();
+        fs::write(root.join("crates/app/target/debug/app"), "binary").unwrap();
+        fs::write(root.join("crates/app/build.log"), "log").unwrap();
+        fs::write(root.join("node_modules/pkg/index.js"), "js").unwrap();
+        tmp
+    }
+
+    #[test]
+    fn globs_leave_out_what_git_ignores() {
+        let tmp = repository_with_ignored_files();
+        let hasher = WalkHasher::new(tmp.path());
+
+        let inputs = hasher.resolve_sync(&["crates/**".into()]).unwrap();
+        assert_eq!(relative_paths(&inputs), ["crates/app/src/lib.rs"]);
+
+        let everything = hasher.resolve_sync(&[String::new()]).unwrap();
+        assert_eq!(
+            relative_paths(&everything),
+            [".gitignore", "crates/app/src/lib.rs"],
+            "neither ignored files nor .git are inputs"
+        );
+    }
+
+    #[test]
+    fn naming_an_ignored_location_selects_it() {
+        let tmp = repository_with_ignored_files();
+        let hasher = WalkHasher::new(tmp.path());
+
+        let inputs = hasher
+            .resolve_sync(&[
+                "node_modules/**".into(),
+                "crates/app/target".into(),
+                "crates/app/build.log".into(),
+            ])
+            .unwrap();
+        assert_eq!(
+            relative_paths(&inputs),
+            [
+                "crates/app/build.log",
+                "crates/app/target/debug/app",
+                "node_modules/pkg/index.js",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_workspace_below_the_repository_root_applies_the_root_rules() {
+        let tmp = repository_with_ignored_files();
+        let hasher = WalkHasher::new(tmp.path().join("crates/app"));
+
+        let inputs = hasher.resolve_sync(&["**".into()]).unwrap();
+        assert_eq!(relative_paths(&inputs), ["src/lib.rs"]);
+    }
+
+    #[test]
+    fn outside_a_repository_gitignore_files_change_nothing() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        fs::write(root.join(".gitignore"), "*.log\n").unwrap();
+        fs::write(root.join("build.log"), "log").unwrap();
+
+        let inputs = WalkHasher::new(root)
+            .resolve_sync(&["*.log".into()])
+            .unwrap();
+        assert_eq!(relative_paths(&inputs), ["build.log"]);
     }
 }

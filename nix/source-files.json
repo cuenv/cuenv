@@ -44,5 +44,8 @@
     "apps/cuetty/compat",
     "apps/cuetty/src",
     "apps/cuetty/tests"
+  ],
+  "specTrees": [
+    "specs/quint"
   ]
 }

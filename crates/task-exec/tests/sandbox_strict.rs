@@ -344,6 +344,7 @@ async fn strict_pid_namespace_waits_for_detached_children() -> Result<(), Box<dy
         task_tmp: &scratch,
         task_home: &home,
         network: NetworkPolicy::Disabled,
+        nix_context: None,
     })?;
     let script = r#"
         test -d "$HOME" && test "$PPID" = 1 && "$3" 0 || exit 1

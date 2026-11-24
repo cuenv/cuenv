@@ -1525,6 +1525,7 @@ async fn state_remove_and_recover_work_from_a_moved_directory() {
                     resource: &saved,
                     expected: RecordVersion::of(Some(pet)),
                 },
+                None,
             )
             .unwrap();
 
@@ -1637,6 +1638,7 @@ async fn state_recover_records_and_deletes_unrecorded_files() {
                 resource: &managed("random_pet.pet"),
                 expected: RecordVersion::Absent,
             },
+            None,
         )
         .unwrap();
 
@@ -1677,6 +1679,7 @@ async fn state_recover_refuses_to_overwrite_a_newer_record_unless_forced() {
                 resource: &managed("random_pet.pet"),
                 expected: RecordVersion::Absent,
             },
+            None,
         )
         .unwrap();
     // Another run recorded the resource since the change was saved.
@@ -1729,6 +1732,7 @@ async fn an_unusable_unrecorded_file_names_the_file_not_the_state_store() {
                 resource: &managed("random_pet.pet"),
                 expected: RecordVersion::Absent,
             },
+            None,
         )
         .unwrap();
     let file = unrecorded.list(&harness.tenant).unwrap()[0].file.clone();
@@ -1781,6 +1785,8 @@ async fn unlock_with_another_identifier_is_a_lock_failure() {
 #[derive(Debug, Default)]
 struct UnreleasableStore {
     unlock_attempts: AtomicUsize,
+    /// After this many failed releases, the lock is found gone.
+    gone_after_failures: Option<usize>,
     force_unlock_attempts: AtomicUsize,
     reported_lock: Option<LockInformation>,
 }
@@ -1850,7 +1856,13 @@ impl StateStore for UnreleasableStore {
         _tenant: &TenantKey,
         _lock: &StateLock,
     ) -> cuenv_infrastructure::Result<bool> {
-        self.unlock_attempts.fetch_add(1, Ordering::SeqCst);
+        let failed = self.unlock_attempts.fetch_add(1, Ordering::SeqCst);
+        if self
+            .gone_after_failures
+            .is_some_and(|failures| failed >= failures)
+        {
+            return Ok(false);
+        }
         Err(InfrastructureError::state("unavailable"))
     }
 
@@ -2052,6 +2064,34 @@ async fn a_lock_that_was_taken_away_during_the_run_is_not_reported_as_released()
     .unwrap();
 }
 
+#[tokio::test(start_paused = true)]
+async fn a_lock_found_gone_after_a_failed_release_is_uncertain() {
+    let store = UnreleasableStore {
+        gone_after_failures: Some(1),
+        ..UnreleasableStore::default()
+    };
+    let tenant = TenantKey::try_new("example.com/infrastructure", "app").unwrap();
+    let release = super::lock::release(&store, &tenant, &StateLock::generate())
+        .await
+        .unwrap();
+    assert_eq!(release, super::lock::Release::Uncertain);
+    assert_eq!(store.unlock_attempts.load(Ordering::SeqCst), 2);
+
+    // The run's error never reports the lock released.
+    let mut harness = Harness::new(OutputFormat::Json, Script::Line("yes"));
+    harness.store = Arc::new(UnreleasableStore {
+        gone_after_failures: Some(1),
+        ..UnreleasableStore::default()
+    });
+    let context = harness.context();
+    let error = super::lock::under_lock(&context, "apply", |_lock| async {
+        Err::<(), _>(super::interrupts::interrupted())
+    })
+    .await
+    .unwrap_err();
+    assert!(!lock_of(&error).unwrap().released);
+}
+
 #[test]
 fn the_release_notice_says_what_the_release_did() {
     let lock = StateLock::generate();
@@ -2064,6 +2104,13 @@ fn the_release_notice_says_what_the_release_did() {
     assert!(gone.contains("no longer held"), "{gone}");
     assert!(gone.contains("nothing was released"), "{gone}");
     assert!(gone.contains(&lock.lock_identifier), "{gone}");
+    let uncertain = super::lock::release_notice(&lock, &tenant, super::lock::Release::Uncertain);
+    assert!(!uncertain.starts_with("Released"), "{uncertain}");
+    assert!(
+        uncertain.contains("does not claim the release"),
+        "{uncertain}"
+    );
+    assert!(!uncertain.contains("nothing was released"), "{uncertain}");
 }
 
 // ---------------------------------------------------------------------------
@@ -2934,8 +2981,8 @@ async fn recover_refuses_an_unreadable_sibling_before_writing_current_state() {
         resource: &resource,
         expected: RecordVersion::Absent,
     };
-    let own_file = unrecorded.save(&harness.tenant, &put).unwrap();
-    let dev_file = unrecorded.save(&dev, &put).unwrap();
+    let own_file = unrecorded.save(&harness.tenant, &put, None).unwrap();
+    let dev_file = unrecorded.save(&dev, &put, None).unwrap();
     let dev_directory = dev_file.parent().unwrap().to_path_buf();
     std::fs::remove_file(dev_file).unwrap();
     std::fs::remove_dir(&dev_directory).unwrap();
@@ -3468,6 +3515,7 @@ async fn recovering_without_env_mentions_pending_changes_of_declared_environment
                 resource: &managed("random_pet.pet"),
                 expected: RecordVersion::Absent,
             },
+            None,
         )
         .unwrap();
     let siblings = Siblings {

@@ -38,7 +38,12 @@
 //! another. Planning refuses to run while a tenant has unrecorded changes.
 //! Recovering a change also removes its in-flight marker from the shared
 //! backend ([`crate::in_flight`]), which kept every other runner from
-//! planning while the outcome lived only in this file.
+//! planning while the outcome lived only in this file. A file names the lock
+//! of the run that made the change, so recovery removes only that run's
+//! marker: a file is refused while a later run's change to the same address
+//! is in flight (after the address was imported and changed again, say).
+//! Recovering it would remove the later run's marker and let plans repeat a
+//! change whose outcome is unknown (`specs/quint/infrastructure_changes.qnt`).
 //!
 //! The file format is JSON in camelCase throughout, with an explicit
 //! `formatVersion` (currently 1) and a `kind` marker that tells a file of a
@@ -104,6 +109,28 @@ pub struct UnrecordedRecord {
     /// The CUE package the change was saved for, when the backend keys state
     /// by package. Private for the same reason.
     package: Option<String>,
+    /// The lock of the run that made the change, which its in-flight marker
+    /// names. `None` for a file saved before files carried it.
+    lock_identifier: Option<String>,
+}
+
+impl UnrecordedRecord {
+    /// Whether `change`, the in-flight marker of this record's address, is
+    /// the marker of the run that saved this file. A file that names its
+    /// lock owns only a marker with that lock. One saved before files named
+    /// a lock owns a marker started no later than the file was saved: a run
+    /// plans only while no marker exists, so a marker started after the save
+    /// belongs to a later run. A time that cannot be read owns nothing.
+    fn owns(&self, change: &crate::in_flight::InFlightChange) -> bool {
+        self.lock_identifier.as_ref().map_or_else(
+            || {
+                let started = chrono::DateTime::parse_from_rfc3339(&change.started_at);
+                let saved = chrono::DateTime::parse_from_rfc3339(&self.saved_at);
+                matches!((started, saved), (Ok(started), Ok(saved)) if started <= saved)
+            },
+            |lock| &change.lock_identifier == lock,
+        )
+    }
 }
 
 /// What [`UnrecordedStore::recover`] does when the stored record is no
@@ -163,6 +190,12 @@ struct UnrecordedFile {
     saved_at: String,
     expected: RecordVersion,
     resource: FileResource,
+    /// The lock of the run that made the change. Builds that predate it
+    /// refuse a file carrying it as malformed, which keeps them from
+    /// recovering it with a check that does not tell its marker apart from a
+    /// later run's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    lock_identifier: Option<String>,
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -397,7 +430,8 @@ impl UnrecordedStore {
     }
 
     /// Save a record the state store could not take, with the version of
-    /// the stored record it replaces.
+    /// the stored record it replaces and the lock of the run that made the
+    /// change, which its in-flight marker names.
     ///
     /// # Errors
     ///
@@ -409,7 +443,12 @@ impl UnrecordedStore {
         skip_all,
         fields(tenant = %tenant, address = %put.resource.address, expected = %put.expected)
     )]
-    pub fn save(&self, tenant: &TenantKey, put: &ConditionalPut<'_>) -> Result<PathBuf> {
+    pub fn save(
+        &self,
+        tenant: &TenantKey,
+        put: &ConditionalPut<'_>,
+        lock: Option<&StateLock>,
+    ) -> Result<PathBuf> {
         let record = put.resource;
         let directory = self.tenant_directory(tenant);
         if let Some(parent) = self.root.parent() {
@@ -440,6 +479,7 @@ impl UnrecordedStore {
             saved_at: saved_at.to_rfc3339(),
             expected: put.expected,
             resource,
+            lock_identifier: lock.map(|lock| lock.lock_identifier.clone()),
         };
         let bytes = serde_json::to_vec_pretty(&document).map_err(|error| {
             InfrastructureError::codec(format!(
@@ -538,6 +578,7 @@ impl UnrecordedStore {
                 record: document.resource.into_record(),
                 backend_identity: document.backend_identity,
                 package: document.tenant.package,
+                lock_identifier: document.lock_identifier,
             });
         }
         Ok(records)
@@ -616,7 +657,7 @@ impl UnrecordedStore {
         let (stored, in_flight) = crate::in_flight::separate(store.list(tenant).await?);
         let mut in_flight: BTreeMap<_, _> = in_flight
             .into_iter()
-            .map(|change| (change.address, change.marker))
+            .map(|change| (change.address.clone(), change))
             .collect();
         let mut retained_sensitivity: BTreeMap<_, _> = stored
             .into_iter()
@@ -624,6 +665,24 @@ impl UnrecordedStore {
             .collect();
         let mut recorded = Vec::new();
         for unrecorded in unrecorded_records {
+            // A later run's change to the address is in flight: its outcome
+            // is unknown, so writing this older one would record a guess,
+            // and removing that run's marker would let plans repeat it.
+            if let Some(change) = in_flight.get(&unrecorded.record.address)
+                && !unrecorded.owns(change)
+            {
+                return Err(file_problem(
+                    &unrecorded.file,
+                    format!(
+                        "another run's {} of {} is in flight (lock {}, started {}); resolve \
+                         that change first, then recover this file or move it aside",
+                        change.step,
+                        unrecorded.record.address,
+                        change.lock_identifier,
+                        change.started_at
+                    ),
+                ));
+            }
             let mut record = unrecorded.record.clone();
             // Recovery can overwrite a retained object without running the
             // engine. Never let an older payload remove its sensitivity marks.
@@ -677,8 +736,8 @@ impl UnrecordedStore {
                 .insert(record.address.clone(), record.sensitive_attributes.clone());
             // The saved outcome is recorded: its change is no longer in
             // flight for other runners.
-            if let Some(marker) = in_flight.remove(&record.address) {
-                store.delete(tenant, options.lock, &marker).await?;
+            if let Some(change) = in_flight.remove(&record.address) {
+                store.delete(tenant, options.lock, &change.marker).await?;
             }
             self.remove(&unrecorded)?;
             tracing::info!(address = %record.address, "recovered an unrecorded change");
@@ -1163,7 +1222,7 @@ mod tests {
     }
 
     fn save(store: &UnrecordedStore, tenant: &TenantKey, record: &ManagedResource) -> PathBuf {
-        store.save(tenant, &absent(record)).unwrap()
+        store.save(tenant, &absent(record), None).unwrap()
     }
 
     fn backend_identity(url: &str) -> String {
@@ -1199,6 +1258,7 @@ mod tests {
                     resource: &record("second", "b"),
                     expected: replaced,
                 },
+                None,
             )
             .unwrap();
         save(&store, &tenant("api"), &record("other", "c"));
@@ -1649,7 +1709,7 @@ mod tests {
         stored.sensitive_attributes.push("id".to_string());
         state.put(&tenant, &lock, &stored).await?;
         let saved = record("pet", "saved");
-        unrecorded.save(&tenant, &absent(&saved))?;
+        unrecorded.save(&tenant, &absent(&saved), None)?;
         assert_eq!(
             unrecorded.list(&tenant)?[0].record.sensitive_attributes,
             ["secret"]
@@ -1699,7 +1759,7 @@ mod tests {
         state.put(&tenant, &lock, &stored).await?;
         let before = state.list(&tenant).await?[0].clone();
         let saved = record("pet", "saved");
-        let file = unrecorded.save(&tenant, &absent(&saved))?;
+        let file = unrecorded.save(&tenant, &absent(&saved), None)?;
         let mut legacy: serde_json::Value = serde_json::from_slice(&std::fs::read(&file)?)?;
         legacy["resource"]
             .as_object_mut()
@@ -1936,6 +1996,7 @@ mod tests {
                         resource: &saved,
                         expected: RecordVersion::of(Some(&previous)),
                     },
+                    None,
                 )
                 .unwrap();
             state
@@ -2149,6 +2210,7 @@ mod tests {
                     resource: &record("pet", "pending"),
                     expected: RecordVersion::of(Some(&previous)),
                 },
+                None,
             )
             .unwrap();
         let document: serde_json::Value =
@@ -2323,7 +2385,11 @@ mod tests {
             store.list(&web),
             Err(InfrastructureError::UnrecordedFile { .. })
         ));
-        assert!(store.save(&web, &absent(&record("pet", "b"))).is_err());
+        assert!(
+            store
+                .save(&web, &absent(&record("pet", "b")), None)
+                .is_err()
+        );
         assert_eq!(std::fs::read_dir(&target).unwrap().count(), 0);
     }
 
@@ -2593,7 +2659,6 @@ mod tests {
         let state = BoundMemoryStateStore::for_backend(url);
         let tenant = tenant("web");
         let saved = record("pet", "pending");
-        save(&unrecorded, &tenant, &saved);
         let lock = state.lock(&tenant, "recover").await.unwrap();
         let other = ResourceAddress::new("random_pet", "other");
         for address in [&saved.address, &other] {
@@ -2602,19 +2667,114 @@ mod tests {
             state.put(&tenant, &lock, &marker).await.unwrap();
         }
         unrecorded
-            .recover(
-                &state,
-                &tenant,
-                &RecoverOptions {
-                    lock: &lock,
-                    overrides: RecoverOverrides::default(),
-                },
-            )
-            .await
+            .save(&tenant, &absent(&saved), Some(&lock))
             .unwrap();
+        recover_all(&unrecorded, &state, &lock).await.unwrap();
         let (resources, in_flight) = crate::in_flight::separate(state.list(&tenant).await.unwrap());
         assert!(resources[0].same_content(&saved));
         assert_eq!(in_flight.len(), 1);
         assert_eq!(in_flight[0].address, other);
+    }
+
+    /// Recover every file of the `web` tenant, with no overrides.
+    async fn recover_all(
+        unrecorded: &UnrecordedStore,
+        state: &BoundMemoryStateStore,
+        lock: &StateLock,
+    ) -> Result<Vec<ResourceAddress>> {
+        unrecorded
+            .recover(
+                state,
+                &tenant("web"),
+                &RecoverOptions {
+                    lock,
+                    overrides: RecoverOverrides::default(),
+                },
+            )
+            .await
+    }
+
+    /// The trace `specs/quint/infrastructure_changes.qnt` found: a run saved
+    /// its create, the object was imported elsewhere, destroyed, and created
+    /// again by a later run whose answer was lost. Recovering the old file
+    /// must neither record it nor clear the later run's marker, or the next
+    /// plan creates the object a second time.
+    #[tokio::test]
+    async fn a_later_runs_change_in_flight_blocks_recovering_an_older_one() {
+        let root = tempfile::tempdir().unwrap();
+        let url = "libsql://state-a.turso.io";
+        let unrecorded = bound_store(root.path(), url);
+        let state = BoundMemoryStateStore::for_backend(url);
+        let tenant = tenant("web");
+        let saved = record("pet", "pending");
+        let earlier = StateLock::generate();
+        let file = unrecorded
+            .save(&tenant, &absent(&saved), Some(&earlier))
+            .unwrap();
+        let later = state.lock(&tenant, "later run").await.unwrap();
+        let marker =
+            crate::in_flight::marker_record(&saved.address, "create", &later.lock_identifier)
+                .unwrap();
+        state.put(&tenant, &later, &marker).await.unwrap();
+
+        let error = recover_all(&unrecorded, &state, &later).await.unwrap_err();
+        let message = error.to_string();
+        assert!(
+            matches!(error, InfrastructureError::UnrecordedFile { .. }),
+            "{message}"
+        );
+        assert!(message.contains("in flight"), "{message}");
+        assert!(message.contains(&later.lock_identifier), "{message}");
+        assert!(file.exists());
+        let (resources, in_flight) = crate::in_flight::separate(state.list(&tenant).await.unwrap());
+        assert_eq!(resources, [] as [ManagedResource; 0]);
+        assert_eq!(in_flight.len(), 1);
+    }
+
+    /// A file saved before files named their lock owns only a marker
+    /// started no later than the file was saved.
+    #[tokio::test]
+    async fn a_file_without_a_lock_owns_only_an_earlier_marker() {
+        let root = tempfile::tempdir().unwrap();
+        let url = "libsql://state-a.turso.io";
+        let unrecorded = bound_store(root.path(), url);
+        let state = BoundMemoryStateStore::for_backend(url);
+        let tenant = tenant("web");
+        let saved = record("pet", "pending");
+        let lock = state.lock(&tenant, "recover").await.unwrap();
+
+        let file = unrecorded.save(&tenant, &absent(&saved), None).unwrap();
+        let later =
+            crate::in_flight::marker_record(&saved.address, "create", &lock.lock_identifier)
+                .unwrap();
+        state.put(&tenant, &lock, &later).await.unwrap();
+        assert!(recover_all(&unrecorded, &state, &lock).await.is_err());
+        assert!(file.exists());
+
+        std::fs::remove_file(&file).unwrap();
+        unrecorded.save(&tenant, &absent(&saved), None).unwrap();
+        assert_eq!(
+            recover_all(&unrecorded, &state, &lock).await.unwrap(),
+            std::slice::from_ref(&saved.address)
+        );
+        let (_, in_flight) = crate::in_flight::separate(state.list(&tenant).await.unwrap());
+        assert_eq!(in_flight.len(), 0);
+    }
+
+    #[test]
+    fn a_saved_file_names_the_lock_of_its_run() {
+        let root = tempfile::tempdir().unwrap();
+        let unrecorded = bound_store(root.path(), "libsql://state-a.turso.io");
+        let lock = StateLock::generate();
+        let file = unrecorded
+            .save(
+                &tenant("web"),
+                &absent(&record("pet", "pending")),
+                Some(&lock),
+            )
+            .unwrap();
+        let document: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(file).unwrap()).unwrap();
+        assert_eq!(document["lockIdentifier"], lock.lock_identifier.as_str());
     }
 }

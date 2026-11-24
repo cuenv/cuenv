@@ -362,7 +362,9 @@ fn cue_module_command_path(command: &Command) -> Option<&str> {
         | Command::CacheStats { .. }
         | Command::CacheVerify { .. }
         | Command::CacheGc { .. }
-        | Command::CachePrune { .. } => None,
+        | Command::CachePrune { .. }
+        | Command::CacheInspect { .. }
+        | Command::CacheDiff { .. } => None,
     }
 }
 

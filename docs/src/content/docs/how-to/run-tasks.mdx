@@ -203,6 +203,25 @@ cuenv task -l ci
 cuenv task -l test -l unit
 ```
 
+### Affected-task runs with `--affected` and `--from`
+
+Run only the tasks whose declared `inputs` (or transitive dependencies, or CUE configuration) are affected by changed files — using the same fail-closed engine as `cuenv ci`:
+
+```bash
+# Run all tasks affected by uncommitted changes vs HEAD
+cuenv task --affected
+
+# Run all tasks affected since a git ref (merge-base with HEAD + uncommitted changes)
+cuenv task --from origin/main
+
+# Combine with labels, a specific task, or --dry-run
+cuenv task -l test --affected --from origin/main
+cuenv task build --affected
+cuenv task --affected --dry-run
+```
+
+Tasks without declared `inputs` are always treated as affected so nothing is silently skipped.
+
 ### Resilient runs with `--continue-on-error`
 
 By default, the first failure aborts the run. `--continue-on-error` keeps unrelated siblings going and marks anything downstream of the failure as skipped:
@@ -316,6 +335,7 @@ cuenv supports task-result caching. Caching is opt-in per task through
 and materialized results.
 
 - **Inputs**: Files or glob patterns that the task reads. If these haven't changed since the last successful run, the cached task result may be reused.
+- **Ignored files**: In a git repository, a glob or directory input selects the files of the repository, not what git ignores. `crates/**` leaves out an ignored `crates/app/target/` and `*.log` files, so local cache keys and execution roots match CI. Only `.gitignore` files inside the repository count; your global excludes file and `.git/info/exclude` do not, because they differ between machines. A tracked file always counts, as it does for git, and `.git` is never an input. To read ignored files, name the ignored location itself: `node_modules/**`, `dist`, or an exact file path such as `generated/schema.json`. Outside a git repository every file counts.
 - **Outputs**: Files or directories created by the task.
 - **Cache policy**: Use `cache: {mode: "read-write"}` for ordinary read/write caching.
 - **Limitations**: Tasks with task-local runtime `env` entries may skip the task-result cache because cuenv cannot derive a stable key.
@@ -388,8 +408,9 @@ a graph that reaches the task (`cuenv task`, `cuenv ci`, `cuenv up`) and when
 `cuenv ci` selects affected tasks, including `--all` and runs with nothing to
 compare. A rename in the other project is then an error for the task that reads
 it, naming the task, the directory and the path — never a silently smaller set
-of inputs. The check reads the working tree, ignores `.gitignore`, and counts
-untracked and ignored files. `cuenv sync ci` does not check it: generating
+of inputs. The check reads the working tree and selects files exactly as
+hashing does: untracked files count, and files git ignores count only when the
+path names the ignored location itself. `cuenv sync ci` does not check it: generating
 workflows must not depend on a working tree. A reference cannot be optional; a
 glob that is legitimately empty at times (`.cuenv/changesets/*.md` after a
 release) fails its readers then.
@@ -953,8 +974,8 @@ tasks: {
 #### When isolation cannot be constructed
 
 Result-cache eligibility and sandboxing are separate. Cache skip reasons such
-as an empty input set, `cache: mode: "never"`, task-local runtime environment,
-or `CUENV_CACHE=off` still retain the resolved input snapshot and run in a
+as an empty input set, `cache: mode: "never"`, an unset host passthrough in
+task-local `env`, or `CUENV_CACHE=off` still retain the resolved input snapshot and run in a
 directory sandbox. If an input declaration cannot be resolved safely, the
 task errors rather than silently running against the live checkout.
 
@@ -1037,6 +1058,12 @@ tasks: {
     }
 }
 ```
+
+When a task fails and the run stops (no `continueOnError`), cuenv kills the
+process groups of the tasks still running, and waits until they are gone before
+it reports the failure. Nothing a stopped run started keeps writing into the
+workspace. On Linux, a task's process also dies with cuenv itself, even when
+cuenv is killed with `SIGKILL` or by the OOM killer.
 
 See [Schema status](/reference/schema/status/) for the current implementation
 limits around task execution policies such as `timeout`, `retry`,

@@ -18,7 +18,7 @@ mod task_execution;
 mod tools;
 
 pub use config::CIExecutorConfig;
-pub use orchestrator::{RunCiRequest, TaskSelection, run_ci};
+pub use orchestrator::{RunCiRequest, ShardSpec, TaskSelection, run_ci};
 pub use pipeline_result::PipelineResult;
 pub use runner::TaskOutput;
 pub use secrets::{EnvSecretResolver, MockSecretResolver, SaltConfig, SecretResolver};

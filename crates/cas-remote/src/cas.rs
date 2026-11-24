@@ -212,17 +212,35 @@ impl RemoteCas {
     }
 
     async fn find_missing_chunk(&self, blob_digests: Vec<pb::Digest>) -> Result<Vec<Digest>> {
-        let request = self.client.request(pb::FindMissingBlobsRequest {
-            instance_name: self.client.instance_name(),
-            blob_digests,
-            ..Default::default()
-        })?;
         let response = self
-            .cas_client()
-            .find_missing_blobs(request)
-            .await
-            .map_err(|status| Error::rpc("FindMissingBlobs", &status))?
-            .into_inner();
+            .client
+            .retry_runner()
+            .run("FindMissingBlobs", || {
+                let mut client = self.cas_client();
+                let blob_digests = blob_digests.clone();
+                let instance_name = self.client.instance_name();
+                async move {
+                    let request = self
+                        .client
+                        .request(pb::FindMissingBlobsRequest {
+                            instance_name,
+                            blob_digests,
+                            ..Default::default()
+                        })
+                        .map_err(|error| (error, false))?;
+                    client
+                        .find_missing_blobs(request)
+                        .await
+                        .map(tonic::Response::into_inner)
+                        .map_err(|status| {
+                            (
+                                Error::rpc("FindMissingBlobs", &status),
+                                crate::retry::is_transient_grpc(&status),
+                            )
+                        })
+                }
+            })
+            .await?;
 
         response
             .missing_blob_digests
@@ -306,17 +324,35 @@ impl RemoteCas {
         requests: Vec<pb::batch_update_blobs_request::Request>,
         expected: &HashSet<Digest>,
     ) -> Result<()> {
-        let request = self.client.request(pb::BatchUpdateBlobsRequest {
-            instance_name: self.client.instance_name(),
-            requests,
-            ..Default::default()
-        })?;
         let response = self
-            .cas_client()
-            .batch_update_blobs(request)
-            .await
-            .map_err(|status| Error::rpc("BatchUpdateBlobs", &status))?
-            .into_inner();
+            .client
+            .retry_runner()
+            .run("BatchUpdateBlobs", || {
+                let mut client = self.cas_client();
+                let requests = requests.clone();
+                let instance_name = self.client.instance_name();
+                async move {
+                    let request = self
+                        .client
+                        .request(pb::BatchUpdateBlobsRequest {
+                            instance_name,
+                            requests,
+                            ..Default::default()
+                        })
+                        .map_err(|error| (error, false))?;
+                    client
+                        .batch_update_blobs(request)
+                        .await
+                        .map(tonic::Response::into_inner)
+                        .map_err(|status| {
+                            (
+                                Error::rpc("BatchUpdateBlobs", &status),
+                                crate::retry::is_transient_grpc(&status),
+                            )
+                        })
+                }
+            })
+            .await?;
 
         let mut seen = HashSet::with_capacity(expected.len());
         for entry in response.responses {
@@ -416,18 +452,37 @@ impl RemoteCas {
             Vec::new()
         };
 
-        let request = self.client.request(pb::BatchReadBlobsRequest {
-            instance_name: self.client.instance_name(),
-            digests: proto_digests,
-            acceptable_compressors,
-            ..Default::default()
-        })?;
         let response = self
-            .cas_client()
-            .batch_read_blobs(request)
-            .await
-            .map_err(|status| Error::rpc("BatchReadBlobs", &status))?
-            .into_inner();
+            .client
+            .retry_runner()
+            .run("BatchReadBlobs", || {
+                let mut client = self.cas_client();
+                let digests = proto_digests.clone();
+                let acceptable_compressors = acceptable_compressors.clone();
+                let instance_name = self.client.instance_name();
+                async move {
+                    let request = self
+                        .client
+                        .request(pb::BatchReadBlobsRequest {
+                            instance_name,
+                            digests,
+                            acceptable_compressors,
+                            ..Default::default()
+                        })
+                        .map_err(|error| (error, false))?;
+                    client
+                        .batch_read_blobs(request)
+                        .await
+                        .map(tonic::Response::into_inner)
+                        .map_err(|status| {
+                            (
+                                Error::rpc("BatchReadBlobs", &status),
+                                crate::retry::is_transient_grpc(&status),
+                            )
+                        })
+                }
+            })
+            .await?;
 
         let mut out = HashMap::with_capacity(expected.len());
         for entry in response.responses {
@@ -888,9 +943,10 @@ impl RemoteCas {
         self.client.ensure_writable("upload a blob")?;
         let digest = Digest::of_bytes(bytes);
 
-        // Skip the upload when the server already holds the blob. Content
-        // addressing makes this safe and it is the common case in a warm
-        // cache.
+        // Skip the upload when the server reports the blob, the common case
+        // in a warm cache. The report comes from the server's index, not its
+        // bytes: a blob that reads back corrupt is replaced through
+        // `replace_bytes` instead (see `CorruptionAwareCas`).
         if self
             .find_missing(std::slice::from_ref(&digest))
             .await?
@@ -900,14 +956,60 @@ impl RemoteCas {
             return Ok(digest);
         }
 
-        if self.fits_in_a_batch(digest.size_bytes) {
-            self.write_batched(&digest, bytes).await?;
-        } else {
-            self.write_streamed(&digest, bytes).await?;
-        }
-        trace!(digest = %digest, "uploaded blob to remote CAS");
+        self.upload(&digest, bytes).await?;
         Ok(digest)
     }
+
+    /// Upload `bytes` under `digest` without asking whether the server
+    /// already holds it.
+    async fn upload(&self, digest: &Digest, bytes: &[u8]) -> Result<()> {
+        self.client.ensure_writable("upload a blob")?;
+        if self.fits_in_a_batch(digest.size_bytes) {
+            self.write_batched(digest, bytes).await?;
+        } else {
+            self.write_streamed(digest, bytes).await?;
+        }
+        trace!(digest = %digest, "uploaded blob to remote CAS");
+        Ok(())
+    }
+
+    /// Upload the file at `source`, whose digest is `digest`, without asking
+    /// whether the server already holds it.
+    async fn upload_file(&self, digest: &Digest, source: &Path) -> cuenv_cas::Result<()> {
+        self.client
+            .ensure_writable("upload a file")
+            .map_err(cuenv_cas::Error::from)?;
+        if self.fits_in_a_batch(digest.size_bytes) {
+            let bytes = tokio::fs::read(source)
+                .await
+                .map_err(|error| cuenv_cas::Error::io(error, source, "read"))?;
+            let actual = Digest::of_bytes(&bytes);
+            if &actual != digest {
+                return Err(cuenv_cas::Error::digest_mismatch(
+                    digest.to_resource(),
+                    actual.to_resource(),
+                ));
+            }
+            self.write_batched(digest, &bytes)
+                .await
+                .map_err(cuenv_cas::Error::from)?;
+        } else {
+            self.write_file_streamed(digest, source).await?;
+        }
+        Ok(())
+    }
+}
+
+/// The digest of the file at `source`, read once in full.
+///
+/// # Errors
+///
+/// Returns an I/O error if the file cannot be read.
+pub(crate) async fn digest_path(source: &Path) -> cuenv_cas::Result<Digest> {
+    let mut file = tokio::fs::File::open(source)
+        .await
+        .map_err(|error| cuenv_cas::Error::io(error, source, "open"))?;
+    digest_file(&mut file, source).await
 }
 
 pub(crate) async fn digest_file(
@@ -1126,23 +1228,21 @@ impl Cas for RemoteCas {
         {
             return Ok(digest);
         }
-        if self.fits_in_a_batch(digest.size_bytes) {
-            let bytes = tokio::fs::read(source)
-                .await
-                .map_err(|error| cuenv_cas::Error::io(error, source, "read"))?;
-            let actual = Digest::of_bytes(&bytes);
-            if actual != digest {
-                return Err(cuenv_cas::Error::digest_mismatch(
-                    digest.to_resource(),
-                    actual.to_resource(),
-                ));
-            }
-            self.write_batched(&digest, &bytes)
-                .await
-                .map_err(cuenv_cas::Error::from)?;
-        } else {
-            self.write_file_streamed(&digest, source).await?;
-        }
+        self.upload_file(&digest, source).await?;
+        Ok(digest)
+    }
+
+    async fn replace_bytes(&self, bytes: &[u8]) -> cuenv_cas::Result<Digest> {
+        let digest = Digest::of_bytes(bytes);
+        self.upload(&digest, bytes)
+            .await
+            .map_err(cuenv_cas::Error::from)?;
+        Ok(digest)
+    }
+
+    async fn replace_file(&self, source: &Path) -> cuenv_cas::Result<Digest> {
+        let digest = digest_path(source).await?;
+        self.upload_file(&digest, source).await?;
         Ok(digest)
     }
 }

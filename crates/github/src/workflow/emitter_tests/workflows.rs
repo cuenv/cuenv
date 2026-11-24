@@ -316,13 +316,16 @@ fn test_remote_cache_separates_ro_pr_and_protected_rw_credentials() {
         auth: Some(CacheAuth {
             bearer_token_env: Some("CUENV_CACHE_TOKEN".to_string()),
             header: None,
+            credential_helper: None,
         }),
+        tls: None,
         ci: Some(RemoteCacheCi {
             read_secret: Some("CACHE_RO_TOKEN".to_string()),
             write_secret: Some("CACHE_RW_TOKEN".to_string()),
             write_environment: Some("cache-write".to_string()),
             write_queue: None,
             isolated_cache_dir: true,
+            ..Default::default()
         }),
     };
 
@@ -376,4 +379,177 @@ fn test_remote_cache_separates_ro_pr_and_protected_rw_credentials() {
     assert!(pr_yaml.contains("secrets.CACHE_RO_TOKEN"));
     assert!(pr_yaml.contains("CUENV_REMOTE_CACHE_UPLOAD: 'false'"));
     assert!(pr_yaml.contains("cuenv-cache/untrusted"));
+}
+
+#[test]
+fn test_remote_cache_ambient_mode_preserves_env_and_gates_uploads() {
+    use cuenv_core::manifest::{
+        CacheAuth, CacheProtocol, RemoteCache, RemoteCacheCi, RemoteCacheCiAuthMode,
+    };
+
+    let remote_cache = RemoteCache {
+        endpoint: "grpcs://cache.namespace.so:443".to_string(),
+        protocol: CacheProtocol::Grpc,
+        instance: String::new(),
+        upload: true,
+        auth: Some(CacheAuth {
+            bearer_token_env: None,
+            header: None,
+            credential_helper: Some("bazel-credential-nsc".to_string()),
+        }),
+        tls: None,
+        ci: Some(RemoteCacheCi {
+            auth_mode: RemoteCacheCiAuthMode::Ambient,
+            isolated_cache_dir: true,
+            ..Default::default()
+        }),
+    };
+
+    let emitter = GitHubActionsEmitter::new()
+        .without_nix()
+        .without_cuenv_build()
+        .with_remote_cache(remote_cache);
+
+    // Protected push workflow with an existing `environment: production` keeps
+    // its environment, does NOT overwrite CUENV_REMOTE_CACHE or inject static
+    // secrets, enables upload, and isolates CUENV_CACHE_DIR to trusted.
+    let mut protected_ir = super::make_ir(vec![super::make_task("build", &["cargo", "build"])]);
+    protected_ir.pipeline.environment = Some("production".to_string());
+    protected_ir.pipeline.trigger = Some(cuenv_ci::ir::TriggerCondition {
+        branches: vec!["main".to_string()],
+        pull_request: Some(false),
+        ..Default::default()
+    });
+    let protected_yaml = emitter.emit_thin(&protected_ir).unwrap();
+    assert!(protected_yaml.contains("environment: production"));
+    assert!(!protected_yaml.contains("CUENV_REMOTE_CACHE:"));
+    assert!(!protected_yaml.contains("secrets.CACHE_"));
+    assert!(protected_yaml.contains("CUENV_REMOTE_CACHE_UPLOAD: 'true'"));
+    assert!(protected_yaml.contains("cuenv-cache/trusted"));
+
+    // Pull-request workflow disables upload and isolates CUENV_CACHE_DIR to untrusted.
+    let mut pr_ir = super::make_ir(vec![super::make_task("build", &["cargo", "build"])]);
+    pr_ir.pipeline.trigger = Some(cuenv_ci::ir::TriggerCondition {
+        branches: vec!["main".to_string()],
+        pull_request: Some(true),
+        ..Default::default()
+    });
+    let pr_yaml = emitter.emit_thin(&pr_ir).unwrap();
+    assert!(!pr_yaml.contains("CUENV_REMOTE_CACHE:"));
+    assert!(pr_yaml.contains("CUENV_REMOTE_CACHE_UPLOAD: 'false'"));
+    assert!(pr_yaml.contains("cuenv-cache/untrusted"));
+}
+
+#[test]
+fn test_remote_cache_ambient_mode_gates_manual_and_scheduled_triggers_dynamically() {
+    use cuenv_core::manifest::{
+        CacheAuth, CacheProtocol, RemoteCache, RemoteCacheCi, RemoteCacheCiAuthMode,
+    };
+
+    let make_emitter = |upload| {
+        GitHubActionsEmitter::new()
+            .without_nix()
+            .without_cuenv_build()
+            .with_remote_cache(RemoteCache {
+                endpoint: "grpcs://cache.namespace.so:443".to_string(),
+                protocol: CacheProtocol::Grpc,
+                instance: String::new(),
+                upload,
+                auth: Some(CacheAuth {
+                    bearer_token_env: None,
+                    header: None,
+                    credential_helper: Some("bazel-credential-nsc".to_string()),
+                }),
+                tls: None,
+                ci: Some(RemoteCacheCi {
+                    auth_mode: RemoteCacheCiAuthMode::Ambient,
+                    isolated_cache_dir: true,
+                    ..Default::default()
+                }),
+            })
+    };
+
+    let emitter = make_emitter(true);
+
+    // Default-branch push + workflow_dispatch gates upload & cache dir dynamically.
+    let mut main_manual_ir = super::make_ir(vec![super::make_task("build", &["cargo", "build"])]);
+    main_manual_ir.pipeline.trigger = Some(cuenv_ci::ir::TriggerCondition {
+        branches: vec!["main".to_string()],
+        pull_request: Some(false),
+        manual: Some(cuenv_ci::ir::ManualTriggerConfig {
+            enabled: true,
+            ..Default::default()
+        }),
+        ..Default::default()
+    });
+    let main_manual_yaml = emitter.emit_thin(&main_manual_ir).unwrap();
+    assert!(main_manual_yaml.contains(
+        "CUENV_REMOTE_CACHE_UPLOAD: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}"
+    ));
+    assert!(main_manual_yaml.contains(
+        "CUENV_CACHE_DIR: ${{ runner.temp }}/cuenv-cache/${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') && 'trusted' || 'untrusted' }}"
+    ));
+
+    // Multiple literal branches join with || inside parentheses.
+    let mut multi_branch_ir = super::make_ir(vec![super::make_task("build", &["cargo", "build"])]);
+    multi_branch_ir.pipeline.trigger = Some(cuenv_ci::ir::TriggerCondition {
+        branches: vec!["main".to_string(), "release".to_string()],
+        manual: Some(cuenv_ci::ir::ManualTriggerConfig {
+            enabled: true,
+            ..Default::default()
+        }),
+        ..Default::default()
+    });
+    let multi_branch_yaml = emitter.emit_thin(&multi_branch_ir).unwrap();
+    assert!(multi_branch_yaml.contains(
+        "CUENV_REMOTE_CACHE_UPLOAD: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/release') }}"
+    ));
+
+    // Glob branch patterns fall back to ref_type matching.
+    let mut glob_branch_ir = super::make_ir(vec![super::make_task("build", &["cargo", "build"])]);
+    glob_branch_ir.pipeline.trigger = Some(cuenv_ci::ir::TriggerCondition {
+        branches: vec!["release/*".to_string()],
+        scheduled: vec!["0 2 * * *".to_string()],
+        ..Default::default()
+    });
+    let glob_branch_yaml = emitter.emit_thin(&glob_branch_ir).unwrap();
+    assert!(glob_branch_yaml.contains(
+        "CUENV_REMOTE_CACHE_UPLOAD: ${{ github.event_name == 'push' && github.ref_type == 'branch' }}"
+    ));
+
+    // Combined tag + release triggers with manual dispatch emit both event clauses.
+    let mut release_ir = super::make_ir(vec![super::make_task("build", &["cargo", "build"])]);
+    release_ir.pipeline.trigger = Some(cuenv_ci::ir::TriggerCondition {
+        tags: vec!["v*".to_string()],
+        release: vec!["published".to_string()],
+        manual: Some(cuenv_ci::ir::ManualTriggerConfig {
+            enabled: true,
+            ..Default::default()
+        }),
+        ..Default::default()
+    });
+    let release_yaml = emitter.emit_thin(&release_ir).unwrap();
+    assert!(release_yaml.contains(
+        "CUENV_REMOTE_CACHE_UPLOAD: ${{ (github.event_name == 'push' && github.ref_type == 'tag') || github.event_name == 'release' }}"
+    ));
+
+    // Patterns with single quotes fail closed to disabled.
+    let mut unsafe_ir = super::make_ir(vec![super::make_task("build", &["cargo", "build"])]);
+    unsafe_ir.pipeline.trigger = Some(cuenv_ci::ir::TriggerCondition {
+        branches: vec!["main' || true".to_string()],
+        manual: Some(cuenv_ci::ir::ManualTriggerConfig {
+            enabled: true,
+            ..Default::default()
+        }),
+        ..Default::default()
+    });
+    let unsafe_yaml = emitter.emit_thin(&unsafe_ir).unwrap();
+    assert!(unsafe_yaml.contains("CUENV_REMOTE_CACHE_UPLOAD: 'false'"));
+    assert!(unsafe_yaml.contains("cuenv-cache/untrusted"));
+
+    // upload: false stays statically disabled even on protected + manual workflows.
+    let readonly_emitter = make_emitter(false);
+    let readonly_yaml = readonly_emitter.emit_thin(&main_manual_ir).unwrap();
+    assert!(readonly_yaml.contains("CUENV_REMOTE_CACHE_UPLOAD: 'false'"));
+    assert!(readonly_yaml.contains("cuenv-cache/untrusted"));
 }

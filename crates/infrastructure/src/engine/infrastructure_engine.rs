@@ -2913,7 +2913,7 @@ impl InfrastructureEngine {
     ) -> Result<()> {
         match self.store.put_if_unchanged(&self.tenant, lock, put).await {
             Ok(()) => Ok(()),
-            Err(error) => Err(self.save_unrecorded(put, &error)),
+            Err(error) => Err(self.save_unrecorded(put, lock, &error)),
         }
     }
 
@@ -2924,12 +2924,13 @@ impl InfrastructureEngine {
     fn save_unrecorded(
         &self,
         put: &ConditionalPut<'_>,
+        lock: &StateLock,
         error: &InfrastructureError,
     ) -> InfrastructureError {
         let address = &put.resource.address;
         match self
             .unrecorded_store()
-            .and_then(|unrecorded| unrecorded.save(&self.tenant, put))
+            .and_then(|unrecorded| unrecorded.save(&self.tenant, put, Some(lock)))
         {
             Ok(file) => InfrastructureError::UnrecordedChange {
                 address: address.to_string(),

@@ -472,6 +472,7 @@ provider. The full flag set (verified against
 | `-o, --output <PATH>` | Write exported YAML to a file instead of stdout. |
 | `--from <REF>` | Base ref for affected-task detection, compared through its merge base with `HEAD`. Ignored when GitHub Actions or Buildkite is detected. |
 | `--all` | Run every named task in the selected scope without changing provider context; cannot combine with export. |
+| `--shard <INDEX>/<TOTAL>` | Run a deterministic 1-indexed shard of the planned tasks (e.g., `1/4`); cannot combine with export. |
 | `-j, --jobs <N>` | Max parallel DAG jobs (`0` = host parallelism, the default). |
 | `--dry-run` | Show what would run without executing. |
 | `-e, --environment <NAME>` | Environment used for secret resolution. |
@@ -483,6 +484,9 @@ cuenv ci
 
 # Run a named pipeline, capped at 4 parallel jobs.
 cuenv ci --pipeline ci --jobs 4
+
+# Run shard 1 of 4 across affected tasks.
+cuenv ci --pipeline ci --shard 1/4
 
 # See the plan without executing.
 cuenv ci --pipeline ci --dry-run

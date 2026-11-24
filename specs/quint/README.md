@@ -1,0 +1,56 @@
+# Quint specs
+
+Models of cuenv protocols that fail only under concurrency, lost responses
+and partial failures. TLC (through `quint verify --backend=tlc`) explores
+every reachable state of each model's finite instance.
+
+| Spec | Code it models | Checked in CI |
+| --- | --- | --- |
+| `object_state_cas.qnt` | object-store state backend: lock, conditional PUTs, retries (`crates/infrastructure/src/state/object/store/object_state_store.rs`), and the CLI's release retry (`crates/cuenv/src/commands/infrastructure/lock.rs`) | `safety`, `unlockReportsTruth` |
+| `hook_runs.qnt` | hook runs in one directory across processes: reservation, worker, hook child, cancellation, publish and operator recovery, with processes dying between any two file writes (`crates/hooks/src/state/coordinator.rs`, `crates/cuenv/src/hook_supervisor.rs`) | `safety` |
+| `infrastructure_changes.qnt` | provider changes the state may not learn: in-flight markers, unrecorded-change files and `state recover` (`crates/infrastructure/src/engine/infrastructure_engine.rs`, `crates/infrastructure/src/unrecorded.rs`, `crates/infrastructure/src/in_flight.rs`) | `safety` |
+| `state_migration.qnt` | `state migrate` forward, rollback and copy-back: source fence, target commit receipt, rollback lock and tombstone, manifest (`crates/cuenv/src/commands/infrastructure/migrate.rs`, `crates/infrastructure/src/state/object/store/legacy_migration.rs`) | `safety` |
+| `sql_state_store.qnt` | SQL state backends (Turso, D1): lock row, writes fenced by the lock and serial, retried statements (`crates/infrastructure/src/state/sql/implementation.rs`), and the CLI's release retry | `safety`, `unlockReportsTruth` |
+| `task_cache.qnt` | layered task cache: local and remote CAS and action cache (`crates/cas`, `crates/cas-remote`, `crates/task-exec/src/cache.rs`) | `safety`, `fixes` |
+
+Run what CI runs (the `cuenv-quint-specs` flake check, about a minute):
+
+```bash
+nix build .#checks.x86_64-linux.cuenv-quint-specs -L --accept-flake-config
+```
+
+Or one spec, with quint on `PATH`:
+
+```bash
+quint verify task_cache.qnt --backend=tlc --tlc-config=tlc.json --invariants safety fixes
+```
+
+`tlc.json` caps TLC's JVM heap; quint's default is 8 GiB.
+
+The models are written by hand from the code, so CI checks the model, not the
+Rust. Change a model in the same pull request as the protocol it describes.
+Each model has mutation switches (constants at the top). Setting one to
+another value turns off one mechanism or restores an earlier, buggy version
+of it; the invariants should then fail, which shows they still guard what
+they are meant to. In `object_state_cas.qnt`,
+`RELEASE = "trusting"` restores the CLI that reported a lock gone on a retried
+release as "no longer held", and `READBACK_WRITER = false` confirms a
+timed-out release without its writer nonce; both fail `unlockReportsTruth`.
+In `hook_runs.qnt`, spawning a hook before the reservation says a child is
+starting, starting a run while another reserves the directory, finishing a
+run before its child is reaped, and publishing after a cancellation was
+accepted each fail `safety`.
+In `infrastructure_changes.qnt`, writing the marker after the provider call,
+not writing it, plans that ignore it, recovery that clears the marker first,
+and recovery that clears another run's marker each fail `safety`.
+In `state_migration.qnt`, a rollback that ignores writes made since the
+commit, one that does not tombstone the target, and a forward that reads the
+source before fencing it each fail `safety`.
+In `sql_state_store.qnt`, writes without the lock guard or without the
+expected serial fail `safety`, and treating a retried lock DELETE that
+removes nothing as "already gone" fails `unlockReportsTruth`.
+In `task_cache.qnt`, each switch turns off one integrity mechanism of the
+cache and fails `safety` or `fixes`.
+
+This is model checking of small instances (two clients or machines, one record
+or action, a few retries and faults), not a proof for every size.

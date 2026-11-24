@@ -143,7 +143,7 @@ version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
 dependencies = [
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -154,7 +154,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
 dependencies = [
  "anstyle",
  "once_cell_polyfill",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -442,6 +442,12 @@ name = "base64"
 version = "0.22.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
+
+[[package]]
+name = "base64"
+version = "0.23.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
 
 [[package]]
 name = "base64-simd"
@@ -778,13 +784,13 @@ dependencies = [
 
 [[package]]
 name = "cargo-lock"
-version = "11.0.1"
+version = "11.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "63585cdf8572aa7adf0e30a253f988f2b77233bfac1973d52efb6dd53a75920e"
+checksum = "50524592e6bfbb1bf6f94e8184a786f637faeaf1cf37bbe65502b9a2c5c48939"
 dependencies = [
  "semver",
  "serde",
- "toml",
+ "toml 1.1.2+spec-1.1.0",
  "url",
 ]
 
@@ -819,7 +825,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "374b7c592d9c00c1f4972ea58390ac6b18cbb6ab79011f3bdc90a0b82ca06b77"
 dependencies = [
  "serde",
- "toml",
+ "toml 0.9.12+spec-1.1.0",
 ]
 
 [[package]]
@@ -861,19 +867,19 @@ dependencies = [
  "serde_json",
  "syn 2.0.117",
  "tempfile",
- "toml",
+ "toml 0.9.12+spec-1.1.0",
 ]
 
 [[package]]
 name = "cc"
-version = "1.2.62"
+version = "1.11.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a1dce859f0832a7d088c4f1119888ab94ef4b5d6795d1ce05afb7fe159d79f98"
+checksum = "33ef9e3e8154a45c7a95cff4c1299702106ad94062d7bb85fdc5d3a5afd91d45"
 dependencies = [
  "find-msvc-tools",
  "jobserver",
  "libc",
- "shlex",
+ "shlex 2.0.1",
 ]
 
 [[package]]
@@ -986,7 +992,7 @@ dependencies = [
  "clap",
  "clap_lex",
  "is_executable",
- "shlex",
+ "shlex 1.3.0",
 ]
 
 [[package]]
@@ -1555,7 +1561,7 @@ dependencies = [
 
 [[package]]
 name = "cuengine"
-version = "0.76.1"
+version = "0.78.0"
 dependencies = [
  "criterion",
  "cuenv-core",
@@ -1571,7 +1577,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv"
-version = "0.76.1"
+version = "0.78.0"
 dependencies = [
  "assert_cmd",
  "async-trait",
@@ -1637,7 +1643,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",
- "toml",
+ "toml 0.9.12+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
  "uuid",
@@ -1648,7 +1654,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-1password"
-version = "0.76.1"
+version = "0.78.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1669,7 +1675,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-aws"
-version = "0.76.1"
+version = "0.78.0"
 dependencies = [
  "async-trait",
  "cuenv-secrets",
@@ -1683,7 +1689,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-bitbucket"
-version = "0.76.1"
+version = "0.78.0"
 dependencies = [
  "cuenv-codeowners",
  "tempfile",
@@ -1691,7 +1697,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-buildkite"
-version = "0.76.1"
+version = "0.78.0"
 dependencies = [
  "async-trait",
  "cuenv-ci",
@@ -1705,7 +1711,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-cas"
-version = "0.76.1"
+version = "0.78.0"
 dependencies = [
  "async-recursion",
  "async-trait",
@@ -1726,7 +1732,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-cas-remote"
-version = "0.76.1"
+version = "0.78.0"
 dependencies = [
  "async-trait",
  "bazel-remote-apis",
@@ -1751,7 +1757,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-ci"
-version = "0.76.1"
+version = "0.78.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1789,7 +1795,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-codegen"
-version = "0.76.1"
+version = "0.78.0"
 dependencies = [
  "cuengine",
  "cuenv-core",
@@ -1802,7 +1808,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-codeowners"
-version = "0.76.1"
+version = "0.78.0"
 dependencies = [
  "schemars",
  "serde",
@@ -1810,7 +1816,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-core"
-version = "0.76.1"
+version = "0.78.0"
 dependencies = [
  "async-trait",
  "cuenv-hooks",
@@ -1836,13 +1842,13 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
- "toml",
+ "toml 0.9.12+spec-1.1.0",
  "tracing",
 ]
 
 [[package]]
 name = "cuenv-editorconfig"
-version = "0.76.1"
+version = "0.78.0"
 dependencies = [
  "serde",
  "tempfile",
@@ -1852,7 +1858,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-events"
-version = "0.76.1"
+version = "0.78.0"
 dependencies = [
  "aho-corasick",
  "chrono",
@@ -1868,10 +1874,10 @@ dependencies = [
 
 [[package]]
 name = "cuenv-gcp"
-version = "0.76.1"
+version = "0.78.0"
 dependencies = [
  "async-trait",
- "base64 0.22.1",
+ "base64 0.23.1",
  "cuenv-secrets",
  "reqwest 0.13.4",
  "serde",
@@ -1882,7 +1888,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-github"
-version = "0.76.1"
+version = "0.78.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1903,7 +1909,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-gitlab"
-version = "0.76.1"
+version = "0.78.0"
 dependencies = [
  "cuenv-codeowners",
  "tempfile",
@@ -1911,9 +1917,9 @@ dependencies = [
 
 [[package]]
 name = "cuenv-homebrew"
-version = "0.76.1"
+version = "0.78.0"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "cuenv-release",
  "octocrab",
  "tracing",
@@ -1921,7 +1927,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-hooks"
-version = "0.76.1"
+version = "0.78.0"
 dependencies = [
  "chrono",
  "cuenv-manifest",
@@ -1946,7 +1952,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-ignore"
-version = "0.76.1"
+version = "0.78.0"
 dependencies = [
  "gix",
  "serde",
@@ -1957,7 +1963,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-infisical"
-version = "0.76.1"
+version = "0.78.0"
 dependencies = [
  "async-trait",
  "cuenv-events",
@@ -1971,12 +1977,12 @@ dependencies = [
 
 [[package]]
 name = "cuenv-infrastructure"
-version = "0.76.1"
+version = "0.78.0"
 dependencies = [
  "async-trait",
  "aws-credential-types",
  "aws-sigv4",
- "base64 0.22.1",
+ "base64 0.23.1",
  "chrono",
  "cuenv-events",
  "cuenv-manifest",
@@ -2010,18 +2016,18 @@ dependencies = [
 
 [[package]]
 name = "cuenv-manifest"
-version = "0.76.1"
+version = "0.78.0"
 dependencies = [
  "cuenv-task-graph",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
- "toml",
+ "toml 0.9.12+spec-1.1.0",
 ]
 
 [[package]]
 name = "cuenv-release"
-version = "0.76.1"
+version = "0.78.0"
 dependencies = [
  "chrono",
  "cuenv-core",
@@ -2041,7 +2047,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tokio-test",
- "toml",
+ "toml 0.9.12+spec-1.1.0",
  "toml_edit",
  "tracing",
  "uuid",
@@ -2049,7 +2055,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-secrets"
-version = "0.76.1"
+version = "0.78.0"
 dependencies = [
  "async-trait",
  "futures",
@@ -2070,7 +2076,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-services"
-version = "0.76.1"
+version = "0.78.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2095,7 +2101,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-task-exec"
-version = "0.76.1"
+version = "0.78.0"
 dependencies = [
  "async-recursion",
  "bazel-remote-apis",
@@ -2130,7 +2136,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-task-graph"
-version = "0.76.1"
+version = "0.78.0"
 dependencies = [
  "criterion",
  "petgraph 0.8.3",
@@ -2140,7 +2146,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-tool-archive"
-version = "0.76.1"
+version = "0.78.0"
 dependencies = [
  "flate2",
  "tar",
@@ -2153,7 +2159,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-tool-runtime"
-version = "0.76.1"
+version = "0.78.0"
 dependencies = [
  "async-trait",
  "cuenv-core",
@@ -2168,7 +2174,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-tools-github"
-version = "0.76.1"
+version = "0.78.0"
 dependencies = [
  "async-trait",
  "cuenv-core",
@@ -2188,7 +2194,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-tools-nix"
-version = "0.76.1"
+version = "0.78.0"
 dependencies = [
  "async-trait",
  "cuenv-core",
@@ -2202,7 +2208,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-tools-oci"
-version = "0.76.1"
+version = "0.78.0"
 dependencies = [
  "async-trait",
  "cuenv-core",
@@ -2223,7 +2229,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-tools-rustup"
-version = "0.76.1"
+version = "0.78.0"
 dependencies = [
  "async-trait",
  "cuenv-core",
@@ -2238,7 +2244,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-tools-url"
-version = "0.76.1"
+version = "0.78.0"
 dependencies = [
  "async-trait",
  "cuenv-core",
@@ -2255,11 +2261,13 @@ dependencies = [
 
 [[package]]
 name = "cuenv-vcs"
-version = "0.76.1"
+version = "0.78.0"
 dependencies = [
  "async-trait",
+ "gix",
  "globset",
  "hex",
+ "ignore",
  "miette",
  "serde",
  "sha2 0.11.1",
@@ -2271,7 +2279,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-workspaces"
-version = "0.76.1"
+version = "0.78.0"
 dependencies = [
  "cargo-lock",
  "cargo_toml",
@@ -2281,11 +2289,11 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
- "shlex",
+ "shlex 1.3.0",
  "temp-env",
  "tempfile",
  "thiserror 2.0.18",
- "toml",
+ "toml 0.9.12+spec-1.1.0",
  "tracing",
  "walkdir",
 ]
@@ -2630,7 +2638,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users 0.5.2",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2827,7 +2835,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2855,7 +2863,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
- "toml",
+ "toml 0.9.12+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
  "ureq",
@@ -2995,9 +3003,9 @@ dependencies = [
 
 [[package]]
 name = "find-msvc-tools"
-version = "0.1.9"
+version = "0.1.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
+checksum = "1c66915cc5391097de7a2b0b972e8505aa33c0df401fd3a6811dbdb32881ba48"
 
 [[package]]
 name = "finl_unicode"
@@ -3094,9 +3102,9 @@ checksum = "e6d5a32815ae3f33302d95fdcb2ce17862f8c65363dcfd29360480ba1001fc9c"
 
 [[package]]
 name = "futures"
-version = "0.3.32"
+version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8b147ee9d1f6d097cef9ce628cd2ee62288d963e16fb287bd9286455b241382d"
+checksum = "9a31d2a3fbaaeb2af2368bbdd904aa8e812d3c04a1ee10d3171f52d556e5d0a3"
 dependencies = [
  "futures-channel",
  "futures-core",
@@ -3109,9 +3117,9 @@ dependencies = [
 
 [[package]]
 name = "futures-channel"
-version = "0.3.32"
+version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "07bbe89c50d7a535e539b8c17bc0b49bdb77747034daa8087407d655f3f7cc1d"
+checksum = "b1f9e3d69d39e4862ffed03ed071a76f9a13ba1d9109d355b0f0aa6b15e393c4"
 dependencies = [
  "futures-core",
  "futures-sink",
@@ -3119,15 +3127,15 @@ dependencies = [
 
 [[package]]
 name = "futures-core"
-version = "0.3.32"
+version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7e3450815272ef58cec6d564423f6e755e25379b217b0bc688e295ba24df6b1d"
+checksum = "92d699e522242e69e3003b94ecc1f960f3a5e015aa7c5d7486e65ad01dd94f5e"
 
 [[package]]
 name = "futures-executor"
-version = "0.3.32"
+version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "baf29c38818342a3b26b5b923639e7b1f4a61fc5e76102d4b1981c6dc7a7579d"
+checksum = "031b47cf1a3c6cc8bc2fc76cd437f521619387907d469316e7c0bc278f1f5432"
 dependencies = [
  "futures-core",
  "futures-task",
@@ -3136,38 +3144,38 @@ dependencies = [
 
 [[package]]
 name = "futures-io"
-version = "0.3.32"
+version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cecba35d7ad927e23624b22ad55235f2239cfa44fd10428eecbeba6d6a717718"
+checksum = "53c0fa8157de1303bfffdaa1cc2a673bfffb60102f76b0ef4441659124373fed"
 
 [[package]]
 name = "futures-macro"
-version = "0.3.32"
+version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e835b70203e41293343137df5c0664546da5745f82ec9b84d40be8336958447b"
+checksum = "9fb9654ba8355388abeb8dcb4fc62f511300867002afc858860463bdd9fe0c44"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.117",
+ "syn 3.0.9",
 ]
 
 [[package]]
 name = "futures-sink"
-version = "0.3.32"
+version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c39754e157331b013978ec91992bde1ac089843443c49cbc7f46150b0fad0893"
+checksum = "1944426bf7d03f1d14f708785e4b33efd750b36d48a157b836b3efc15ede8e1d"
 
 [[package]]
 name = "futures-task"
-version = "0.3.32"
+version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "037711b3d59c33004d3856fbdc83b99d4ff37a24768fa1be9ce3538a1cde4393"
+checksum = "cd417de3d1d015fc3bfd2b1ea46dfc7bab72ef86f1cc7cc9c78e728b34a6d1fd"
 
 [[package]]
 name = "futures-util"
-version = "0.3.32"
+version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "389ca41296e6190b48053de0321d02a77f32f8a5d2461dd38762c0593805c6d6"
+checksum = "0d50a92467f8ba5dd6e3ee5d4bd04d73ab2e4e1c44474a0674821dfce14b79bc"
 dependencies = [
  "futures-channel",
  "futures-core",
@@ -3285,12 +3293,12 @@ dependencies = [
 
 [[package]]
 name = "git-conventional"
-version = "0.12.9"
+version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f6a949b7fcc81df22526032dcddb006e78c8575e47b0e7ba57d9960570a57bc4"
+checksum = "7079e0e98895b810e042ef90b667d8d0a28c172fb3212e777b2d279ec2b29f25"
 dependencies = [
  "unicase",
- "winnow 0.7.15",
+ "winnow 1.0.2",
 ]
 
 [[package]]
@@ -5520,7 +5528,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7062,7 +7070,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7077,9 +7085,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.40"
+version = "0.23.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ef86cd5876211988985292b91c96a8f2d298df24e75989a43a3c73f2d4d8168b"
+checksum = "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
 dependencies = [
  "log",
  "once_cell",
@@ -7130,7 +7138,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7141,9 +7149,9 @@ checksum = "f87165f0995f63a9fbeea62b64d10b4d9d8e78ec6d7d51fb2125fda7bb36788f"
 
 [[package]]
 name = "rustls-webpki"
-version = "0.103.13"
+version = "0.103.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "61c429a8649f110dddef65e2a5ad240f747e85f7758a6bccc7e5777bd33f756e"
+checksum = "e3a0760a887c14823fca5a1c970b01d47c328c696c0c64829d1df50e8f853fd5"
 dependencies = [
  "ring",
  "rustls-pki-types",
@@ -7194,9 +7202,9 @@ dependencies = [
 
 [[package]]
 name = "schemars"
-version = "1.2.1"
+version = "1.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a2b42f36aa1cd011945615b92222f6bf73c599a102a300334cd7f8dbeec726cc"
+checksum = "ab508826f74a77ca9d5aba6ff19b522583ee3eaf28a19384ff3d0e5835fadf6e"
 dependencies = [
  "dyn-clone",
  "ref-cast",
@@ -7207,14 +7215,14 @@ dependencies = [
 
 [[package]]
 name = "schemars_derive"
-version = "1.2.1"
+version = "1.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7d115b50f4aaeea07e79c1912f645c7513d81715d0420f8bc77a18c6260b307f"
+checksum = "e1c3a92094fa7d61aa124645844facb6b554dfc797136d0f5fd1f890e2bffc69"
 dependencies = [
  "proc-macro2",
  "quote",
  "serde_derive_internals",
- "syn 2.0.117",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -7324,13 +7332,13 @@ dependencies = [
 
 [[package]]
 name = "serde_derive_internals"
-version = "0.29.1"
+version = "0.30.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "18d26a20a969b9e3fdf2fc2d9f21eda6c40e2de84c9408bb5d3b05d499aae711"
+checksum = "f852137cce035d6a4df67ccce505ff6b3e9fd3a10e3e52b24dc71e650bb1a9bd"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.117",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -7485,6 +7493,12 @@ name = "shlex"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
+
+[[package]]
+name = "shlex"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
 name = "signal-hook"
@@ -7651,7 +7665,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a766e1110788c36f4fa1c2b71b387a7815aa65f88ce0229841826633d93723e"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7872,9 +7886,9 @@ checksum = "55937e1799185b12863d447f42597ed69d9928686b8d88a1df17376a097d8369"
 
 [[package]]
 name = "tar"
-version = "0.4.45"
+version = "0.4.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "22692a6476a21fa75fdfc11d452fda482af402c008cdbaf3476414e122040973"
+checksum = "3f6221d9a6003c78398e3b239969f352578258df48c8eb051caadae0015bc840"
 dependencies = [
  "filetime",
  "libc",
@@ -7907,7 +7921,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7926,7 +7940,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "230a1b821ccbd75b185820a1f1ff7b14d21da1e442e22c0863ea5f08771a8874"
 dependencies = [
  "rustix 1.1.4",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -8216,6 +8230,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "toml"
+version = "1.1.2+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "81f3d15e84cbcd896376e6730314d59fb5a87f31e4b038454184435cd57defee"
+dependencies = [
+ "indexmap",
+ "serde_core",
+ "serde_spanned",
+ "toml_datetime 1.1.1+spec-1.1.0",
+ "toml_parser",
+ "toml_writer",
+ "winnow 1.0.2",
+]
+
+[[package]]
 name = "toml_datetime"
 version = "0.7.5+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8235,9 +8264,9 @@ dependencies = [
 
 [[package]]
 name = "toml_edit"
-version = "0.25.11+spec-1.1.0"
+version = "0.25.12+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0b59c4d22ed448339746c59b905d24568fcbb3ab65a500494f7b8c3e97739f2b"
+checksum = "d2153edc6955a6c354fad8f5efd38b6a8769bdccf9fe50f8e1329f81b0baa5d7"
 dependencies = [
  "indexmap",
  "toml_datetime 1.1.1+spec-1.1.0",
@@ -9050,7 +9079,7 @@ dependencies = [
  "serde",
  "serde_derive",
  "sha2 0.10.9",
- "toml",
+ "toml 0.9.12+spec-1.1.0",
  "wasmtime-environ",
  "windows-sys 0.61.2",
  "zstd",
@@ -9426,7 +9455,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -9808,9 +9837,6 @@ name = "winnow"
 version = "0.7.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df79d97927682d2fd8adb29682d1140b343be4ac0f08fd68b7765d9c059d3945"
-dependencies = [
- "memchr",
-]
 
 [[package]]
 name = "winnow"

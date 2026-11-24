@@ -1746,3 +1746,131 @@ async fn a_policy_on_a_task_variable_names_the_task_as_its_own_project_does() {
         .unwrap();
     assert_eq!(denied.stdout, "");
 }
+
+#[tokio::test]
+async fn background_remote_upload_runs_async_and_flushes_on_demand() {
+    use super::{CacheHandle, PublishRemoteInput, UploadDispatchMode};
+    use std::collections::BTreeMap;
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct GatedPublisher {
+        started: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Notify>,
+        completed: Arc<AtomicUsize>,
+    }
+
+    impl cuenv_cas::ActionPublisher for GatedPublisher {
+        fn publish<'life0, 'life1, 'async_trait>(
+            &'life0 self,
+            _request: cuenv_cas::PublishActionRequest<'life1>,
+        ) -> Pin<Box<dyn Future<Output = cuenv_cas::Result<()>> + Send + 'async_trait>>
+        where
+            'life0: 'async_trait,
+            'life1: 'async_trait,
+            Self: 'async_trait,
+        {
+            Box::pin(async move {
+                self.started.notify_one();
+                self.release.notified().await;
+                self.completed.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            })
+        }
+    }
+
+    let tmp = TempDir::new().unwrap();
+    let cache_root = tmp.path().join("cache");
+    std::fs::create_dir_all(&cache_root).unwrap();
+    let started = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let completed = Arc::new(AtomicUsize::new(0));
+    let publisher: Arc<dyn cuenv_cas::ActionPublisher> = Arc::new(GatedPublisher {
+        started: Arc::clone(&started),
+        release: Arc::clone(&release),
+        completed: Arc::clone(&completed),
+    });
+
+    let cas = Arc::new(cuenv_cas::LocalCas::open(&cache_root).unwrap());
+    let action_cache = Arc::new(cuenv_cas::LocalActionCache::open(&cache_root).unwrap());
+    let cache = TaskCacheConfig {
+        cas,
+        action_cache,
+        vcs_hasher: Arc::new(cuenv_vcs::WalkHasher::new(tmp.path())),
+        vcs_hasher_root: tmp.path().to_path_buf(),
+        action_semantics_version: cuenv_cas::ACTION_SEMANTICS_VERSION,
+        runtime_identity_properties: BTreeMap::new(),
+        cache_disabled_reason: None,
+        secret_salt: None,
+        mode_override: None,
+        cache_root: cache_root.clone(),
+        publisher: Some(publisher),
+    };
+
+    let base_executor = TaskExecutor::new(ExecutorConfig {
+        project_root: tmp.path().to_path_buf(),
+        cache: Some(cache.clone()),
+        ..Default::default()
+    });
+    let bg_executor = base_executor.clone_with_upload_mode(UploadDispatchMode::Background);
+
+    let command = cuenv_cas::Command {
+        arguments: vec!["true".to_string()],
+        environment_variables: BTreeMap::new(),
+        output_files: Vec::new(),
+        output_directories: Vec::new(),
+        working_directory: String::new(),
+    };
+    let command_digest = cuenv_cas::Digest::of_bytes(b"cmd");
+    let action = cuenv_cas::Action {
+        command_digest: command_digest.clone(),
+        input_root_digest: cuenv_cas::Digest::of_bytes(b""),
+        platform: cuenv_cas::Platform::default(),
+        action_semantics_version: cuenv_cas::ACTION_SEMANTICS_VERSION,
+    };
+    let action_digest = cuenv_cas::Digest::of_bytes(b"action");
+    let handle = CacheHandle {
+        cache,
+        action_digest: Some(action_digest),
+        action: Some(action),
+        command: Some(command),
+        command_digest: Some(command_digest),
+        contains_secrets: false,
+        publish_authorized: true,
+        workdir: tmp.path().to_path_buf(),
+        exec_root: None,
+        run_workdir: tmp.path().to_path_buf(),
+        root_key: "test".to_string(),
+        inputs: Vec::new(),
+        working_directory: PathBuf::new(),
+        effective_sandbox: crate::sandbox::EffectiveSandbox::Strict(
+            crate::sandbox::StrictSandboxProof {
+                platform: "linux-test",
+                network_enforced: true,
+                publish_eligible: true,
+                policy_digest: "sha256:test".to_string(),
+            },
+        ),
+        nix_context: None,
+    };
+    let guard = cuenv_cas::maintenance::CacheUseGuard::acquire(&cache_root).unwrap();
+
+    bg_executor
+        .maybe_publish_remote(PublishRemoteInput {
+            task_name: "build",
+            handle: &handle,
+            action_result: cuenv_cas::ActionResult::default(),
+            cache_use_guard: guard,
+        })
+        .await;
+
+    // Upload was dispatched in the background and has not finished yet.
+    started.notified().await;
+    assert_eq!(completed.load(Ordering::SeqCst), 0);
+
+    // Unblock the upload and ensure flush_remote_uploads waits for it.
+    release.notify_one();
+    bg_executor.flush_remote_uploads().await;
+    assert_eq!(completed.load(Ordering::SeqCst), 1);
+}

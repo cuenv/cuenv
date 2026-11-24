@@ -200,6 +200,11 @@ pub(super) enum Release {
     /// The lock was already gone when the run ended (another actor released
     /// it, or took it over): nothing was released.
     NoLongerHeld,
+    /// An attempt failed and a retry then found the lock gone. The failed
+    /// attempt may have released it after all (its write can land after the
+    /// store stopped waiting for it), or another actor may have: which one
+    /// cannot be told, so the release is not claimed.
+    Uncertain,
 }
 
 /// The line that tells what releasing the lock did, saying nothing was
@@ -217,11 +222,21 @@ pub(super) fn release_notice(lock: &StateLock, tenant: &TenantKey, release: Rele
             lock.lock_identifier,
             super::guard::tenant_label(tenant)
         ),
+        Release::Uncertain => format!(
+            "warning: lock {} for {} is gone, but releasing it failed first: the failed \
+             attempt may have released it, or another run released or took it; this run \
+             does not claim the release",
+            lock.lock_identifier,
+            super::guard::tenant_label(tenant)
+        ),
     }
 }
 
 /// Release the lock, retrying a failure twice (after 250 ms, then 500 ms)
 /// and never waiting after the last attempt.
+///
+/// A retry that finds the lock gone is [`Release::Uncertain`], never
+/// [`Release::NoLongerHeld`]: the failed attempt may have released it.
 pub(super) async fn release(
     store: &dyn StateStore,
     tenant: &TenantKey,
@@ -231,6 +246,7 @@ pub(super) async fn release(
     loop {
         match store.unlock(tenant, lock).await {
             Ok(true) => return Ok(Release::Released),
+            Ok(false) if attempt > 1 => return Ok(Release::Uncertain),
             Ok(false) => return Ok(Release::NoLongerHeld),
             Err(error) if attempt >= RELEASE_ATTEMPTS => return Err(error),
             Err(_) => {
