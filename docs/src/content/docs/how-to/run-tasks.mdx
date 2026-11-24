@@ -1062,8 +1062,11 @@ tasks: {
 When a task fails and the run stops (no `continueOnError`), cuenv kills the
 process groups of the tasks still running, and waits until they are gone before
 it reports the failure. Nothing a stopped run started keeps writing into the
-workspace. On Linux, a task's process also dies with cuenv itself, even when
-cuenv is killed with `SIGKILL` or by the OOM killer.
+workspace. A task's process also dies with cuenv itself, even when cuenv is
+killed with `SIGKILL` or by the OOM killer. On Linux the kernel stops it; on
+macOS, which has no parent-death signal, each task runs under a small
+`cuenv __supervise` wrapper that kills the task's process group when cuenv
+exits.
 
 See [Schema status](/reference/schema/status/) for the current implementation
 limits around task execution policies such as `timeout`, `retry`,

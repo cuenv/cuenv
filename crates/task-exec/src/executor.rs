@@ -26,7 +26,6 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
-use tokio::process::Command;
 use tokio::task::JoinSet;
 use tracing::instrument;
 
@@ -1033,7 +1032,7 @@ impl TaskExecutor {
             if let Some((cmd, tmp_dir, home_dir, plan)) = strict_scratch {
                 (cmd, Some((tmp_dir, home_dir, plan)))
             } else {
-                let mut cmd = Command::new(&command_spec.program);
+                let mut cmd = super::process::task_command(&command_spec.program);
                 cmd.args(&command_spec.args);
                 (cmd, None)
             };

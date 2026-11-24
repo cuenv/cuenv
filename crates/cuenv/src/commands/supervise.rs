@@ -119,9 +119,35 @@ pub fn run(argv: &[String]) -> i32 {
 
     // Wait for the child.
     match child.wait() {
-        Ok(status) => status.code().unwrap_or(EXIT_WRAPPER_ERROR),
+        Ok(status) => exit_like(status),
         Err(_) => EXIT_WRAPPER_ERROR,
     }
+}
+
+/// Report the child's end as the wrapper's own: its exit code, or the
+/// signal that killed it, re-raised on the wrapper so that a task killed by
+/// a signal still reads as killed by that signal to cuenv.
+fn exit_like(status: std::process::ExitStatus) -> i32 {
+    use std::os::unix::process::ExitStatusExt;
+
+    if let Some(code) = status.code() {
+        return code;
+    }
+    let Some(signal) = status.signal() else {
+        return EXIT_WRAPPER_ERROR;
+    };
+    #[expect(
+        unsafe_code,
+        reason = "signal(2) and raise(3) on the wrapper itself, which is about to exit"
+    )]
+    // SAFETY: restoring the default disposition and raising a signal on
+    // the current process have no memory-safety preconditions. A default
+    // disposition that terminates ends the wrapper here.
+    unsafe {
+        libc::signal(signal, libc::SIG_DFL);
+        libc::raise(signal);
+    }
+    128 + signal
 }
 
 /// Kill the wrapper's process group, which includes the wrapper itself,

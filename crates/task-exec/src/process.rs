@@ -2,9 +2,41 @@
 
 use super::{TaskResult, process_registry};
 use cuenv_core::{Error, OutputCapture, Result};
+use std::ffi::OsStr;
+use std::path::PathBuf;
 use std::process::Stdio;
+use std::sync::OnceLock;
 use std::time::Duration;
 use tokio::process::Command;
+
+/// The executable that tethers task processes to cuenv, if any.
+static TASK_SUPERVISOR: OnceLock<PathBuf> = OnceLock::new();
+
+/// Run every task process under `<executable> __supervise`, which kills the
+/// task's process group when cuenv dies, even by `kill -9` (issue 458).
+///
+/// For macOS, which has no parent-death signal; on Linux the task itself
+/// asks the kernel for one. The cuenv binary passes its own executable.
+/// Without this call, as in embedders and tests whose executable has no
+/// `__supervise`, tasks are spawned directly. Only the first call counts.
+pub fn supervise_tasks_with(executable: PathBuf) {
+    let _ = TASK_SUPERVISOR.set(executable);
+}
+
+/// A command that runs `program` as a task, under the supervisor when one
+/// is configured. Arguments, environment and working directory added to
+/// the command reach `program` unchanged through the wrapper, which shares
+/// its process group.
+pub fn task_command(program: impl AsRef<OsStr>) -> Command {
+    match TASK_SUPERVISOR.get() {
+        Some(supervisor) => {
+            let mut command = Command::new(supervisor);
+            command.arg("__supervise").arg(program);
+            command
+        }
+        None => Command::new(program),
+    }
+}
 
 /// Outcome of a single host process attempt.
 ///

@@ -92,6 +92,13 @@ pub fn run_main(hardening_error: Option<process_hardening::HardeningError>) {
         std::process::exit(exit_code);
     }
 
+    // macOS has no parent-death signal: tether every task process to this
+    // cuenv through `__supervise`, so `kill -9` of cuenv stops its tasks.
+    #[cfg(target_os = "macos")]
+    if let Ok(executable) = std::env::current_exe() {
+        cuenv_task_exec::supervise_tasks_with(executable);
+    }
+
     // Parse CLI arguments synchronously to determine execution path
     let cli = cli::parse();
 
