@@ -25,7 +25,7 @@ tracing = { workspace = true }
 futures = { workspace = true }
 
 # 1Password WASM SDK
-extism = "1.21.0"
+extism = "1.41.0"
 dirs = { workspace = true }
 getrandom = "0.3"
 chrono = { workspace = true, features = ["std", "clock"] }
