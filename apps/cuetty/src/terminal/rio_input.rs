@@ -49,11 +49,11 @@ pub fn encode_key(
         };
         return Some(sequence.into_bytes());
     }
-    if event.key == KeyInput::Delete {
+    if let Some(code) = tilde_code(event.key) {
         return Some(if parameter == 1 {
-            b"\x1b[3~".to_vec()
+            format!("\x1b[{code}~").into_bytes()
         } else {
-            format!("\x1b[3;{parameter}~").into_bytes()
+            format!("\x1b[{code};{parameter}~").into_bytes()
         });
     }
 
@@ -75,7 +75,10 @@ pub fn encode_key(
         | KeyInput::Right
         | KeyInput::Home
         | KeyInput::End
-        | KeyInput::Delete => return None,
+        | KeyInput::Insert
+        | KeyInput::Delete
+        | KeyInput::PageUp
+        | KeyInput::PageDown => return None,
     };
     if modifiers.contains(InputModifiers::ALT) {
         Some(std::iter::once(0x1b).chain(bytes).collect())
@@ -104,7 +107,10 @@ fn should_encode_kitty(event: TerminalKeyEvent, mode: Mode) -> bool {
         | KeyInput::Right
         | KeyInput::Home
         | KeyInput::End
-        | KeyInput::Delete => true,
+        | KeyInput::Insert
+        | KeyInput::Delete
+        | KeyInput::PageUp
+        | KeyInput::PageDown => true,
     }
 }
 
@@ -126,7 +132,10 @@ fn encode_kitty_key(event: TerminalKeyEvent, mode: Mode) -> Vec<u8> {
         KeyInput::Left => format!("\x1b[{navigation_base}{suffix}D"),
         KeyInput::Home => format!("\x1b[{navigation_base}{suffix}H"),
         KeyInput::End => format!("\x1b[{navigation_base}{suffix}F"),
+        KeyInput::Insert => format!("\x1b[2{suffix}~"),
         KeyInput::Delete => format!("\x1b[3{suffix}~"),
+        KeyInput::PageUp => format!("\x1b[5{suffix}~"),
+        KeyInput::PageDown => format!("\x1b[6{suffix}~"),
         KeyInput::Character(character) => {
             format!(
                 "\x1b[{}{suffix}u",
@@ -151,7 +160,10 @@ fn should_encode_modify_other_keys(event: TerminalKeyEvent, level: Option<u8>) -
                 | KeyInput::Right
                 | KeyInput::Home
                 | KeyInput::End
+                | KeyInput::Insert
                 | KeyInput::Delete
+                | KeyInput::PageUp
+                | KeyInput::PageDown
         )
         && (event.modifiers.contains(InputModifiers::CONTROL)
             || event.modifiers.contains(InputModifiers::ALT)
@@ -171,13 +183,27 @@ fn encode_modify_other_key(event: TerminalKeyEvent) -> Vec<u8> {
         | KeyInput::Right
         | KeyInput::Home
         | KeyInput::End
-        | KeyInput::Delete => unreachable!("navigation keys use their ordinary CSI encoding"),
+        | KeyInput::Insert
+        | KeyInput::Delete
+        | KeyInput::PageUp
+        | KeyInput::PageDown => unreachable!("navigation keys use their ordinary CSI encoding"),
     };
     format!(
         "\x1b[27;{};{codepoint}~",
         kitty_modifier_parameter(event.modifiers)
     )
     .into_bytes()
+}
+
+/// The keys whose legacy encoding is `CSI <code> ~`, with modifiers as `CSI <code> ; <mods> ~`.
+fn tilde_code(key: KeyInput) -> Option<u8> {
+    match key {
+        KeyInput::Insert => Some(2),
+        KeyInput::Delete => Some(3),
+        KeyInput::PageUp => Some(5),
+        KeyInput::PageDown => Some(6),
+        _ => None,
+    }
 }
 
 fn kitty_character_code(character: char, modifiers: InputModifiers) -> u32 {
@@ -372,6 +398,69 @@ mod tests {
                 None
             ),
             Some(b"\x1b[3;5~".to_vec()),
+        );
+    }
+
+    #[test]
+    fn paging_keys_send_their_csi_tilde_sequences() {
+        for (key, plain, control) in [
+            (
+                KeyInput::Insert,
+                b"\x1b[2~".as_slice(),
+                b"\x1b[2;5~".as_slice(),
+            ),
+            (
+                KeyInput::PageUp,
+                b"\x1b[5~".as_slice(),
+                b"\x1b[5;5~".as_slice(),
+            ),
+            (
+                KeyInput::PageDown,
+                b"\x1b[6~".as_slice(),
+                b"\x1b[6;5~".as_slice(),
+            ),
+        ] {
+            assert_eq!(
+                encode_key(press(key, InputModifiers::default()), Mode::NONE, None),
+                Some(plain.to_vec()),
+            );
+            // Application cursor mode, as less and vim set it, changes only the arrows.
+            assert_eq!(
+                encode_key(
+                    press(key, InputModifiers::default()),
+                    Mode::APP_CURSOR,
+                    None
+                ),
+                Some(plain.to_vec()),
+            );
+            assert_eq!(
+                encode_key(press(key, InputModifiers::CONTROL), Mode::NONE, None),
+                Some(control.to_vec()),
+            );
+            assert_eq!(
+                encode_key(press(key, InputModifiers::CONTROL), Mode::NONE, Some(2)),
+                Some(control.to_vec()),
+            );
+        }
+        assert_eq!(
+            encode_key(
+                press(KeyInput::PageDown, InputModifiers::default()),
+                Mode::DISAMBIGUATE_ESC_CODES,
+                None,
+            ),
+            Some(b"\x1b[6~".to_vec()),
+        );
+        assert_eq!(
+            encode_key(
+                TerminalKeyEvent {
+                    key: KeyInput::PageUp,
+                    modifiers: InputModifiers::default(),
+                    repeat: true,
+                },
+                Mode::DISAMBIGUATE_ESC_CODES | Mode::REPORT_EVENT_TYPES,
+                None,
+            ),
+            Some(b"\x1b[5;1:2~".to_vec()),
         );
     }
 

@@ -9,13 +9,14 @@ use rio_vt::crosswords::square::{ContentTag, Wide};
 use rio_vt::event::EventListener;
 use rio_vt::selection::{Selection as RioSelection, SelectionType};
 
-use super::selection::{LogicalPosition, Selection};
+use super::selection::{LogicalPosition, Selection, SelectionUnit};
 
 /// Rio rotates its selection as output scrolls. Once a drag has a range, its
 /// original end can be read back from that range instead of tracking a second
 /// copy of the terminal's history.
 pub(super) struct SelectionDrag {
     direction: Option<Ordering>,
+    unit: SelectionUnit,
 }
 
 fn grid_position<T: EventListener>(terminal: &Crosswords<T>, position: LogicalPosition) -> Pos {
@@ -31,14 +32,24 @@ impl SelectionDrag {
     pub fn begin<T: EventListener>(
         terminal: &mut Crosswords<T>,
         position: LogicalPosition,
+        unit: SelectionUnit,
     ) -> Self {
         let anchor = grid_position(terminal, position);
-        terminal.selection = Some(single_cell(anchor));
-        Self { direction: None }
+        terminal.selection = Some(match unit {
+            SelectionUnit::Cell => single_cell(anchor),
+            SelectionUnit::Word => RioSelection::new(SelectionType::Semantic, anchor, Side::Left),
+            SelectionUnit::Line => RioSelection::new(SelectionType::Lines, anchor, Side::Left),
+        });
+        Self {
+            direction: None,
+            unit,
+        }
     }
 
+    /// A click selects nothing until it drags. A word or line press selects its unit
+    /// on the press itself.
     pub fn is_empty(&self) -> bool {
-        self.direction.is_none()
+        self.unit == SelectionUnit::Cell && self.direction.is_none()
     }
 
     /// Returns false when Rio has invalidated the selection, for example on reflow.
@@ -53,6 +64,15 @@ impl SelectionDrag {
         let Some(range) = selection.to_range(terminal) else {
             return false;
         };
+        if self.unit != SelectionUnit::Cell {
+            // Rio expands both ends of a word or line selection to whole units and
+            // keeps the pressed end as the anchor as output scrolls.
+            let active = grid_position(terminal, position);
+            if let Some(selection) = terminal.selection.as_mut() {
+                selection.update(active, Side::Left);
+            }
+            return true;
+        }
         let anchor = if self.direction == Some(Ordering::Greater) {
             range.end
         } else {
@@ -142,8 +162,21 @@ pub(super) fn visible_selection<T: EventListener>(terminal: &Crosswords<T>) -> O
 /// Copy selected cells, keeping explicit spaces and blank lines while omitting
 /// unoccupied padding at hard line breaks.
 pub(super) fn selection_text<T: EventListener>(terminal: &Crosswords<T>) -> Option<String> {
-    let range = terminal.selection.as_ref()?.to_range(terminal)?;
-    text_between(terminal, range.start..=range.end)
+    let selection = terminal.selection.as_ref()?;
+    let range = selection.to_range(terminal)?;
+    let mut end = range.end;
+    if selection.ty == SelectionType::Lines {
+        // A line selection runs to the last column, but the padding after a line's
+        // text is not part of it, as it is not on the rows above.
+        let cells = &terminal.grid[end.row];
+        let wrapped = cells[Column(terminal.columns().saturating_sub(1))].wrapline();
+        if !wrapped {
+            while end.col.0 > 0 && cells[end.col].c() == '\0' {
+                end.col.0 -= 1;
+            }
+        }
+    }
+    text_between(terminal, range.start..=end)
 }
 
 /// Where the last command's output starts and where its last occupied cell is,
@@ -360,7 +393,7 @@ mod tests {
     fn drag_through_history_in_both_directions_copies_the_same_text() {
         let expected = "000\n111\n222\n333\n444\n555\n666";
         let mut terminal = terminal();
-        let mut drag = SelectionDrag::begin(&mut terminal, at(2, 2));
+        let mut drag = SelectionDrag::begin(&mut terminal, at(2, 2), SelectionUnit::Cell);
         for _ in 0..4 {
             terminal.scroll_display(Scroll::Delta(1));
             assert!(drag.extend(&mut terminal, at(0, 0)));
@@ -371,7 +404,7 @@ mod tests {
             Some(Selection::new(at(0, 0), at(2, 8))),
         );
 
-        let mut drag = SelectionDrag::begin(&mut terminal, at(0, 0));
+        let mut drag = SelectionDrag::begin(&mut terminal, at(0, 0), SelectionUnit::Cell);
         for _ in 0..4 {
             terminal.scroll_display(Scroll::Delta(-1));
             assert!(drag.extend(&mut terminal, at(2, 2)));
@@ -384,9 +417,54 @@ mod tests {
     }
 
     #[test]
+    fn a_double_click_selects_the_word_and_a_drag_grows_it_by_words() {
+        let mut terminal = session(b"git status --short\r\nfoo bar(baz)");
+        let mut drag = SelectionDrag::begin(&mut terminal, at(0, 6), SelectionUnit::Word);
+        assert!(!drag.is_empty());
+        assert_eq!(selection_text(&terminal).as_deref(), Some("status"));
+        assert_eq!(
+            visible_selection(&terminal),
+            Some(Selection::new(at(0, 4), at(0, 10))),
+        );
+
+        assert!(drag.extend(&mut terminal, at(1, 1)));
+        assert_eq!(
+            selection_text(&terminal).as_deref(),
+            Some("status --short\nfoo")
+        );
+        // Dragging back above the press keeps the pressed word whole.
+        assert!(drag.extend(&mut terminal, at(0, 1)));
+        assert_eq!(selection_text(&terminal).as_deref(), Some("git status"));
+
+        SelectionDrag::begin(&mut terminal, at(1, 9), SelectionUnit::Word);
+        assert_eq!(selection_text(&terminal).as_deref(), Some("baz"));
+    }
+
+    #[test]
+    fn a_triple_click_selects_the_line_and_a_drag_grows_it_by_lines() {
+        let mut terminal = session(b"git status --short\r\nfoo bar\r\nlast");
+        let mut drag = SelectionDrag::begin(&mut terminal, at(1, 2), SelectionUnit::Line);
+        assert!(!drag.is_empty());
+        assert_eq!(selection_text(&terminal).as_deref(), Some("foo bar"));
+        assert!(drag.extend(&mut terminal, at(0, 0)));
+        assert_eq!(
+            selection_text(&terminal).as_deref(),
+            Some("git status --short\nfoo bar")
+        );
+    }
+
+    #[test]
+    fn click_counts_choose_the_selection_unit() {
+        assert_eq!(SelectionUnit::from_click_count(1), SelectionUnit::Cell);
+        assert_eq!(SelectionUnit::from_click_count(2), SelectionUnit::Word);
+        assert_eq!(SelectionUnit::from_click_count(3), SelectionUnit::Line);
+        assert_eq!(SelectionUnit::from_click_count(4), SelectionUnit::Cell);
+    }
+
+    #[test]
     fn click_and_return_to_origin_leave_no_selection() {
         let mut terminal = terminal();
-        let mut drag = SelectionDrag::begin(&mut terminal, at(1, 1));
+        let mut drag = SelectionDrag::begin(&mut terminal, at(1, 1), SelectionUnit::Cell);
         assert!(drag.is_empty());
         assert!(drag.extend(&mut terminal, at(0, 0)));
         assert!(drag.extend(&mut terminal, at(1, 1)));
@@ -399,7 +477,7 @@ mod tests {
     fn output_keeps_a_history_anchor_and_reflow_invalidates_it() {
         let mut terminal = terminal();
         terminal.scroll_display(Scroll::Top);
-        let mut drag = SelectionDrag::begin(&mut terminal, at(0, 0));
+        let mut drag = SelectionDrag::begin(&mut terminal, at(0, 0), SelectionUnit::Cell);
         assert!(drag.extend(&mut terminal, at(1, 2)));
         Processor::default().advance(&mut terminal, b"\r\n777");
         assert!(drag.extend(&mut terminal, at(2, 2)));
@@ -422,7 +500,7 @@ mod tests {
         );
         let mut processor = Processor::default();
         processor.advance(&mut terminal, b"000\r\n111\r\n222");
-        let mut drag = SelectionDrag::begin(&mut terminal, at(2, 2));
+        let mut drag = SelectionDrag::begin(&mut terminal, at(2, 2), SelectionUnit::Cell);
         processor.advance(&mut terminal, b"\x1b[2;3r\x1b[3;1H\n");
         assert!(drag.extend(&mut terminal, at(0, 0)));
         assert_eq!(selection_text(&terminal).as_deref(), Some("000\n222"));
@@ -439,11 +517,11 @@ mod tests {
             32,
         );
         Processor::default().advance(&mut terminal, "a界e\u{301}z".as_bytes());
-        let mut drag = SelectionDrag::begin(&mut terminal, at(0, 2));
+        let mut drag = SelectionDrag::begin(&mut terminal, at(0, 2), SelectionUnit::Cell);
         assert!(drag.extend(&mut terminal, at(0, 1)));
         assert_eq!(selection_text(&terminal).as_deref(), Some("界"));
 
-        let mut drag = SelectionDrag::begin(&mut terminal, at(0, 0));
+        let mut drag = SelectionDrag::begin(&mut terminal, at(0, 0), SelectionUnit::Cell);
         assert!(drag.extend(&mut terminal, at(1, 0)));
         assert_eq!(selection_text(&terminal).as_deref(), Some("a界e\u{301}z"));
     }
@@ -459,11 +537,11 @@ mod tests {
             32,
         );
         Processor::default().advance(&mut terminal, b"ab  \r\n\r\nz");
-        let mut drag = SelectionDrag::begin(&mut terminal, at(0, 2));
+        let mut drag = SelectionDrag::begin(&mut terminal, at(0, 2), SelectionUnit::Cell);
         assert!(drag.extend(&mut terminal, at(0, 3)));
         assert_eq!(selection_text(&terminal).as_deref(), Some("  "));
 
-        let mut drag = SelectionDrag::begin(&mut terminal, at(0, 0));
+        let mut drag = SelectionDrag::begin(&mut terminal, at(0, 0), SelectionUnit::Cell);
         assert!(drag.extend(&mut terminal, at(2, 0)));
         assert_eq!(selection_text(&terminal).as_deref(), Some("ab  \n\nz"));
     }
@@ -479,15 +557,15 @@ mod tests {
             32,
         );
         Processor::default().advance(&mut terminal, b"a\tb  ");
-        let mut drag = SelectionDrag::begin(&mut terminal, at(0, 0));
+        let mut drag = SelectionDrag::begin(&mut terminal, at(0, 0), SelectionUnit::Cell);
         assert!(drag.extend(&mut terminal, at(0, 10)));
         assert_eq!(selection_text(&terminal).as_deref(), Some("a\tb  "));
 
-        let mut drag = SelectionDrag::begin(&mut terminal, at(0, 1));
+        let mut drag = SelectionDrag::begin(&mut terminal, at(0, 1), SelectionUnit::Cell);
         assert!(drag.extend(&mut terminal, at(0, 6)));
         assert_eq!(selection_text(&terminal).as_deref(), Some("\t"));
 
-        let mut drag = SelectionDrag::begin(&mut terminal, at(0, 2));
+        let mut drag = SelectionDrag::begin(&mut terminal, at(0, 2), SelectionUnit::Cell);
         assert!(drag.extend(&mut terminal, at(0, 5)));
         assert_eq!(selection_text(&terminal).as_deref(), Some("    "));
     }
@@ -506,11 +584,11 @@ mod tests {
             &mut terminal,
             b"\x1b[3g\x1b[1;5H\x1bH\x1b[1;1Ha\t\x1b[1;9Hb",
         );
-        let mut drag = SelectionDrag::begin(&mut terminal, at(0, 0));
+        let mut drag = SelectionDrag::begin(&mut terminal, at(0, 0), SelectionUnit::Cell);
         assert!(drag.extend(&mut terminal, at(0, 8)));
         assert_eq!(selection_text(&terminal).as_deref(), Some("a\t    b"));
 
-        let mut drag = SelectionDrag::begin(&mut terminal, at(0, 0));
+        let mut drag = SelectionDrag::begin(&mut terminal, at(0, 0), SelectionUnit::Cell);
         assert!(drag.extend(&mut terminal, at(0, 5)));
         assert_eq!(selection_text(&terminal).as_deref(), Some("a\t  "));
     }
@@ -547,7 +625,11 @@ mod tests {
                 }
                 let expected =
                     Selection::new(at(low / 4, low % 4), at(high / 4, high % 4 + 1)).copy(&source);
-                let mut drag = SelectionDrag::begin(&mut terminal, at(first / 4, first % 4));
+                let mut drag = SelectionDrag::begin(
+                    &mut terminal,
+                    at(first / 4, first % 4),
+                    SelectionUnit::Cell,
+                );
                 assert!(drag.extend(&mut terminal, at(second / 4, second % 4)));
                 assert_eq!(
                     selection_text(&terminal).as_deref(),

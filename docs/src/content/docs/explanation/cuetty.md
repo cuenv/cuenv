@@ -79,8 +79,14 @@ The current usable slice includes:
   labels, and a full-bleed terminal.
 - Keyboard input, including macOS Control chords, paste, resize, title updates, clipboard copy, mouse
   selection, Rio-owned history navigation, and visible-frame literal search. A mouse selection is
-  copied to the system clipboard on release; an empty click leaves it alone. Holding a selection
-  drag on the top or bottom row scrolls through history until the pointer moves away or is released.
+  copied to the system clipboard on release; an empty click leaves it alone. A double click selects
+  the word under the pointer and a triple click its line; dragging on from either grows the selection
+  a word or a line at a time. Holding a selection drag on the top or bottom row scrolls through
+  history a line at a time, and every row the pointer goes past the grid's edge scrolls one more line
+  a tick, up to a screen, until the pointer moves back or is released.
+- Page Up, Page Down, and Insert reach the program in the terminal as `CSI 5~`, `CSI 6~`, and
+  `CSI 2~`, with modifiers and the kitty keyboard protocol encoded as for Delete, so pagers such as
+  `less` page through their output. Shift-Page Up/Down still scroll Cuetty's own history.
   Selection and its copied text use Rio's history; changing column width invalidates the selection.
 - A palette command that copies what the last command printed, without its prompt or command
   line, in shells that mark output with OSC 133. Fish 4 and Nushell do unaided; the

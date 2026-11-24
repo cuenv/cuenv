@@ -53,7 +53,8 @@ alternate screen with alternate scroll enabled and mouse reporting disabled,
 Cuetty sends arrow keys.
 Shift-wheel requests local history instead, when history is available in the
 current screen. Shift-Page Up/Down and Shift-Home/End provide keyboard
-navigation.
+navigation. Plain Page Up/Down and Insert go to the program in the terminal, so
+pagers such as `less` page with them.
 
 Application mouse reporting currently covers the wheel only: clicks, drags,
 and pointer motion are not reported to applications, and local text selection
@@ -217,8 +218,9 @@ selection and every literal visible-frame search hit, opened with Cmd-F (Ctrl-Sh
 Linux) into a search bar at the terminal's top right, are painted directly
 over the terminal grid, with the current hit picked out from the rest. Releasing a mouse
 selection copies it to the system clipboard; a click without a selection leaves the clipboard
-alone. Hold a drag at the top or bottom row to scroll through Rio's history and extend the
-selection. Cmd-C can copy the selected text again. Rio-owned scrollback also has a thin overlay
+alone. A double click selects a word and a triple click a line; dragging on from either grows the
+selection by words or lines. Hold a drag at the top or bottom row to scroll through Rio's history and
+extend the selection; the further the pointer goes past the grid's edge, the faster it scrolls. Cmd-C can copy the selected text again. Rio-owned scrollback also has a thin overlay
 scrollbar that shows while the view moves or the pointer comes to the padding at the terminal's
 edge, fades away, and can be dragged. An open search stays open and searches what has come into
 view. It does not yet have live workspace restore,

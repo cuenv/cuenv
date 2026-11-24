@@ -11,7 +11,7 @@ use super::rio_adapter;
 
 use super::rio_input;
 use super::rio_selection::{self, SelectionDrag};
-use super::selection::{LogicalPosition, Selection};
+use super::selection::{LogicalPosition, Selection, SelectionUnit};
 use super::sizing::{self, CellSize, TerminalSize};
 #[cfg(unix)]
 use super::tab_label;
@@ -85,7 +85,8 @@ pub trait TerminalSession: Send {
     fn input(&mut self, event: TerminalKeyEvent) -> Result<bool, String>;
     fn paste(&mut self, text: &str) -> Result<(), String>;
     fn scroll(&mut self, action: TerminalScroll) -> Result<(), String>;
-    fn begin_selection(&mut self, position: LogicalPosition);
+    /// Starts a selection at `position`. A word or line press selects its unit at once.
+    fn begin_selection(&mut self, position: LogicalPosition, unit: SelectionUnit);
     /// Returns false when the terminal has invalidated the drag.
     fn extend_selection(&mut self, position: LogicalPosition) -> bool;
     fn end_selection(&mut self);
@@ -546,8 +547,12 @@ impl RioTerminalSession {
 }
 
 impl TerminalSession for RioTerminalSession {
-    fn begin_selection(&mut self, position: LogicalPosition) {
-        self.selection_drag = Some(SelectionDrag::begin(&mut self.terminal.lock(), position));
+    fn begin_selection(&mut self, position: LogicalPosition, unit: SelectionUnit) {
+        self.selection_drag = Some(SelectionDrag::begin(
+            &mut self.terminal.lock(),
+            position,
+            unit,
+        ));
     }
 
     fn extend_selection(&mut self, position: LogicalPosition) -> bool {
@@ -1708,13 +1713,13 @@ sleep 5
         let _serial = serial_pty_test();
         let mut session = fixture(&["history"]);
         wait_for_text(&mut session, "M0-READY");
-        session.begin_selection(LogicalPosition { line: 0, column: 0 });
+        session.begin_selection(LogicalPosition { line: 0, column: 0 }, SelectionUnit::Cell);
         assert_eq!(session.visible_selection(), None);
         assert_eq!(session.selection_text(), None);
         session.end_selection();
         assert_eq!(session.selection_text(), None);
         session.scroll(TerminalScroll::Top).unwrap();
-        session.begin_selection(LogicalPosition { line: 0, column: 0 });
+        session.begin_selection(LogicalPosition { line: 0, column: 0 }, SelectionUnit::Cell);
         session.scroll(TerminalScroll::Bottom).unwrap();
         let frame = session.frame();
         let ready_row = frame

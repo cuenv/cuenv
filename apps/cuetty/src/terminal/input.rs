@@ -11,7 +11,10 @@ pub enum KeyInput {
     Right,
     Home,
     End,
+    Insert,
     Delete,
+    PageUp,
+    PageDown,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
