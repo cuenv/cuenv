@@ -173,11 +173,13 @@ below the evaluated directory, directories whose name starts with `.` or
 `_`, directories named `testdata`, and directories holding their own
 `cue.mod` are not loaded, nor are unreadable directories. The evaluated
 directory itself is always loaded, whatever its name (a module rooted at
-`.config` or `_work` evaluates normally). With
+`.config` or `_work` evaluates normally). `exclude_directories` names further
+directories, relative to the module root with `/` separators, that are not
+loaded with everything below them (cuenv passes the directories git ignores). With
 `SkippedDirectories::Report`, `ModuleResult::skipped_directories` lists each
 left-out directory that holds a `.cue` file at any depth (only the topmost
 one of a tree), with its reason (`Dot`, `Underscore`, `Testdata`,
-`NestedModule` or `Unreadable`), so a caller that must see every instance can
+`NestedModule`, `Unreadable` or `Excluded`), so a caller that must see every instance can
 refuse to continue. The list is also returned when nothing matched.
 
 **Memory.** Each instance is built in its own CUE context and exported

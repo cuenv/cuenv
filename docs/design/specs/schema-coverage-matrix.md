@@ -245,7 +245,10 @@ such as `@extern(embed)` or `@if(tag)` before an `env.cue` package clause. Every
 `cuenv task` and `cuenv sync`, `cuenv info`, completions) visits the directories
 CUE's `./...` loads: it leaves out the module's `cue.mod` (vendored packages
 under `cue.mod/pkg` included), directories whose name starts with `.` or `_`,
-`testdata`, and nested CUE modules (a directory with its own `cue.mod`), so none
+`testdata`, nested CUE modules (a directory with its own `cue.mod`), and directories
+the repository's `.gitignore` files ignore; the recursive module evaluation of
+`cuenv task`, `cuenv sync` and `cuenv infrastructure` passes the ignored ones to
+the bridge as `exclude_directories` (issue 555), so none
 of them is a project of the module (`crates/core/src/cue/discovery.rs`,
 `crates/cuenv/tests/task_references.rs`).
 

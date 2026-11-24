@@ -77,6 +77,34 @@ func TestSkippedDirectories_ReportListsLeftOutDirectoriesHoldingCueFiles(t *test
 	}
 }
 
+func TestExcludeDirectories_LeavesOutNamedTreesAndReportsThem(t *testing.T) {
+	moduleRoot := writeCueModuleAt(t, filepath.Join(t.TempDir(), "module"), map[string]string{
+		"values.cue":            packageSource(`kind: "root"`),
+		"child/values.cue":      packageSource(`child: true`),
+		"target/values.cue":     packageSource(`target: true`),
+		"build/out/values.cue":  packageSource(`out: true`),
+		"build/keep/values.cue": packageSource(`keep: true`),
+		"targeted/values.cue":   packageSource(`targeted: true`),
+	})
+	excluding := allPackages(moduleRoot)
+	excluding.excludeDirectories = []string{"target", "./build/out/", "missing"}
+	excluding.skippedDirectories = SkippedDirectoriesReport
+	result := excluding.result(t)
+	assertInstanceKeys(t, result, ".:app", "build/keep:app", "child:app", "targeted:app")
+	expected := []SkippedDirectory{
+		{Path: "build/out", Reason: SkippedReasonExcluded},
+		{Path: "target", Reason: SkippedReasonExcluded},
+	}
+	if !reflect.DeepEqual(result.SkippedDirectories, expected) {
+		t.Errorf("expected skipped directories %+v, got %+v", expected, result.SkippedDirectories)
+	}
+
+	// The walk root is loaded even when excluded.
+	root := allPackages(moduleRoot)
+	root.excludeDirectories = []string{"."}
+	assertInstanceKeys(t, root.result(t), ".:app", "build/keep:app", "build/out:app", "child:app", "target:app", "targeted:app")
+}
+
 func TestSkippedDirectories_ReportedWhenNothingElseMatches(t *testing.T) {
 	// A caller looking for a package that only exists in a left-out
 	// directory gets an empty result and learns why.

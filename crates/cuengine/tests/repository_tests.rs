@@ -7,10 +7,11 @@
 //! `schema.#Project` at file level (the common way to write `env.cue`).
 //! Copied schemas use the repository's CUE module language version.
 //!
-//! Each test copies the CUE files it needs into a temporary module instead
-//! of evaluating the checkout in place. The checkout's `target/` directory
-//! holds build output and fixtures that other test binaries write while
-//! this one runs, which a recursive load would otherwise pick up.
+//! The whole-repository test evaluates the checkout in place and excludes
+//! the directories git ignores, together with `target/`, which holds build
+//! output and fixtures that other test binaries write while this one runs
+//! (also where no repository is present, as in a Nix build). The other
+//! tests copy the schema into a temporary module next to one project.
 
 use cuengine::{InstanceFailures, ModuleEvalOptions, ModuleResult, PackageScope};
 use cuenv_core::environment::EnvValue;
@@ -41,8 +42,7 @@ fn is_copied_directory(name: &str) -> bool {
 }
 
 /// Copy every `.cue` file below `source` (and all of `cue.mod`) to
-/// `destination`, keeping relative paths, along with the files those CUE
-/// files embed.
+/// `destination`, keeping relative paths.
 fn copy_cue_files(source: &Path, destination: &Path) -> TestResult {
     for entry in fs::read_dir(source)? {
         let entry = entry?;
@@ -60,30 +60,7 @@ fn copy_cue_files(source: &Path, destination: &Path) -> TestResult {
         {
             fs::create_dir_all(destination)?;
             fs::copy(&path, destination.join(name.as_ref()))?;
-            if !source.ends_with("cue.mod") {
-                copy_embedded_files(&path, source, destination)?;
-            }
         }
-    }
-    Ok(())
-}
-
-/// Copy the files a CUE file embeds with `@embed(file="...")`, resolved
-/// against its directory. `env.cue` embeds the flake's source list.
-fn copy_embedded_files(cue_file: &Path, source: &Path, destination: &Path) -> TestResult {
-    const EMBED: &str = "@embed(file=\"";
-    let contents = fs::read_to_string(cue_file)?;
-    for (start, _) in contents.match_indices(EMBED) {
-        let rest = &contents[start + EMBED.len()..];
-        let Some(end) = rest.find('"') else {
-            continue;
-        };
-        let embedded = &rest[..end];
-        let target = destination.join(embedded);
-        if let Some(parent) = target.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::copy(source.join(embedded), target)?;
     }
     Ok(())
 }
@@ -95,16 +72,20 @@ fn every_instance_of_the_repository_evaluates() -> TestResult {
     // call. A broken example (for example a task reference that no longer
     // resolves) makes this test fail instead of landing silently.
     let repository = repository_root()?;
-    let module = temporary_module("cuengine-repository-")?;
-    copy_cue_files(&repository, module.path())?;
+    let mut exclude_directories: Vec<String> = cuenv_vcs::ignored_directories(&repository)?
+        .iter()
+        .map(|directory| directory.to_string_lossy().replace('\\', "/"))
+        .collect();
+    exclude_directories.push("target".to_string());
 
     let options = ModuleEvalOptions {
         recursive: true,
         package_scope: PackageScope::All,
         instance_failures: InstanceFailures::Fail,
+        exclude_directories,
         ..Default::default()
     };
-    let result = cuengine::evaluate_module(module.path(), "", Some(&options))?;
+    let result = cuengine::evaluate_module(&repository, "", Some(&options))?;
     assert!(
         result.instances.contains_key(".:cuenv"),
         "the repository's own env.cue is missing: {:?}",

@@ -807,7 +807,8 @@ inherits both. They refuse when any instance fails to evaluate (exit code
 because a broken instance could hide a duplicate, and when the module-wide
 evaluation does not include the project itself (exit code `2`). CUE's `./...`
 pattern leaves out directories whose name starts with `.` or `_`, directories
-named `testdata` and nested modules, so a project inside one of them could
+named `testdata` and nested modules, and cuenv also leaves out directories the
+repository's `.gitignore` files ignore, so a project inside one of them could
 not be checked; the error names the directory and why it is left out.
 `state list`, `state pull`, `state remove`, `state recover`, `state restore`
 and `unlock` evaluate only the project, so they keep working while a sibling

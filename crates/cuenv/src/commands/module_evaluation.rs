@@ -147,6 +147,7 @@ impl CommandExecutor {
     fn evaluate_workspace_module_recursive(&self, module_root: &Path) -> Result<ModuleEvaluation> {
         let options = ModuleEvalOptions {
             recursive: true,
+            exclude_directories: gitignored_directories(module_root),
             with_meta: true,
             with_references: true,
             task_field: Some(TASK_FIELD.to_string()),
@@ -293,4 +294,35 @@ impl CommandExecutor {
             metadata: metadata.finish(),
         }))
     }
+}
+
+/// The directories below `module_root` that git ignores, as module-relative
+/// `/`-separated paths, for a recursive evaluation to leave out: build output
+/// and scratch trees are not part of the module, as they are not part of a
+/// task's inputs.
+///
+/// A repository whose ignore rules cannot be read evaluates every directory.
+pub(super) fn gitignored_directories(module_root: &Path) -> Vec<String> {
+    cuenv_vcs::ignored_directories(module_root).map_or_else(
+        |error| {
+            tracing::warn!(
+                module_root = %module_root.display(),
+                %error,
+                "Could not read the repository's ignore rules; evaluating every directory"
+            );
+            Vec::new()
+        },
+        |directories| {
+            directories
+                .iter()
+                .map(|directory| {
+                    directory
+                        .components()
+                        .map(|part| part.as_os_str().to_string_lossy())
+                        .collect::<Vec<_>>()
+                        .join("/")
+                })
+                .collect()
+        },
+    )
 }

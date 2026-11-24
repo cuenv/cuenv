@@ -282,6 +282,12 @@ pub struct ModuleEvalOptions {
     /// load.
     #[serde(default)]
     pub skipped_directories: SkippedDirectories,
+    /// Directories, relative to the module root with `/` separators, that a
+    /// recursive evaluation does not load, together with everything below
+    /// them. They are reported with [`SkippedReason::Excluded`]. The
+    /// evaluated directory itself is always loaded.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exclude_directories: Vec<String>,
     /// The top-level field that holds the task graph. Sequence items inside
     /// it get their hidden `_name` field injected before export so that
     /// output references resolve, and a projection (`export_paths`) that
@@ -365,6 +371,8 @@ pub enum SkippedReason {
     NestedModule,
     /// It could not be read.
     Unreadable,
+    /// The caller excluded it with [`ModuleEvalOptions::exclude_directories`].
+    Excluded,
 }
 
 /// Which CUE packages an evaluation covers.
@@ -1264,6 +1272,7 @@ pub fn evaluate_cue_package(dir_path: &Path, package_name: &str) -> Result<Strin
         export_paths: Vec::new(),
         presence_paths: Vec::new(),
         skipped_directories: SkippedDirectories::Ignore,
+        exclude_directories: Vec::new(),
         task_field: None,
         unify: Vec::new(),
     };

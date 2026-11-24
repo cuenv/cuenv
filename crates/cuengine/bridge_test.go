@@ -79,6 +79,7 @@ type evaluation struct {
 	exportPaths        []string
 	presencePaths      []string
 	skippedDirectories string
+	excludeDirectories []string
 }
 
 func packageNamed(name string) *string {
@@ -96,6 +97,7 @@ func (e evaluation) optionsJSON(t *testing.T) string {
 		"exportPaths":        e.exportPaths,
 		"presencePaths":      e.presencePaths,
 		"skippedDirectories": e.skippedDirectories,
+		"excludeDirectories": e.excludeDirectories,
 	}
 	if e.packageName != nil {
 		options["packageName"] = *e.packageName
