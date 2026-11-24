@@ -169,12 +169,6 @@ pub enum CancelInProgress {
     Expression(String),
 }
 
-impl From<bool> for CancelInProgress {
-    fn from(value: bool) -> Self {
-        Self::Bool(value)
-    }
-}
-
 /// Concurrency configuration to prevent duplicate workflow runs.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
