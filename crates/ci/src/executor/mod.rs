@@ -7,6 +7,7 @@ pub mod config;
 mod hook_env;
 mod orchestrator;
 mod pipeline_result;
+mod plan_output;
 mod projects;
 mod reporting;
 /// Execute individual IR tasks and capture their output.
@@ -20,6 +21,7 @@ mod tools;
 pub use config::CIExecutorConfig;
 pub use orchestrator::{RunCiRequest, ShardSpec, TaskSelection, run_ci};
 pub use pipeline_result::PipelineResult;
+pub use plan_output::{PlanFormat, PlanOutput, PlannedProject};
 pub use runner::TaskOutput;
 pub use secrets::{EnvSecretResolver, MockSecretResolver, SaltConfig, SecretResolver};
 

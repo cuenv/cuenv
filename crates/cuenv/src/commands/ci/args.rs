@@ -22,7 +22,7 @@ pub struct CiArgs {
     #[arg(long, value_name = "FORMAT", value_enum)]
     pub export: Option<ExportFormat>,
 
-    /// Output path for export (defaults to stdout).
+    /// Output path for export or for the `--plan-format` plan (defaults to stdout).
     #[arg(long, short = 'o', value_name = "PATH")]
     pub output: Option<PathBuf>,
 
@@ -43,6 +43,21 @@ pub struct CiArgs {
     /// Show what would be executed without running.
     #[arg(long)]
     pub dry_run: bool,
+
+    /// Write the tasks the dry run selected in machine-readable form.
+    ///
+    /// `lines` writes the selected task names, sorted, one per line (nothing
+    /// selected is empty output); `json` writes the selection per project.
+    /// Use `--output` to write to a file: stdout also carries the run's own
+    /// messages.
+    #[arg(
+        long,
+        value_name = "FORMAT",
+        value_enum,
+        requires = "dry_run",
+        conflicts_with = "export"
+    )]
+    pub plan_format: Option<PlanFormatArg>,
 
     /// Environment for secrets resolution.
     #[arg(long, short = 'e', value_name = "NAME")]
@@ -75,6 +90,24 @@ impl CiArgs {
             std::thread::available_parallelism().map_or(1, std::num::NonZero::get)
         } else {
             self.jobs
+        }
+    }
+}
+
+/// Machine-readable format of a dry run's plan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum PlanFormatArg {
+    /// One selected task name per line.
+    Lines,
+    /// A JSON document with the selection per project.
+    Json,
+}
+
+impl From<PlanFormatArg> for cuenv_ci::executor::PlanFormat {
+    fn from(format: PlanFormatArg) -> Self {
+        match format {
+            PlanFormatArg::Lines => Self::Lines,
+            PlanFormatArg::Json => Self::Json,
         }
     }
 }
@@ -146,6 +179,15 @@ mod tests {
     }
 
     #[test]
+    fn plan_format_needs_a_dry_run() {
+        use clap::Parser;
+        assert!(ParseCiArgs::try_parse_from(["cuenv", "--plan-format", "lines"]).is_err());
+        let args =
+            ParseCiArgs::try_parse_from(["cuenv", "--dry-run", "--plan-format", "lines"]).unwrap();
+        assert_eq!(args.ci.plan_format, Some(PlanFormatArg::Lines));
+    }
+
+    #[test]
     fn test_pipeline_name_default() {
         let args = CiArgs {
             pipeline: None,
@@ -155,6 +197,7 @@ mod tests {
             jobs: 0,
             from: None,
             dry_run: false,
+            plan_format: None,
             environment: None,
             path: ".".to_string(),
             package: "cuenv".to_string(),
@@ -173,6 +216,7 @@ mod tests {
             jobs: 0,
             from: None,
             dry_run: false,
+            plan_format: None,
             environment: None,
             path: ".".to_string(),
             package: "cuenv".to_string(),
@@ -191,6 +235,7 @@ mod tests {
             jobs: 0,
             from: None,
             dry_run: false,
+            plan_format: None,
             environment: None,
             path: ".".to_string(),
             package: "cuenv".to_string(),
@@ -210,6 +255,7 @@ mod tests {
             jobs: 8,
             from: None,
             dry_run: false,
+            plan_format: None,
             environment: None,
             path: ".".to_string(),
             package: "cuenv".to_string(),

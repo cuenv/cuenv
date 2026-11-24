@@ -97,8 +97,12 @@ pub(super) fn emit_matrix_workflow(
         env: indexmap::IndexMap::new(),
         jobs,
     };
-    emitter.apply_pipeline_changes(&ir, &mut workflow);
-    emitter.apply_pipeline_gate(&ir, &mut workflow);
+    emitter
+        .apply_pipeline_changes(&ir, &mut workflow)
+        .map_err(|e| cuenv_core::Error::configuration(e.to_string()))?;
+    emitter
+        .apply_pipeline_gate(&ir, &mut workflow)
+        .map_err(|e| cuenv_core::Error::configuration(e.to_string()))?;
     let yaml = emitter
         .serialize_workflow_with_pins(&workflow)
         .map_err(|e| {

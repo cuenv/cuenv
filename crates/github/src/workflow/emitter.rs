@@ -911,6 +911,13 @@ impl GitHubActionsEmitter {
     ) -> EmitterResult<String> {
         use crate::workflow::stage_renderer::GitHubStageRenderer;
 
+        if ir.pipeline.changes.is_some() {
+            return Err(EmitterError::InvalidIR(format!(
+                "pipeline '{}' sets `changes`, which needs separate jobs; thin mode runs one job and `cuenv ci` already skips unaffected tasks",
+                ir.pipeline.name
+            )));
+        }
+
         let mut scoped_ir = ir.clone();
         scoped_ir.tasks.retain(|step| {
             step.phase.is_none()
@@ -1091,7 +1098,7 @@ impl GitHubActionsEmitter {
             env: IndexMap::new(),
             jobs,
         };
-        self.apply_pipeline_gate(ir, &mut workflow);
+        self.apply_pipeline_gate(ir, &mut workflow)?;
 
         self.serialize_workflow_with_pins(&workflow)
     }
@@ -1151,8 +1158,8 @@ impl GitHubActionsEmitter {
             env: IndexMap::new(),
             jobs,
         };
-        self.apply_pipeline_changes(ir, &mut workflow);
-        self.apply_pipeline_gate(ir, &mut workflow);
+        self.apply_pipeline_changes(ir, &mut workflow)?;
+        self.apply_pipeline_gate(ir, &mut workflow)?;
 
         Ok(workflow)
     }
@@ -1160,16 +1167,50 @@ impl GitHubActionsEmitter {
     /// Inject a per-lane change detection job (`#Pipeline.changes`) and wire
     /// downstream lane jobs to `needs: [<changes_job>]` and `if: needs.<changes_job>.outputs.<lane> == 'true'`
     /// unless the task overrides `if`.
-    pub fn apply_pipeline_changes(&self, ir: &IntermediateRepresentation, workflow: &mut Workflow) {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EmitterError::InvalidIR`] if a lane name is not a valid output
+    /// name, a lane lists no task or a task no job of the workflow has, or the
+    /// detection job's ID is already a job of the workflow.
+    pub fn apply_pipeline_changes(
+        &self,
+        ir: &IntermediateRepresentation,
+        workflow: &mut Workflow,
+    ) -> EmitterResult<()> {
         let Some(changes) = &ir.pipeline.changes else {
-            return;
+            return Ok(());
         };
         if changes.lanes.is_empty() {
-            return;
+            return Ok(());
         }
 
         let job_name = changes.job.as_deref().unwrap_or("changes");
         let changes_job_id = sanitize_job_id(job_name);
+        if workflow.jobs.contains_key(&changes_job_id) {
+            return Err(EmitterError::InvalidIR(format!(
+                "pipeline '{}' change detection job '{changes_job_id}' has the ID of another job; set `changes.job` to a different name",
+                ir.pipeline.name
+            )));
+        }
+        for (lane_name, lane) in &changes.lanes {
+            if lane_name.is_empty()
+                || !lane_name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            {
+                return Err(EmitterError::InvalidIR(format!(
+                    "pipeline '{}' change lane '{lane_name}' must be non-empty and use only letters, digits, '-' and '_'",
+                    ir.pipeline.name
+                )));
+            }
+            if lane.tasks.is_empty() {
+                return Err(EmitterError::InvalidIR(format!(
+                    "pipeline '{}' change lane '{lane_name}' lists no tasks",
+                    ir.pipeline.name
+                )));
+            }
+        }
 
         let mut outputs = IndexMap::new();
         for lane_name in changes.lanes.keys() {
@@ -1179,80 +1220,18 @@ impl GitHubActionsEmitter {
             );
         }
 
+        let mut setup_steps = Vec::new();
         let mut detect_step = if let Some(script) = &changes.script {
             Step::run(script).with_name("Detect changed lanes")
         } else {
-            use std::fmt::Write as _;
-
-            let mut script = String::from(
-                "set -eu\n\
-                 BASE_REF=\"\"\n\
-                 case \"$GITHUB_EVENT_NAME\" in\n\
-                   merge_group) BASE_REF=\"$MERGE_GROUP_BASE_SHA\" ;;\n\
-                   pull_request|pull_request_target) BASE_REF=\"$PR_BASE_SHA\" ;;\n\
-                   push)\n\
-                     if [ -n \"$PUSH_BEFORE_SHA\" ] && [ \"$PUSH_BEFORE_SHA\" != \"0000000000000000000000000000000000000000\" ]; then\n\
-                       BASE_REF=\"$PUSH_BEFORE_SHA\"\n\
-                     fi\n\
-                     ;;\n\
-                 esac\n\
-                 if [ -z \"$BASE_REF\" ]; then\n",
-            );
-            for lane_name in changes.lanes.keys() {
-                let _ = writeln!(script, "  echo \"{lane_name}=true\" >> \"$GITHUB_OUTPUT\"");
-            }
-            let _ = writeln!(
-                script,
-                "  exit 0\n\
-                 fi\n\
-                 if AFFECTED=$(cuenv ci --pipeline '{}' --affected --dry-run --from \"$BASE_REF\"); then\n\
-                   lane_hit() {{\n\
-                     for t in \"$@\"; do\n\
-                       if printf '%s\\n' \"$AFFECTED\" | grep -Fq -- \"$t\"; then\n\
-                         echo \"true\"\n\
-                         return 0\n\
-                       fi\n\
-                     done\n\
-                     echo \"false\"\n\
-                   }}",
-                ir.pipeline.name.replace('\'', "'\\''")
-            );
-            for (lane_name, lane) in &changes.lanes {
-                let args = lane
-                    .tasks
-                    .iter()
-                    .map(|t| format!("'{}'", t.replace('\'', "'\\''")))
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                let _ = writeln!(
-                    script,
-                    "  echo \"{lane_name}=$(lane_hit {args})\" >> \"$GITHUB_OUTPUT\""
-                );
-            }
-            script.push_str("else\n");
-            for lane_name in changes.lanes.keys() {
-                let _ = writeln!(script, "  echo \"{lane_name}=true\" >> \"$GITHUB_OUTPUT\"");
-            }
-            script.push_str("fi");
-
-            let mut step = Step::run(&script).with_name("Detect changed lanes");
+            // The default detection runs `cuenv`, so the job sets it up as a
+            // pipeline job does.
+            setup_steps = self
+                .render_phase_steps(ir, TaskExecution::Orchestrated, CuenvSetup::BuildInJob)
+                .0;
+            let mut step = Step::run(Self::default_change_detection_script(ir, changes))
+                .with_name("Detect changed lanes");
             step.shell = Some("sh".to_string());
-            step.env.insert(
-                "GITHUB_EVENT_NAME".to_string(),
-                "${{ github.event_name }}".to_string(),
-            );
-            step.env.insert(
-                "MERGE_GROUP_BASE_SHA".to_string(),
-                "${{ github.event.merge_group.base_sha }}".to_string(),
-            );
-            step.env.insert(
-                "PR_BASE_SHA".to_string(),
-                "${{ github.event.pull_request.base.sha }}".to_string(),
-            );
-            step.env.insert(
-                "PUSH_BEFORE_SHA".to_string(),
-                "${{ github.event.before }}".to_string(),
-            );
             step
         };
         detect_step.id = Some("detect".to_string());
@@ -1283,7 +1262,10 @@ impl GitHubActionsEmitter {
             concurrency: None,
             continue_on_error: None,
             timeout_minutes: Some(10),
-            steps: vec![self.build_checkout_step(None, Some(0)), detect_step],
+            steps: std::iter::once(self.build_checkout_step(None, Some(0)))
+                .chain(setup_steps)
+                .chain(std::iter::once(detect_step))
+                .collect(),
         };
 
         // A job named `<task>-<suffix>` is a matrix variant of `<task>` only when
@@ -1297,10 +1279,12 @@ impl GitHubActionsEmitter {
             for task_id in &lane.tasks {
                 let sanitized = sanitize_job_id(task_id);
                 let variant_prefix = format!("{sanitized}-");
+                let mut matched = false;
                 for (job_id, job) in &mut workflow.jobs {
                     if job_id == &sanitized
                         || (job_id.starts_with(&variant_prefix) && !task_job_ids.contains(job_id))
                     {
+                        matched = true;
                         if !job.needs.contains(&changes_job_id) {
                             job.needs.push(changes_job_id.clone());
                         }
@@ -1311,6 +1295,12 @@ impl GitHubActionsEmitter {
                         }
                     }
                 }
+                if !matched {
+                    return Err(EmitterError::InvalidIR(format!(
+                        "pipeline '{}' change lane '{lane_name}' lists task '{task_id}', which has no job in this workflow",
+                        ir.pipeline.name
+                    )));
+                }
             }
         }
 
@@ -1319,18 +1309,102 @@ impl GitHubActionsEmitter {
         for (id, job) in existing {
             workflow.jobs.insert(id, job);
         }
+        Ok(())
+    }
+
+    /// The default detection step: ask `cuenv ci` which tasks a dry run of the
+    /// pipeline selects, and set each lane's output when one of its tasks is
+    /// among them. The provider supplies the comparison base for the event.
+    ///
+    /// Lane tasks match whole task names. When `cuenv` cannot plan the
+    /// pipeline the step warns and runs every lane, since nothing is known
+    /// to be unaffected.
+    fn default_change_detection_script(
+        ir: &IntermediateRepresentation,
+        changes: &cuenv_core::ci::PipelineChanges,
+    ) -> String {
+        use std::fmt::Write as _;
+
+        let quote = |value: &str| format!("'{}'", value.replace('\'', "'\\''"));
+        let mut command = format!("cuenv ci --pipeline {}", quote(&ir.pipeline.name));
+        if let Some(path) = &ir.pipeline.project_path {
+            let _ = write!(command, " --path {}", quote(path));
+        }
+        command.push_str(" --dry-run --plan-format lines --output \"$plan\"");
+
+        let mut script = format!(
+            "set -eu\n\
+             plan=\"${{RUNNER_TEMP:-/tmp}}/cuenv-plan.txt\"\n\
+             lane_hit() {{\n\
+               for task in \"$@\"; do\n\
+                 if grep -Fxq -- \"$task\" \"$plan\"; then\n\
+                   echo true\n\
+                   return 0\n\
+                 fi\n\
+               done\n\
+               echo false\n\
+             }}\n\
+             if {command}; then\n"
+        );
+        for (lane_name, lane) in &changes.lanes {
+            let tasks = lane
+                .tasks
+                .iter()
+                .map(|task| quote(task))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let _ = writeln!(
+                script,
+                "  echo \"{lane_name}=$(lane_hit {tasks})\" >> \"$GITHUB_OUTPUT\""
+            );
+        }
+        script.push_str(
+            "else\n  echo \"::warning::cuenv could not plan the pipeline; running every lane\"\n",
+        );
+        for lane_name in changes.lanes.keys() {
+            let _ = writeln!(script, "  echo \"{lane_name}=true\" >> \"$GITHUB_OUTPUT\"");
+        }
+        script.push_str("fi");
+        script
     }
 
     /// Inject a configurable gate job (`#Pipeline.gate`) that aggregates every
     /// other job in the workflow into a single stable required check.
-    pub fn apply_pipeline_gate(&self, ir: &IntermediateRepresentation, workflow: &mut Workflow) {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EmitterError::InvalidIR`] if the gate's ID is already a job of
+    /// the workflow or `required` names a job the workflow does not have.
+    pub fn apply_pipeline_gate(
+        &self,
+        ir: &IntermediateRepresentation,
+        workflow: &mut Workflow,
+    ) -> EmitterResult<()> {
         use std::fmt::Write as _;
 
         let Some(gate) = &ir.pipeline.gate else {
-            return;
+            return Ok(());
         };
 
         let gate_job_id = sanitize_job_id(&gate.name);
+        if gate_job_id.is_empty() || workflow.jobs.contains_key(&gate_job_id) {
+            return Err(EmitterError::InvalidIR(format!(
+                "pipeline '{}' gate '{}' must have a name that is not the ID of another job",
+                ir.pipeline.name, gate.name
+            )));
+        }
+        if let Some(unknown) = gate
+            .required
+            .iter()
+            .find(|id| !workflow.jobs.contains_key(&sanitize_job_id(id)))
+        {
+            return Err(EmitterError::InvalidIR(format!(
+                "pipeline '{}' gate '{}' requires '{unknown}', which is not a job of this workflow (jobs: {})",
+                ir.pipeline.name,
+                gate.name,
+                workflow.jobs.keys().cloned().collect::<Vec<_>>().join(", ")
+            )));
+        }
         let needs: Vec<String> = workflow
             .jobs
             .keys()
@@ -1402,6 +1476,7 @@ impl GitHubActionsEmitter {
         };
 
         workflow.jobs.insert(gate_job_id, gate_job);
+        Ok(())
     }
 
     /// Build workflow triggers from IR

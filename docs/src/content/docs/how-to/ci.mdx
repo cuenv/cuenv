@@ -500,12 +500,13 @@ provider. The full flag set (verified against
 | --- | --- |
 | `-p, --pipeline <NAME>` | Pipeline to run or export (defaults to `default`). |
 | `--export <FORMAT>` | Export pipeline YAML to stdout instead of running. `FORMAT` is `buildkite`, `gitlab`, `github-actions`, or `circleci`. |
-| `-o, --output <PATH>` | Write exported YAML to a file instead of stdout. |
+| `-o, --output <PATH>` | Write exported YAML, or the `--plan-format` plan, to a file instead of stdout. |
 | `--from <REF>` | Base ref for affected-task detection, compared through its merge base with `HEAD`. Ignored when GitHub Actions or Buildkite is detected. |
 | `--all` | Run every named task in the selected scope without changing provider context; cannot combine with export. |
 | `--shard <INDEX>/<TOTAL>` | Run a deterministic 1-indexed shard of the planned tasks (e.g., `1/4`); cannot combine with export. |
 | `-j, --jobs <N>` | Max parallel DAG jobs (`0` = host parallelism, the default). |
 | `--dry-run` | Show what would run without executing. |
+| `--plan-format <lines\|json>` | With `--dry-run`, write the selected task names (`lines`, one per line) or the selection per project (`json`). Requires `--dry-run`; write a file with `--output`. |
 | `-e, --environment <NAME>` | Environment used for secret resolution. |
 | `--path <PATH>` / `--package <PACKAGE>` | CUE directory and package (default `.` / `cuenv`). |
 
@@ -521,6 +522,9 @@ cuenv ci --pipeline ci --shard 1/4
 
 # See the plan without executing.
 cuenv ci --pipeline ci --dry-run
+
+# Write the selected task names to a file, for a script.
+cuenv ci --pipeline ci --dry-run --plan-format lines --output plan.txt
 
 # Export a dynamic Buildkite pipeline and upload it.
 cuenv ci --pipeline ci --export buildkite | buildkite-agent pipeline upload
@@ -759,7 +763,7 @@ ci: pipelines: main: {
 			rust: tasks: ["check.rust", "test.rust"]
 			web:  tasks: ["check.web"]
 		}
-		// Optional: replace default `cuenv ci --affected` detection with a custom script
+		// Optional: replace the default detection with a custom script
 		// script: "./scripts/detect-lanes.sh"
 	}
 	gate: {
@@ -769,15 +773,29 @@ ci: pipelines: main: {
 }
 ```
 
-- `changes` emits a front-loaded detection job whose `outputs.<lane>` booleans
-  are computed from `cuenv ci --affected --dry-run` across `push`, `pull_request`,
-  and `merge_group` (`base_sha`), failing closed to `true` when no base ref is
-  available. Each task in a lane automatically receives `needs: [changes]` and
-  `if: needs.changes.outputs.<lane> == 'true'` unless the task defines its own `if`.
+- `changes` emits a front-loaded detection job with an `outputs.<lane>` boolean
+  per lane. The default step sets up cuenv like a pipeline job and runs
+  `cuenv ci --pipeline <name> --dry-run --plan-format lines`, so the lane
+  outputs follow the same affected-task selection as `cuenv ci`, with the base
+  the provider supplies for `push`, `pull_request` and `merge_group` events. A
+  lane is `true` when any of its tasks is selected; task names match whole
+  names (`test` does not match `test-integration`). When cuenv has no base to
+  compare, it selects every task, so every lane is `true`; when it cannot plan
+  the pipeline at all, the step prints a warning and sets every lane `true`.
+  Each task in a lane automatically receives `needs: [changes]` and
+  `if: needs.changes.outputs.<lane> == 'true'` unless the task defines its own
+  `if`. With `script`, the step runs your script instead and sets up nothing:
+  it must write `<lane>=true|false` lines to `$GITHUB_OUTPUT` itself.
+- Generation fails when a lane name is not made of letters, digits, `-` and
+  `_`, a lane lists no task, a lane task has no job in the workflow, the
+  detection job's ID is already a job, or `changes` is set on a thin pipeline
+  (thin mode runs one job, and `cuenv ci` already skips unaffected tasks).
 - `gate` emits a single `if: always()`, `permissions: {}` job that depends on
   every other job in the workflow (thin, expanded, or matrix) and runs a
   dependency-free POSIX `sh` check: any `failure` or `cancelled` job fails the
-  gate, while `skipped` jobs pass unless listed in `gate.required`.
+  gate, while `skipped` jobs pass unless listed in `gate.required`. Generation
+  fails when the gate's name is the ID of another job or `required` names a job
+  the workflow does not have.
 
 ## Secrets in CI
 
