@@ -10,6 +10,7 @@ mod glyphs;
 mod host;
 mod input;
 mod interaction;
+mod links;
 mod motion;
 pub mod overlay;
 mod palette;

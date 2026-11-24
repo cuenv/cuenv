@@ -39,9 +39,10 @@ use crate::integrations::cuenv::{
     StagedEvaluation, WindowSidebar,
 };
 use crate::workspace::{LayoutRect, MinSizePolicy, Tab, TabId};
+use gpui::prelude::FluentBuilder;
 use gpui::{
     App, AppContext, Application, BorderStyle, Bounds, ClipboardItem, Context, Decorations,
-    DispatchPhase, Edges, Element, FocusHandle, Font, FontStyle, FontWeight, Hsla,
+    DispatchPhase, Edges, Element, FocusHandle, Font, FontStyle, FontWeight, HitboxBehavior, Hsla,
     InteractiveElement, IntoElement, KeyBinding, Menu, MenuItem, ModifiersChangedEvent,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, PathBuilder, Pixels,
     Render, ScrollDelta, ScrollHandle, ScrollWheelEvent, SharedString, Size, StrikethroughStyle,
@@ -1009,6 +1010,8 @@ pub(super) struct PaneState {
     /// The palette the session was last told about, so it is told only of a change.
     told_palette: Option<ThemeColors>,
     frame: TerminalFrame,
+    painted_frame: Arc<Mutex<Option<TerminalFrame>>>,
+    painted_link: Arc<Mutex<Option<super::links::Link>>>,
     interaction: InteractionState,
     selection_dragging: bool,
     scroll_remainder: f32,
@@ -1043,6 +1046,8 @@ impl PaneState {
             session,
             told_palette: None,
             frame,
+            painted_frame: Arc::new(Mutex::new(None)),
+            painted_link: Arc::new(Mutex::new(None)),
             interaction: InteractionState::default(),
             selection_dragging: false,
             scroll_remainder: 0.0,
@@ -1775,6 +1780,8 @@ pub(super) struct TerminalView {
     pub(super) scrollbar_grab: Option<f32>,
     selection_gesture: Option<SelectionGesture>,
     selection_gesture_id: u64,
+    link_gesture: Option<LinkGesture>,
+    hovered_link: Option<super::links::Link>,
     /// When the draw an animation has asked for is due.
     frame_due: Option<std::time::Instant>,
     /// What the platform says about motion, read once as the window opens.
@@ -1804,6 +1811,32 @@ struct SelectionGesture {
     moved: bool,
 }
 
+struct LinkGesture {
+    pane: crate::workspace::PaneId,
+    generation: SessionGeneration,
+    link: super::links::Link,
+    frame: super::model::TerminalFrame,
+    position: gpui::Point<Pixels>,
+    moved: bool,
+}
+
+fn link_modifier(modifiers: gpui::Modifiers) -> bool {
+    let primary = if cfg!(target_os = "macos") {
+        modifiers.platform
+    } else {
+        modifiers.control
+    };
+    primary
+        && !modifiers.alt
+        && !modifiers.shift
+        && !modifiers.function
+        && if cfg!(target_os = "macos") {
+            !modifiers.control
+        } else {
+            !modifiers.platform
+        }
+}
+
 #[derive(Clone, Copy)]
 struct ViewportHit {
     grid: CellHitTest,
@@ -1823,6 +1856,24 @@ fn viewport_hit(
         cell: grid.hit(f32::from(position.x) - x, relative_y),
         relative_y,
     })
+}
+
+fn strict_viewport_hit(
+    origin: &Mutex<(f32, f32)>,
+    grid: CellHitTest,
+    position: gpui::Point<Pixels>,
+) -> Option<ViewportHit> {
+    let (x, y) = read_measurement(origin)?;
+    let relative_x = f32::from(position.x) - x;
+    let relative_y = f32::from(position.y) - y;
+    if relative_x < 0.0
+        || relative_y < 0.0
+        || relative_x >= grid.columns as f32 * grid.cell_width
+        || relative_y >= grid.rows as f32 * grid.cell_height
+    {
+        return None;
+    }
+    viewport_hit(origin, grid, position)
 }
 
 const SELECTION_SCROLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
@@ -2380,6 +2431,8 @@ impl TerminalView {
             scrollbar_grab: None,
             selection_gesture: None,
             selection_gesture_id: 0,
+            link_gesture: None,
+            hovered_link: None,
             frame_due: None,
             system_motion: MotionPace::default(),
             motion: ChromeMotion::default(),
@@ -2947,6 +3000,24 @@ impl TerminalView {
             columns: state.frame.dimensions.columns as usize,
         };
         viewport_hit(&state.viewport_origin, hit_test, position)
+    }
+
+    fn link_at_pointer(&self, position: gpui::Point<Pixels>) -> Option<super::links::Link> {
+        if self.palette_open || self.tab_rename.is_some() {
+            return None;
+        }
+        let state = self.active_state()?;
+        if state.search().is_some() {
+            return None;
+        }
+        let hit = self.hit_test(position)?;
+        let hit = strict_viewport_hit(&state.viewport_origin, hit.grid, position)?;
+        let painted = state.painted_frame.lock().ok()?;
+        let painted = painted.as_ref()?;
+        if painted.dimensions != state.frame.dimensions {
+            return None;
+        }
+        super::links::link_at(painted, hit.cell)
     }
 
     pub(super) fn search_key(&mut self, key: SearchKey) {
@@ -3627,6 +3698,33 @@ impl TerminalView {
 
     fn mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let _ = self.finish_selection();
+        self.link_gesture = None;
+        if event.click_count == 1
+            && link_modifier(event.modifiers)
+            && let Some(link) = self.link_at_pointer(event.position)
+            && let Some(pane) = self.active_pane()
+            && let Some(state) = self.active_state()
+            && state
+                .painted_link
+                .lock()
+                .ok()
+                .is_some_and(|shown| shown.as_ref() == Some(&link))
+            && let Some(frame) = state
+                .painted_frame
+                .lock()
+                .ok()
+                .and_then(|frame| frame.clone())
+        {
+            self.link_gesture = Some(LinkGesture {
+                pane,
+                generation: state.generation,
+                link,
+                frame,
+                position: event.position,
+                moved: false,
+            });
+            return;
+        }
         if let Some(pane) = self.active_pane() {
             self.apply_workspace_action(ShellAction::FocusPane(pane));
         }
@@ -3802,6 +3900,12 @@ impl TerminalView {
         self.toast.map(|toast| toast.message)
     }
 
+    pub(super) fn hovered_link_destination(&self) -> Option<&str> {
+        self.hovered_link
+            .as_ref()
+            .map(|link| link.destination.as_str())
+    }
+
     /// Finish only the session that owned the press, even if the active tab changed.
     fn finish_selection(&mut self) -> Option<String> {
         let gesture = self.selection_gesture.take()?;
@@ -3816,6 +3920,18 @@ impl TerminalView {
     }
 
     fn mouse_move(&mut self, event: &MouseMoveEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(gesture) = &mut self.link_gesture {
+            gesture.moved |= gesture.position != event.position;
+            return;
+        }
+        let hovered = self.link_at_pointer(event.position);
+        if hovered != self.hovered_link {
+            self.hovered_link = hovered;
+            cx.notify();
+        }
+        if self.selection_gesture.is_none() {
+            return;
+        }
         if !terminal_interaction_allowed(&self.workspace_bounds, self.active_state()) {
             let _ = self.finish_selection();
             cx.notify();
@@ -3833,6 +3949,25 @@ impl TerminalView {
     }
 
     fn mouse_up(&mut self, event: &MouseUpEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(gesture) = self.link_gesture.take() {
+            let same_pointer = self.link_at_pointer(event.position).as_ref() == Some(&gesture.link);
+            let current_pane = self.active_pane();
+            let valid = current_pane == Some(gesture.pane)
+                && !gesture.moved
+                && event.button == MouseButton::Left
+                && event.position == gesture.position
+                && link_modifier(event.modifiers)
+                && same_pointer;
+            if valid && let Some(state) = self.active_state_mut() {
+                let frame = state.session.frame();
+                if state.generation == gesture.generation
+                    && super::links::same_content(&gesture.frame, &frame)
+                {
+                    cx.open_url(&gesture.link.destination);
+                }
+            }
+            return;
+        }
         if !terminal_interaction_allowed(&self.workspace_bounds, self.active_state()) {
             let _ = self.finish_selection();
             cx.notify();
@@ -3977,10 +4112,45 @@ impl Render for TerminalView {
             state.interaction.refresh_search(&state.frame);
             state.frame.clone()
         });
-        let Some(frame) = frame else {
+        let Some(mut frame) = frame else {
             let problem = self.render_session_problem(SessionProblem::Lost, &theme, cx);
             return self.render_shell_layout(panels, problem, &theme);
         };
+        let painted_frame = self
+            .registry
+            .sessions
+            .get(&active_pane)
+            .map(|state| Arc::clone(&state.painted_frame));
+        let next_painted_frame = frame.clone();
+        if painted_frame
+            .as_ref()
+            .and_then(|shown| shown.lock().ok())
+            .and_then(|shown| {
+                shown
+                    .as_ref()
+                    .map(|shown| super::links::same_content(shown, &next_painted_frame))
+            })
+            != Some(true)
+        {
+            self.hovered_link = None;
+        }
+        let painted_link = self
+            .registry
+            .sessions
+            .get(&active_pane)
+            .map(|state| Arc::clone(&state.painted_link));
+        let next_painted_link = self.hovered_link.clone();
+        if let Some(link) = &self.hovered_link {
+            for position in &link.cells {
+                if let Some(cell) = frame
+                    .rows
+                    .get_mut(position.line)
+                    .and_then(|row| row.cells.get_mut(position.column))
+                {
+                    cell.style.underline = Some(super::model::UnderlineStyle::Single);
+                }
+            }
+        }
         // Fitting the grid just above is the one failure that happens during a draw.
         let fit_error = self
             .registry
@@ -4058,6 +4228,10 @@ impl Render for TerminalView {
                 let pane_viewport_origin = Arc::clone(&viewport_origin);
                 let pane_entity = entity.clone();
                 let selection_entity = entity.clone();
+                let painted_frame = painted_frame.clone();
+                let next_painted_frame = next_painted_frame.clone();
+                let painted_link = painted_link.clone();
+                let next_painted_link = next_painted_link.clone();
                 let live_content = content
                     .take()
                     .expect("the active tab contains its live Rio pane");
@@ -4070,13 +4244,16 @@ impl Render for TerminalView {
                         .relative()
                         .size_full()
                         .track_focus(&self.focus)
+                        .when(self.hovered_link.is_some(), |element| {
+                            element.cursor_pointer()
+                        })
                         .on_key_down(cx.listener(Self::key))
                         .on_modifiers_changed(cx.listener(Self::modifiers_changed))
                         .on_mouse_down(MouseButton::Left, cx.listener(Self::mouse_down))
                         .on_scroll_wheel(cx.listener(Self::scroll_wheel))
                         .child(
                             gpui::canvas(
-                                move |bounds, _, app| {
+                                move |bounds, window, app| {
                                     let changed = store_if_changed(&pane_measured, bounds.size);
                                     let origin = store_if_changed(
                                         &pane_viewport_origin,
@@ -4085,16 +4262,36 @@ impl Render for TerminalView {
                                     if changed.unwrap_or(true) || origin.is_none() {
                                         redraw_after_this_frame(pane_entity, app);
                                     }
+                                    window.insert_hitbox(bounds, HitboxBehavior::Normal)
                                 },
-                                move |_, _, window, _| {
+                                move |_, hitbox, window, _| {
+                                    if let Some(painted_frame) = &painted_frame
+                                        && let Ok(mut painted) = painted_frame.lock()
+                                    {
+                                        *painted = Some(next_painted_frame.clone());
+                                    }
+                                    if let Some(painted_link) = &painted_link
+                                        && let Ok(mut painted) = painted_link.lock()
+                                    {
+                                        *painted = next_painted_link.clone();
+                                    }
                                     let moved = selection_entity.clone();
+                                    let move_hitbox = hitbox.clone();
                                     window.on_mouse_event(
                                         move |event: &MouseMoveEvent, phase, window, app| {
                                             if phase == DispatchPhase::Capture {
                                                 let _ = moved.update(app, |view, cx| {
-                                                    if view.selection_gesture.is_some() {
-                                                        view.mouse_move(event, window, cx);
+                                                    if view.selection_gesture.is_none()
+                                                        && view.link_gesture.is_none()
+                                                        && (!move_hitbox.is_hovered(window)
+                                                            || !window.is_window_hovered())
+                                                    {
+                                                        if view.hovered_link.take().is_some() {
+                                                            cx.notify();
+                                                        }
+                                                        return;
                                                     }
+                                                    view.mouse_move(event, window, cx);
                                                 });
                                             }
                                         },
@@ -4104,7 +4301,16 @@ impl Render for TerminalView {
                                         move |event: &MouseUpEvent, phase, window, app| {
                                             if phase == DispatchPhase::Capture {
                                                 let _ = released.update(app, |view, cx| {
-                                                    if view.selection_gesture.is_some() {
+                                                    if (!hitbox.is_hovered(window)
+                                                        || !window.is_window_hovered())
+                                                        && let Some(gesture) =
+                                                            &mut view.link_gesture
+                                                    {
+                                                        gesture.moved = true;
+                                                    }
+                                                    if view.selection_gesture.is_some()
+                                                        || view.link_gesture.is_some()
+                                                    {
                                                         view.mouse_up(event, window, cx);
                                                     }
                                                 });
@@ -4123,6 +4329,9 @@ impl Render for TerminalView {
         }
         if let Some(search_bar) = self.render_search_bar(&theme, cx) {
             terminal_surface = terminal_surface.child(search_bar);
+        }
+        if let Some(hint) = self.render_link_hint(&theme) {
+            terminal_surface = terminal_surface.child(hint);
         }
         if let Some(toast) = self.render_toast(&theme) {
             terminal_surface = terminal_surface.child(toast);
@@ -4249,6 +4458,22 @@ mod tests {
             .join()
             .is_err()
         );
+    }
+
+    #[test]
+    fn link_hit_testing_rejects_points_outside_the_grid() {
+        let origin = Mutex::new((10.0, 20.0));
+        let grid = CellHitTest {
+            cell_width: 8.0,
+            cell_height: 20.0,
+            rows: 4,
+            columns: 10,
+        };
+        let point = |x, y| gpui::point(gpui::px(x), gpui::px(y));
+        assert!(strict_viewport_hit(&origin, grid, point(10.0, 20.0)).is_some());
+        assert!(strict_viewport_hit(&origin, grid, point(9.0, 20.0)).is_none());
+        assert!(strict_viewport_hit(&origin, grid, point(90.0, 20.0)).is_none());
+        assert!(strict_viewport_hit(&origin, grid, point(10.0, 100.0)).is_none());
     }
 
     #[test]

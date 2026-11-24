@@ -127,7 +127,7 @@ let
   rioRevision = cargoToml.dependencies.rio-vt.rev;
   gitOutputHashes = {
     "git+${cargoToml.dependencies.rio-vt.git}?rev=${rioRevision}#${rioRevision}" =
-      "sha256-4Ll4RLgqptvPbrsUoSv9TiDPdFL+Tum8P/yf/h+5k6A=";
+      "sha256-23Dd4eJ3qTDtzLB2Zd+veci+ETSbUSC+rC9gkoXoD8Y=";
   };
   # Crane only warns about a git source without a hash and then clones it while
   # evaluating the flake, so fail instead.

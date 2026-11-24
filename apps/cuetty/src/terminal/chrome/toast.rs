@@ -7,6 +7,28 @@ use crate::terminal::presentation::TerminalTheme;
 use gpui::{IntoElement, ParentElement, Styled};
 
 impl TerminalView {
+    pub(in crate::terminal) fn render_link_hint(
+        &self,
+        theme: &TerminalTheme,
+    ) -> Option<gpui::AnyElement> {
+        let destination = self.hovered_link_destination()?;
+        let colors = ChromeColors::from_theme(theme);
+        Some(
+            tokens::elevated(gpui::div(), Elevation::Raised, &colors)
+                .absolute()
+                .bottom(space::MD)
+                .left(space::MD)
+                .right(space::MD)
+                .px(space::LG)
+                .py(space::SM)
+                .text_size(text::LABEL)
+                .text_color(colors.text)
+                .line_height(text::LINE_HEIGHT)
+                .child(destination.to_owned())
+                .into_any_element(),
+        )
+    }
+
     /// Centred along the terminal's bottom edge, and never in the way of the pointer.
     pub(in crate::terminal) fn render_toast(
         &self,

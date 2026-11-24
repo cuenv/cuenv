@@ -266,9 +266,9 @@
     },
     {
       "execution_ids": [],
-      "gap_owner": "cuetty_host",
+      "gap_owner": "validation",
       "id": "hyperlink_destinations",
-      "notes": "OSC 8 destinations are not represented in TerminalCell; link activation and destination-safety policy are unqualified.",
+      "notes": "Terminal snapshots carry OSC 8 destinations and the host supports HTTP(S) links. Interactive and platform qualification remains pending.",
       "outcome": "unobservable",
       "required_for_m0": true,
       "source_evidence": [
@@ -277,7 +277,7 @@
           "symbol": "pub struct TerminalCell"
         }
       ],
-      "status": "unsupported"
+      "status": "implemented_unvalidated"
     },
     {
       "execution_ids": [],
@@ -449,7 +449,7 @@
   "engine": {
     "package": "rio-vt",
     "repository": "https://github.com/rawkode/rio",
-    "revision": "200e78994355481c7e06cd840fbcaeb8a1e6b519",
+    "revision": "2d3da2dabe066a8b7aff590cd2d7bcbf79ec5778",
     "rust_toolchain": "1.98.1"
   },
   "executions": [

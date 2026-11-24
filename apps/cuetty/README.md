@@ -1,13 +1,13 @@
 # Cuetty
 
 Cuetty is a deliberately narrow, usable GPUI terminal host for Cuenv. It is
-built around Rio revision `200e78994355481c7e06cd840fbcaeb8a1e6b519` of the
+built around Rio revision `2d3da2dabe066a8b7aff590cd2d7bcbf79ec5778` of the
 [rawkode/rio](https://github.com/rawkode/rio) fork. That is upstream
 `fb582f066a2df7f95055eedb513752adc8c5f6b8`, which includes
 [Rio PR #1930](https://github.com/raphamorim/rio/pull/1930) for final-output
 draining and ownership-safe Unix PTY teardown, plus one `rio-vt` commit that
 keeps the OSC 133 marks a shell leaves around a command's output and its exit
-status. Return to an upstream revision once that commit is merged there.
+status, and a fix retaining semicolons in OSC 8 destinations. Return to an upstream revision once equivalent output tracking is available there.
 
 The pin is intentional. Upgrade it only with a terminal correctness and
 live-interaction validation pass. Existing macOS qualification evidence applies
@@ -248,7 +248,7 @@ and wrapped placeholders. Box drawing (U+2500–257F, including rounded corners 
 (U+2580–259F, including shades), and the Powerline separators (U+E0B0–E0B3) are
 drawn as shapes on the cell's device pixels rather than through the font, so rules
 and blocks meet with no seam at any line height. They keep the cell's foreground and
-behave like text under a selection or a block cursor. Complete IME, ZWJ shaping, hyperlink, and emoji
+behave like text under a selection or a block cursor. Complete IME, ZWJ shaping, and emoji
 presentation correctness is deliberately not claimed.
 
 `theme` in CUE picks one of four complete palettes in `src/terminal/config.rs`:
@@ -478,3 +478,5 @@ From the repository root, use `nix build .#cuetty`, `nix run .#cuetty`, or
 On Linux, the packaged executable provides GPUI's runtime library search paths,
 including the Wayland client library loaded dynamically at startup, without
 adding them to the `LD_LIBRARY_PATH` inherited by terminal shells.
+
+Ctrl-click a link on Linux (Cmd-click on macOS) to open HTTP and HTTPS destinations. Cuetty recognizes OSC 8 hyperlinks and printed URLs; hovering previews the destination. Drag to select text as usual.
