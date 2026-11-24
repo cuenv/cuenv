@@ -12,6 +12,15 @@ supersedes: []
 superseded_by: []
 ---
 
+## Status note (2026-11)
+
+The `[SECRET]` placeholder named below no longer exists. The current contract is:
+
+- `export` (the shell hook) omits secret variables from the statements it emits.
+- `env print` and `env check` resolve secrets, register the resolved values for redaction, and their output, like all streamed output (tasks, hooks, logs), passes through the events-layer redaction, which replaces every registered secret value with `*_*` (`REDACTED_PLACEHOLDER` in `crates/events/src/redaction.rs`).
+
+Secret values therefore still never appear in CLI output; read the decision below with this mechanism in place of the placeholder.
+
 ## Context
 
 cuenv exposes evaluated environment variables through `env print`, `env check`, and the hidden `export` command. During implementation ([crates/cuenv/src/commands/env.rs](https://github.com/cuenv/cuenv/blob/main/crates/cuenv/src/commands/env.rs#L41), [crates/cuenv/src/commands/hooks.rs](https://github.com/cuenv/cuenv/blob/main/crates/cuenv/src/commands/hooks.rs#L264)) we introduced rules to protect secrets and ensure shell-safe output. To guarantee consistent, secure behaviour across releases, these rules must be formally adopted.

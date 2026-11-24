@@ -45,8 +45,8 @@ Without a canonical contract:
 ## Proposed Approach
 
 1. **Environment Serialisation**
-   - `env print` sorts keys alphabetically and omits values marked as `[SECRET]`, matching `format_as_env_vars`.
-   - JSON format uses `serde_json::to_string_pretty` and strictly emits the `Env` structure (with secrets removed).
+   - `env print` sorts keys alphabetically, matching `format_as_env_vars`; resolved secret values are registered for redaction and printed as `*_*`.
+   - JSON format uses `serde_json::to_string_pretty` and strictly emits the `Env` structure (secret values redacted to `*_*`).
 
 2. **Shell Export Contract**
    - `env check` and the hidden `export` command emit shell-specific expressions using the same filtered data set.

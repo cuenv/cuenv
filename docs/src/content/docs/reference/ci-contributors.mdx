@@ -650,9 +650,10 @@ and `publish.cue`; custom task names must override this list in the contributor.
 
 Expanded and matrix jobs combine their own task's declarations and inference
 with the bootstrap/setup steps they actually emit. Success/failure contributors
-are emitted only in thin mode. Deployment tasks infer `contents: write` and
-Orchestrator outputs infer `packages: write`; these inferences never spread from
-an unrelated task. Artifact uploads use the Actions runtime token and do not
+are emitted only in thin mode. Deployment tasks infer `contents: write`; this
+inference never spreads from an unrelated task. Nothing infers `packages: write`:
+a task that pushes images, for example to GHCR, must declare
+`ci: github: permissions: packages: "write"` itself. Artifact uploads use the Actions runtime token and do not
 require `actions: write` on `GITHUB_TOKEN`.
 
 **Breaking change:** global and per-pipeline `provider.github.permissions` maps
