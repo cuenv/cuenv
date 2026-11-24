@@ -717,6 +717,11 @@ tasks: {
 
 A sequence is simply an array of `#TaskNode` - the tasks execute in array order.
 
+A sequence can hold another sequence, a group or a task defined elsewhere in
+the project, and a task can alias a sequence (`alias: tasks.checks`). A task
+that appears in more than one place keeps the name it was given first, so its
+runtime output references resolve against that name.
+
 ### #ScriptDirectory
 
 A directory whose script files become `scripts` of the project, listed in
