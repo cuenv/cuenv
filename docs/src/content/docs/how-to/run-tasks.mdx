@@ -779,6 +779,10 @@ tasks: {
 }
 ```
 
+A cached task is keyed on the value a reference resolves to, so when the
+upstream output changes, the downstream task runs again instead of replaying a
+stale result.
+
 Output references also work within sequences:
 
 ```cue

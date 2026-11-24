@@ -129,8 +129,8 @@ pub struct OutputRefResolver<'a> {
 
 ### Caching
 
-- `TaskOutputRef` values are runtime-resolved, so they cannot contribute to cache keys at definition time
-- The upstream task's cache key transitively covers this — if the upstream output changes, its cache key changes, which invalidates the downstream task's inputs
+- References are resolved before the downstream task's action key is built, so the key covers the resolved value in args and env, not the placeholder: a changed upstream output is a cache miss downstream (issue 460, `an_output_reference_keys_the_cache_on_its_resolved_value` in `crates/task-exec/src/executor_tests.rs`).
+- A downstream key therefore cannot be computed until its upstreams have finished. Any future "compute every key up front" mode needs a design for deferred keys.
 
 ### Go Bridge Changes
 
