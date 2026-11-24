@@ -46,7 +46,7 @@ fn test_parse_custom_cue() -> TestResult {
     fs::write(
         cue_mod_dir.join("module.cue"),
         r#"module: "test.local/temp"
-language: version: "v0.14.1"
+language: version: "v0.18.0"
 "#,
     )?;
 

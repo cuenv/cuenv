@@ -100,7 +100,7 @@ func attackModules() []attackModule {
 		"pattern_dynamic":      `{[string]: {(X & "x"): "v"}, f: {}}`,
 		"pattern_close":        `{[string]: close({(*(X & "x") | "mode"): "v"}), f: {}}`,
 		"pattern_regex":        `{[=~"^f"]: {if (X & "x") == "x" {a: "v"}}, f: {}}`,
-		"pattern_alias":        `{[Y=string]: {name: Y, if (X & "x") == "x" {a: "v"}}, f: {}}`,
+		"pattern_alias":        `{[string]~(Y,_): {name: Y, if (X & "x") == "x" {a: "v"}}, f: {}}`,
 		"pattern_data":         `{[string]: X, f: string}`,
 		"pattern_nested":       `{g: {[string]: {[string]: {if (X & "x") == "x" {a: "v"}}}, f: h: {}}}`,
 		"list_ellipsis":        `{l: [...{if (X & "x") == "x" {a: "v"}}] & [{}]}`,
@@ -116,9 +116,8 @@ func attackModules() []attackModule {
 		"try_assign":           `{_o?: X & "x", try y = _o? {a: y}}`,
 		"try_else":             `{_o?: X & "x", try {a: _o?} else {b: "v"}}`,
 		"self_reference":       `{z: X & "x", if self.z == "x" {a: "v"}}`,
-		"field_alias":          `{Q=z: X & "x", if Q == "x" {a: "v"}}`,
-
-		"struct_alias":         `W={z: X & "x", if W.z == "x" {a: "v"}}`,
+		"field_alias":          `{z~Q: X & "x", n: {if Q == "x" {a: "v"}}}`,
+		"struct_alias":         `{s~W: {z: X & "x", if W.z == "x" {a: "v"}}}`,
 		"postfix_alias":        `{z~Q: X & "x", if Q == "x" {a: "v"}}`,
 		"postfix_alias_pair":   `{z~(K,V): X & "x", if V == "x" {a: "v"}}`,
 		"optional_selector":    `{_o?: {v: X & "x"}, try {if _o?.v == "x" {a: "v"}}}`,
@@ -254,7 +253,7 @@ func TestFrozenAttack(t *testing.T) {
 	var escapes, unconfirmed, inspection, unbuildable, panics, falseRejections []string
 	counts := map[string]int{}
 	for _, module := range attackModules() {
-		files := map[string]string{"env.cue": module.app, "cue.mod/module.cue": "module: \"example.com/bridge@v0\"\nlanguage: version: \"v0.16.0\"\n"}
+		files := map[string]string{"env.cue": module.app, "cue.mod/module.cue": "module: \"example.com/bridge@v0\"\nlanguage: version: \"v0.18.0\"\n"}
 		if module.schema != "" {
 			parts := strings.Split(module.schema, "|||")
 			files["schema/types.cue"] = parts[0]
@@ -391,7 +390,7 @@ func TestFrozenVerificationFollowsRealValues(t *testing.T) {
 	}
 	caught, consistent := 0, 0
 	for _, entry := range fixtures {
-		files := map[string]string{"env.cue": entry.app, "cue.mod/module.cue": "module: \"example.com/bridge@v0\"\nlanguage: version: \"v0.16.0\"\n"}
+		files := map[string]string{"env.cue": entry.app, "cue.mod/module.cue": "module: \"example.com/bridge@v0\"\nlanguage: version: \"v0.18.0\"\n"}
 		if entry.schema != "" {
 			parts := strings.Split(entry.schema, "|||")
 			files["schema/types.cue"] = parts[0]
