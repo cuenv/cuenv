@@ -341,3 +341,45 @@ fn explicit_empty_job_permissions_emits_verbatim_and_rejects_required_scopes() {
     let job_conflict_ir = super::make_ir(vec![restricted, auth]);
     assert!(emitter.emit_expanded(&job_conflict_ir).is_err());
 }
+
+#[test]
+fn inferred_job_permissions_keep_the_workflow_block_empty_and_grant_per_job() {
+    let mut task = super::make_task("comment", &["cuenv", "comment"]);
+    task.github_permissions
+        .insert("pull-requests".to_string(), "write".to_string());
+    let ir = super::make_ir(vec![task]);
+
+    // The default stays a ceiling: the task needs a scope the empty block withholds.
+    let ceiling = GitHubActionsEmitter::from_config(&crate::config::GitHubConfig {
+        permissions: Some(HashMap::new()),
+        ..Default::default()
+    })
+    .without_nix()
+    .without_cuenv_build();
+    assert!(ceiling.emit_expanded(&ir).is_err());
+
+    let config = crate::config::GitHubConfig {
+        permissions: Some(HashMap::new()),
+        job_permissions: Some(crate::config::JobPermissionsPolicy::Inferred),
+        ..Default::default()
+    };
+    let emitter = GitHubActionsEmitter::from_config(&config)
+        .without_nix()
+        .without_cuenv_build();
+    for yaml in [
+        emitter.emit_thin(&ir).unwrap(),
+        emitter.emit_expanded(&ir).unwrap(),
+    ] {
+        let doc: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(
+            doc["permissions"],
+            serde_yaml::Value::Mapping(serde_yaml::Mapping::new())
+        );
+        let jobs = doc["jobs"].as_mapping().unwrap();
+        let granted = jobs.values().any(|job| {
+            job["permissions"]["contents"].as_str() == Some("read")
+                && job["permissions"]["pull-requests"].as_str() == Some("write")
+        });
+        assert!(granted, "no job grants the task's scopes:\n{yaml}");
+    }
+}

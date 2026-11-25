@@ -15,8 +15,16 @@ ci: {
 	providers: ["github"]
 	provider: github: {
 		runName: "CI ${{ github.event_name }} by ${{ github.actor }}"
-		// A token with no permissions unless a task asks for some.
-		permissions: {}
+		// The workflow is called `CI` and written to .github/workflows/ci.yml, so
+		// another workflow can name it in `workflowRun.workflows`.
+		name: "CI"
+		file: "ci"
+		// A token with no permissions at the workflow level; each job gets the
+		// scopes its tasks need.
+		permissions:    {}
+		jobPermissions: "inferred"
+		// Steps never see `GITHUB_TOKEN`, as the pipeline runs pull request code.
+		token: false
 		checkout: {
 			persistCredentials: false
 			fetchDepth:         0
@@ -69,6 +77,8 @@ tasks: {
 		hermetic: false
 		ci: github: {
 			timeoutMinutes: 10
+			// The job ID stays `lint`; the Actions UI shows this name.
+			jobName: "Lint the Rust crates"
 			container: {
 				image: "rust:1.100@sha256:0000000000000000000000000000000000000000000000000000000000000000"
 				env: CI: "1"

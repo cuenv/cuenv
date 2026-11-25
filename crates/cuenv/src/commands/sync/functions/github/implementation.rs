@@ -68,10 +68,9 @@ pub(in crate::commands::sync::functions) async fn execute_sync_github(
             continue;
         };
         for (pipeline_name, pipeline) in &ci.pipelines {
-            hestia_enabled |= ci
-                .github_config_for_pipeline(pipeline_name)
-                .hestia
-                .is_some();
+            let github_config = ci.github_config_for_pipeline(pipeline_name);
+            hestia_enabled |= github_config.hestia.is_some();
+            validate_workflow_file(pipeline_name, github_config.file.as_deref())?;
             let workflows = generate_github_workflow_for_project(WorkflowRequest {
                 project,
                 pipeline_name,
@@ -103,6 +102,7 @@ pub(in crate::commands::sync::functions) async fn execute_sync_github(
     if !hestia_enabled {
         stale_workflows.push(cuenv_github::workflow::HESTIA_GC_WORKFLOW_FILENAME.to_string());
     }
+    reject_duplicate_workflow_files(&all_workflows)?;
     let stale_workflows: Vec<&str> = stale_workflows.iter().map(String::as_str).collect();
 
     let workflows_dir = repo_root.join(".github/workflows");
@@ -112,6 +112,41 @@ pub(in crate::commands::sync::functions) async fn execute_sync_github(
         stale_workflows: &stale_workflows,
         options,
     })
+}
+
+/// A configured workflow file is a stem or a `.yml` name: no path, no other characters.
+fn validate_workflow_file(pipeline_name: &str, file: Option<&str>) -> Result<()> {
+    let Some(file) = file else {
+        return Ok(());
+    };
+    let stem = file.strip_suffix(".yml").unwrap_or(file);
+    let valid = !stem.is_empty()
+        && stem
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    if valid {
+        Ok(())
+    } else {
+        Err(cuenv_core::Error::configuration(format!(
+            "Pipeline '{pipeline_name}' sets github file '{file}', which must be a file name of \
+             letters, digits, '-' and '_' (with an optional .yml), not a path"
+        )))
+    }
+}
+
+/// Two workflows written to one file would silently overwrite each other.
+fn reject_duplicate_workflow_files(workflows: &[(String, String)]) -> Result<()> {
+    let mut seen = HashSet::new();
+    match workflows
+        .iter()
+        .find(|(filename, _)| !seen.insert(filename.as_str()))
+    {
+        Some((filename, _)) => Err(cuenv_core::Error::configuration(format!(
+            "More than one workflow is written to .github/workflows/{filename}. \
+             Give each pipeline its own github.file."
+        ))),
+        None => Ok(()),
+    }
 }
 
 /// A project's directory relative to the module root as the binding of
@@ -500,11 +535,7 @@ fn emit_release_workflow(
     let emitter = ctx.github_emitter();
     let workflow = ReleaseWorkflowBuilder::new(emitter.clone()).build(&ir);
 
-    let workflow_name = match &ir.pipeline.project_name {
-        Some(project) => format!("{project}-{}", ir.pipeline.name),
-        None => ir.pipeline.name.clone(),
-    };
-    let filename = format!("{}.yml", sanitize_workflow_name(&workflow_name));
+    let filename = emitter.workflow_filename(&ir);
 
     let yaml = emitter
         .serialize_workflow_with_pins(&workflow)
@@ -709,13 +740,9 @@ fn emit_standard_workflow(
     use cuenv_github::workflow::schema::Workflow;
     use indexmap::IndexMap;
 
-    let workflow_name = match &ctx.project_name {
-        Some(project) => format!("{project}-{pipeline_name}"),
-        None => pipeline_name.to_string(),
-    };
-
     let ir = ctx.to_ir(pipeline_name);
     let emitter = ctx.github_emitter();
+    let workflow_name = emitter.workflow_display_name(&ir);
     emitter
         .validate_workflow_permissions(&ir)
         .map_err(|e| cuenv_core::Error::configuration(e.to_string()))?;
@@ -752,10 +779,10 @@ fn emit_standard_workflow(
         },
     );
 
-    let filename = format!("{}.yml", sanitize_workflow_name(&workflow_name));
+    let filename = emitter.workflow_filename(&ir);
 
     let workflow = Workflow {
-        name: workflow_name.clone(),
+        name: workflow_name,
         run_name: emitter.run_name.clone(),
         on: emitter.build_triggers(&ir, &filename),
         concurrency: Some(
@@ -882,6 +909,34 @@ fn build_github_trigger_condition(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn workflow_file_must_be_a_name_not_a_path() {
+        for ok in [None, Some("ci"), Some("pr-title.yml"), Some("a_b-1")] {
+            assert!(validate_workflow_file("p", ok).is_ok(), "{ok:?}");
+        }
+        for bad in ["", ".yml", "../ci", "dir/ci", "ci.yaml", "my ci"] {
+            let error = validate_workflow_file("p", Some(bad))
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("must be a file name"), "{bad}: {error}");
+        }
+    }
+
+    #[test]
+    fn two_workflows_for_one_file_are_rejected() {
+        let one = vec![("ci.yml".to_string(), String::new())];
+        assert!(reject_duplicate_workflow_files(&one).is_ok());
+        let two = vec![
+            ("ci.yml".to_string(), String::new()),
+            ("release.yml".to_string(), String::new()),
+            ("ci.yml".to_string(), String::new()),
+        ];
+        let error = reject_duplicate_workflow_files(&two)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("ci.yml"), "{error}");
+    }
     use cuenv_ci::ir::{
         BuildStage, CachePolicy, IntermediateRepresentation, PipelineMetadata, Task,
     };

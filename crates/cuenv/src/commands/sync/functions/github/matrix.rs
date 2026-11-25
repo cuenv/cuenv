@@ -1,7 +1,7 @@
 //! GitHub Actions matrix workflow emission.
 
 use super::implementation;
-use super::implementation::{BootstrapInput, PipelineContext, sanitize_workflow_name};
+use super::implementation::{BootstrapInput, PipelineContext};
 use cuenv_core::Result;
 use std::collections::{BTreeMap, HashSet};
 
@@ -39,13 +39,9 @@ pub(super) fn emit_matrix_workflow(
 ) -> Result<Vec<(String, String)>> {
     use cuenv_github::workflow::schema::Workflow;
 
-    let workflow_name = match &ctx.project_name {
-        Some(project) => format!("{project}-{pipeline_name}"),
-        None => pipeline_name.to_string(),
-    };
-
     let ir = ctx.to_ir(pipeline_name);
     let emitter = ctx.github_emitter();
+    let workflow_name = emitter.workflow_display_name(&ir);
     emitter
         .validate_workflow_permissions(&ir)
         .map_err(|e| cuenv_core::Error::configuration(e.to_string()))?;
@@ -84,7 +80,7 @@ pub(super) fn emit_matrix_workflow(
 
     require_known_needs(&jobs, &workflow_name)?;
 
-    let filename = format!("{}.yml", sanitize_workflow_name(&workflow_name));
+    let filename = emitter.workflow_filename(&ir);
 
     let mut workflow = Workflow {
         name: workflow_name.clone(),
