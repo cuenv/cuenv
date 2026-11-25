@@ -49,7 +49,8 @@ lockfile = "flake.lock"
 ```
 
 The Nix runtime lock path must be local, and the referenced `flake.lock` must be
-fully locked.
+fully locked. Relative `path:./sub` inputs are accepted without a `narHash`: Nix
+locks them without one because the parent flake's source tree pins them.
 
 ## VCS Dependencies
 

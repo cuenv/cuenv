@@ -185,13 +185,19 @@ impl FlakeLockAnalyzer {
             return;
         };
 
-        // Check 2: Missing narHash (critical for reproducibility)
-        let Some(nar_hash) = &locked.nar_hash else {
-            state.unlocked.push(UnlockedInput {
-                name: input_name.to_string(),
-                reason: UnlockReason::MissingNarHash,
-            });
-            return;
+        // Check 2: Missing narHash (critical for reproducibility).
+        // Relative path inputs (`path:./sub`) live inside the parent flake's
+        // source tree, so Nix locks them without a narHash; the parent pins them.
+        let nar_hash = match (&locked.nar_hash, locked.relative_path()) {
+            (Some(hash), _) => hash.clone(),
+            (None, Some(path)) => format!("path:{path}"),
+            (None, None) => {
+                state.unlocked.push(UnlockedInput {
+                    name: input_name.to_string(),
+                    reason: UnlockReason::MissingNarHash,
+                });
+                return;
+            }
         };
 
         // Check 3: Has ref but no rev (unpinned branch reference)
@@ -206,7 +212,7 @@ impl FlakeLockAnalyzer {
         }
 
         // Input is properly locked - add hash to list
-        state.hashes.push(nar_hash.clone());
+        state.hashes.push(nar_hash);
 
         // Recursively check transitive inputs
         for (sub_name, sub_ref) in &input.inputs {
@@ -282,6 +288,43 @@ mod tests {
             analysis.unlocked_inputs[0].reason,
             UnlockReason::MissingLockedSection
         ));
+    }
+
+    #[test]
+    fn test_relative_path_input_is_locked_without_nar_hash() {
+        let json = r#"{
+            "nodes": {
+                "local": {
+                    "locked": { "type": "path", "path": "./sub" },
+                    "original": { "type": "path", "path": "./sub" },
+                    "parent": []
+                },
+                "root": { "inputs": { "local": "local" } }
+            },
+            "root": "root",
+            "version": 7
+        }"#;
+
+        let analysis = FlakeLockAnalyzer::from_json(json).unwrap().analyze();
+
+        assert!(analysis.is_pure, "{:?}", analysis.unlocked_inputs);
+        assert!(analysis.locked_digest.starts_with("sha256:"));
+    }
+
+    #[test]
+    fn test_absolute_path_input_without_nar_hash_is_unlocked() {
+        let json = r#"{
+            "nodes": {
+                "local": { "locked": { "type": "path", "path": "/abs/sub" } },
+                "root": { "inputs": { "local": "local" } }
+            },
+            "root": "root",
+            "version": 7
+        }"#;
+
+        let analysis = FlakeLockAnalyzer::from_json(json).unwrap().analyze();
+
+        assert!(!analysis.is_pure);
     }
 
     #[test]
