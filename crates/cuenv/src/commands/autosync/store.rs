@@ -61,8 +61,20 @@ pub struct RulesPrint {
     pub files: Stamps,
 }
 
+/// What the generated infrastructure provider types of one module were last
+/// synced from: the cuenv that rendered them, and the lockfile and the
+/// provider file of every pinned provider as they were left.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InfrastructurePrint {
+    pub cuenv_version: String,
+    pub files: Stamps,
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Fingerprints {
+    /// Keyed by module root.
+    #[serde(default)]
+    pub infrastructure: BTreeMap<String, InfrastructurePrint>,
     #[serde(default)]
     pub codegen: BTreeMap<String, CodegenPrint>,
     /// Keyed by the synced directory, or `*` for a workspace sync.

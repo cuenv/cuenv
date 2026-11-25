@@ -3,7 +3,7 @@
 mod ci;
 mod codegen;
 mod git_hooks;
-mod infrastructure;
+pub mod infrastructure;
 mod lock;
 pub mod rules;
 mod scripts;
