@@ -620,6 +620,55 @@ ci: pipelines: deploy: {
 that job verbatim and rejects any required scope on the task or its emitted
 phase steps.
 
+### Workflow name and file, token, and job permissions
+
+A pipeline `pr-title` in project `intar` is written to
+`.github/workflows/intar-pr-title.yml` and named `intar-pr-title`. Set `name` and
+`file` where the workflow needs another name, for instance because another
+workflow lists it in `workflowRun.workflows`:
+
+```cue
+ci: pipelines: ci: provider: github: {
+	name: "CI"   // top-level `name:`
+	file: "ci"   // .github/workflows/ci.yml; letters, digits, "-" and "_", with an optional ".yml"
+}
+```
+
+A `name` alone keeps the generated file name, and a `file` alone keeps the
+generated name. Two pipelines that resolve to one file fail `cuenv sync ci`.
+A file the previous name produced is not removed for you; delete it.
+
+cuenv adds `GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}` to the environment of the
+steps it writes. For a workflow that runs code a pull request controls, and a
+policy that forbids `secrets.` in it, turn that off for the pipeline or one task:
+
+```cue
+ci: provider: github: token: false
+tasks: lint: ci: github: token: true // this task still gets it
+```
+
+`GITHUB_ACTOR`, `GITHUB_REF_TYPE` and `GITHUB_REF_NAME` are still passed, and a
+`GITHUB_TOKEN` you set in a task's `env` is kept. Steps you add yourself and
+actions that read `secrets.GITHUB_TOKEN` through `with:` are not touched. A
+task that downloads from GitHub or a cache that needs the token fails
+without it, so set `token: false` only where nothing needs it.
+
+An explicit empty `permissions: {}` is a ceiling by default: a task that needs a
+scope fails the sync. Set `jobPermissions: "inferred"` to keep the workflow-level
+block empty and give each job the scopes its tasks need, which is the usual
+least-privilege layout:
+
+```cue
+ci: provider: github: {
+	permissions:    {}
+	jobPermissions: "inferred" // default: "ceiling"
+}
+```
+
+`ci.github.jobName` gives one task's job a display name, an expression such as
+`"Release ${{ matrix.tag }}"` included. The job ID, `needs` and `gate.required`
+keep using the task name.
+
 ### GitHub triggers (`pullRequest`, `mergeGroup`, `workflowRun`)
 
 `when.pullRequest` accepts either `true` (inheriting pipeline `branch` and

@@ -13,6 +13,15 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct GitHubConfig {
+    /// Display name of the workflow (top-level `name`); defaults to `<project>-<pipeline>`
+    pub name: Option<String>,
+    /// File stem under `.github/workflows` (without `.yml`); defaults to the sanitized
+    /// `<project>-<pipeline>`
+    pub file: Option<String>,
+    /// Pass `GITHUB_TOKEN` to cuenv steps (default); `false` leaves it out of step environments
+    pub token: Option<bool>,
+    /// Whether jobs may grant scopes under an explicit empty `permissions: {}`
+    pub job_permissions: Option<JobPermissionsPolicy>,
     /// Dynamic display name for workflow runs (emitted as top-level `run-name`)
     pub run_name: Option<String>,
     /// Runner label(s) - single string or array of labels
@@ -40,6 +49,17 @@ pub struct GitHubConfig {
     /// Ceilings for explicitly named token scopes; never grants access.
     /// An explicit empty map emits top-level `permissions: {}` and forbids widening.
     pub permissions: Option<HashMap<String, String>>,
+}
+
+/// How jobs may widen an explicit empty workflow-level `permissions: {}`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum JobPermissionsPolicy {
+    /// An explicit empty block is a ceiling: a task that needs a scope fails sync (default).
+    #[default]
+    Ceiling,
+    /// The workflow block stays empty and each job gets the scopes its tasks need.
+    Inferred,
 }
 
 /// Trusted publishing configuration for OIDC-based package publishing.
@@ -140,6 +160,10 @@ impl GitHubConfigExt for CI {
                     (None, None) => None,
                 };
                 GitHubConfig {
+                    name: pipeline.name.clone().or(global.name),
+                    file: pipeline.file.clone().or(global.file),
+                    token: pipeline.token.or(global.token),
+                    job_permissions: pipeline.job_permissions.or(global.job_permissions),
                     run_name: pipeline.run_name.clone().or(global.run_name),
                     runner: pipeline.runner.clone().or(global.runner),
                     runners: pipeline.runners.clone().or(global.runners),

@@ -1093,3 +1093,130 @@ fn gate_naming_an_unknown_or_colliding_job_is_rejected() {
     thin_changes.pipeline.gate = None;
     assert!(emitter.emit_thin(&thin_changes).is_err());
 }
+
+#[test]
+fn workflow_name_and_file_are_configurable_and_default_to_the_generated_name() {
+    let mut ir = super::make_ir(vec![super::make_task("build", &["cargo", "build"])]);
+    ir.pipeline.project_name = Some("intar".to_string());
+    ir.pipeline.name = "pr-title".to_string();
+
+    let default_emitter = GitHubActionsEmitter::new()
+        .without_nix()
+        .without_cuenv_build();
+    let (default_file, default_yaml) = default_emitter.emit_thin_workflow(&ir).unwrap();
+    assert_eq!(default_file, "intar-pr-title.yml");
+    let default_doc: serde_yaml::Value = serde_yaml::from_str(&default_yaml).unwrap();
+    assert_eq!(default_doc["name"].as_str(), Some("intar-pr-title"));
+
+    let config = crate::config::GitHubConfig {
+        name: Some("PR title".to_string()),
+        file: Some("pr-title.yml".to_string()),
+        ..Default::default()
+    };
+    let emitter = GitHubActionsEmitter::from_config(&config)
+        .without_nix()
+        .without_cuenv_build();
+
+    let (file, yaml) = emitter.emit_thin_workflow(&ir).unwrap();
+    assert_eq!(file, "pr-title.yml");
+    let doc: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
+    assert_eq!(doc["name"].as_str(), Some("PR title"));
+
+    let expanded = emitter.emit_workflows(&ir).unwrap();
+    assert_eq!(expanded.keys().collect::<Vec<_>>(), ["pr-title.yml"]);
+    let doc: serde_yaml::Value = serde_yaml::from_str(&expanded["pr-title.yml"]).unwrap();
+    assert_eq!(doc["name"].as_str(), Some("PR title"));
+    // The workflow's own path filter follows the configured file.
+    assert!(!expanded["pr-title.yml"].contains("intar-pr-title.yml"));
+
+    // A name alone leaves the file name as generated.
+    let name_only = crate::config::GitHubConfig {
+        name: Some("CI".to_string()),
+        ..Default::default()
+    };
+    let (file, _) = GitHubActionsEmitter::from_config(&name_only)
+        .without_nix()
+        .without_cuenv_build()
+        .emit_thin_workflow(&ir)
+        .unwrap();
+    assert_eq!(file, "intar-pr-title.yml");
+}
+
+fn github_token_env_count(yaml: &str) -> usize {
+    yaml.matches("secrets.GITHUB_TOKEN").count()
+}
+
+#[test]
+fn github_token_is_passed_by_default_and_can_be_withheld_per_pipeline_and_task() {
+    let ir = super::make_ir(vec![super::make_task("build", &["cargo", "build"])]);
+
+    let default_emitter = GitHubActionsEmitter::new()
+        .without_nix()
+        .without_cuenv_build();
+    assert!(github_token_env_count(&default_emitter.emit_thin(&ir).unwrap()) > 0);
+    assert!(github_token_env_count(&default_emitter.emit_expanded(&ir).unwrap()) > 0);
+
+    let config = crate::config::GitHubConfig {
+        token: Some(false),
+        ..Default::default()
+    };
+    let withheld = GitHubActionsEmitter::from_config(&config)
+        .without_nix()
+        .without_cuenv_build();
+    assert_eq!(github_token_env_count(&withheld.emit_thin(&ir).unwrap()), 0);
+    let expanded = withheld.emit_expanded(&ir).unwrap();
+    assert_eq!(github_token_env_count(&expanded), 0);
+    // The rest of the GitHub context is still there.
+    assert!(expanded.contains("GITHUB_ACTOR"));
+
+    // A task can withhold it from a pipeline that passes it.
+    let mut task_ir = super::make_ir(vec![super::make_task("build", &["cargo", "build"])]);
+    task_ir.tasks[0].github_job = Some(cuenv_core::ci::TaskGitHubJobConfig {
+        token: Some(false),
+        ..Default::default()
+    });
+    assert_eq!(
+        github_token_env_count(&default_emitter.emit_expanded(&task_ir).unwrap()),
+        0
+    );
+
+    // And pass it to a pipeline that withholds it.
+    task_ir.tasks[0].github_job = Some(cuenv_core::ci::TaskGitHubJobConfig {
+        token: Some(true),
+        ..Default::default()
+    });
+    assert!(github_token_env_count(&withheld.emit_expanded(&task_ir).unwrap()) > 0);
+
+    // A token the project sets itself is never removed.
+    let mut own = super::make_task("build", &["cargo", "build"]);
+    own.env.insert(
+        "GITHUB_TOKEN".to_string(),
+        "${{ secrets.DEPLOY_TOKEN }}".to_string(),
+    );
+    let own_ir = super::make_ir(vec![own]);
+    assert!(
+        withheld
+            .emit_expanded(&own_ir)
+            .unwrap()
+            .contains("secrets.DEPLOY_TOKEN")
+    );
+}
+
+#[test]
+fn job_name_overrides_the_display_name_but_not_the_job_id() {
+    let mut ir = super::make_ir(vec![super::make_task("web-ui", &["bun", "test"])]);
+    ir.tasks[0].github_job = Some(cuenv_core::ci::TaskGitHubJobConfig {
+        job_name: Some("Chromium smoke ${{ matrix.tag }}".to_string()),
+        ..Default::default()
+    });
+    let emitter = GitHubActionsEmitter::new()
+        .without_nix()
+        .without_cuenv_build();
+    let doc: serde_yaml::Value =
+        serde_yaml::from_str(&emitter.emit_expanded(&ir).unwrap()).unwrap();
+    let job = &doc["jobs"]["web-ui"];
+    assert_eq!(
+        job["name"].as_str(),
+        Some("Chromium smoke ${{ matrix.tag }}")
+    );
+}

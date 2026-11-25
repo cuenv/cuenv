@@ -1002,6 +1002,12 @@ pub struct TaskGitHubJobConfig {
     /// Dynamic or static job-level matrix strategy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub matrix: Option<TaskGitHubDynamicMatrix>,
+    /// Job display name (`jobs.<id>.name`), which may be an expression. The job ID stays the task ID.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job_name: Option<String>,
+    /// `false` leaves `GITHUB_TOKEN` out of this task's step environments.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<bool>,
 }
 
 impl TaskGitHubJobConfig {
@@ -1020,6 +1026,8 @@ impl TaskGitHubJobConfig {
             && self.outputs.is_empty()
             && self.step_id.is_none()
             && self.matrix.is_none()
+            && self.job_name.is_none()
+            && self.token.is_none()
     }
 }
 

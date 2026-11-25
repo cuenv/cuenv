@@ -68,6 +68,18 @@ pub enum TokenScope {
     Tasks,
 }
 
+/// Whether steps get `GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}` in their environment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GitHubTokenPolicy {
+    /// Pass the token to every cuenv step (default).
+    #[default]
+    Pass,
+    /// Leave the token out of step environments, so no step text mentions `secrets.`.
+    Withhold,
+}
+
+pub use crate::config::JobPermissionsPolicy;
+
 /// Whether `apply_task_github_job` should apply a task's `runner` override.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum RunnerOverridePolicy {
@@ -142,6 +154,14 @@ pub struct GitHubActionsEmitter {
     pub workflow_permissions_mode: cuenv_ci::ir::GitHubPermissionsMode,
     /// Dynamic display name for workflow runs (`run-name`)
     pub run_name: Option<String>,
+    /// Display name of the workflow (`name:`); the generated name when unset
+    pub workflow_name: Option<String>,
+    /// File stem of the workflow under `.github/workflows`; the generated name when unset
+    pub workflow_file: Option<String>,
+    /// Whether job steps receive `GITHUB_TOKEN` in their environment
+    pub github_token: GitHubTokenPolicy,
+    /// How jobs may widen an explicit empty workflow-level `permissions: {}`
+    pub job_permissions: JobPermissionsPolicy,
     /// Multi-label runner list when `provider.github.runner` is a list of labels
     pub runner_labels: Option<Vec<String>>,
     /// Default job timeout in minutes (`provider.github.timeoutMinutes`)
@@ -169,6 +189,10 @@ impl Default for GitHubActionsEmitter {
             configured_permissions: HashMap::new(),
             workflow_permissions_mode: cuenv_ci::ir::GitHubPermissionsMode::Inferred,
             run_name: None,
+            workflow_name: None,
+            workflow_file: None,
+            github_token: GitHubTokenPolicy::Pass,
+            job_permissions: JobPermissionsPolicy::Ceiling,
             runner_labels: None,
             timeout_minutes: None,
             checkout: None,
@@ -200,6 +224,36 @@ impl GitHubActionsEmitter {
             renderer = renderer.with_cachix(name.clone());
         }
         renderer
+    }
+
+    /// Add the GitHub context env, leaving `GITHUB_TOKEN` out when the task's own
+    /// `token: false` or the pipeline's withholds it.
+    pub(crate) fn add_github_context_env_for(
+        &self,
+        step: &mut Step,
+        task: Option<&cuenv_ci::ir::Task>,
+    ) {
+        Self::add_github_context_env(step);
+        if !self.passes_github_token(task) {
+            Self::remove_default_github_token(step);
+        }
+    }
+
+    fn passes_github_token(&self, task: Option<&cuenv_ci::ir::Task>) -> bool {
+        task.and_then(|t| t.github_job.as_ref())
+            .and_then(|job| job.token)
+            .unwrap_or(self.github_token == GitHubTokenPolicy::Pass)
+    }
+
+    /// Remove only the `GITHUB_TOKEN` entry cuenv itself adds, never one the project set.
+    fn remove_default_github_token(step: &mut Step) {
+        if step
+            .env
+            .get("GITHUB_TOKEN")
+            .is_some_and(|v| v == "${{ secrets.GITHUB_TOKEN }}")
+        {
+            step.env.shift_remove("GITHUB_TOKEN");
+        }
     }
 
     pub(crate) fn add_github_context_env(step: &mut Step) {
@@ -413,6 +467,14 @@ impl GitHubActionsEmitter {
 
         // Apply run-name configuration
         emitter.run_name.clone_from(&config.run_name);
+        emitter.workflow_name.clone_from(&config.name);
+        emitter.workflow_file.clone_from(&config.file);
+        if config.token == Some(false) {
+            emitter.github_token = GitHubTokenPolicy::Withhold;
+        }
+        if let Some(policy) = config.job_permissions {
+            emitter.job_permissions = policy;
+        }
 
         // Apply configured permissions
         if let Some(permissions) = &config.permissions {
@@ -451,9 +513,19 @@ impl GitHubActionsEmitter {
             job.timeout_minutes = self.timeout_minutes;
         }
 
+        if !self.passes_github_token(Some(task)) {
+            job.steps
+                .iter_mut()
+                .for_each(Self::remove_default_github_token);
+        }
+
         let Some(cfg) = task.github_job.as_ref() else {
             return;
         };
+
+        if let Some(name) = &cfg.job_name {
+            job.name = Some(name.clone());
+        }
 
         if runner_policy == RunnerOverridePolicy::Apply
             && let Some(runner) = &cfg.runner
@@ -700,6 +772,12 @@ impl GitHubActionsEmitter {
         }
     }
 
+    /// Whether an explicit empty workflow-level block forbids job-level grants.
+    fn explicit_empty_is_ceiling(&self) -> bool {
+        self.workflow_permissions_mode.is_explicit_empty()
+            && self.job_permissions == JobPermissionsPolicy::Ceiling
+    }
+
     /// Workflow-level permissions block (`Some({})` when explicitly empty, otherwise `None`).
     #[must_use]
     pub fn workflow_permissions(&self) -> Option<Permissions> {
@@ -719,7 +797,7 @@ impl GitHubActionsEmitter {
         &self,
         ir: &IntermediateRepresentation,
     ) -> EmitterResult<()> {
-        if self.workflow_permissions_mode.is_explicit_empty() {
+        if self.explicit_empty_is_ceiling() {
             Self::ensure_no_required_scopes(
                 &format!("pipeline '{}'", ir.pipeline.name),
                 ir.tasks.iter(),
@@ -877,8 +955,7 @@ impl GitHubActionsEmitter {
         &self,
         ir: &IntermediateRepresentation,
     ) -> EmitterResult<(String, String)> {
-        let workflow_name = Self::build_workflow_name(ir);
-        let filename = format!("{}.yml", sanitize_filename(&workflow_name));
+        let filename = self.workflow_filename(ir);
         let yaml = self.emit_thin(ir)?;
         Ok((filename, yaml))
     }
@@ -897,8 +974,7 @@ impl GitHubActionsEmitter {
         ir: &IntermediateRepresentation,
         command: &CommandWorkflow<'_>,
     ) -> EmitterResult<(String, String)> {
-        let workflow_name = Self::build_workflow_name(ir);
-        let filename = format!("{}.yml", sanitize_filename(&workflow_name));
+        let filename = self.workflow_filename(ir);
         let yaml = self.emit_thin_with(ir, command, TaskExecution::Direct)?;
         Ok((filename, yaml))
     }
@@ -929,7 +1005,7 @@ impl GitHubActionsEmitter {
         });
         let ir = &scoped_ir;
         self.validate_workflow_permissions(ir)?;
-        if self.workflow_permissions_mode.is_explicit_empty()
+        if self.explicit_empty_is_ceiling()
             && let Some((scope, level)) = command
                 .additional_permissions
                 .iter()
@@ -940,10 +1016,11 @@ impl GitHubActionsEmitter {
                 ir.pipeline.name
             )));
         }
-        let workflow_name = Self::build_workflow_name(ir);
-        let workflow_filename = format!("{}.yml", sanitize_filename(&workflow_name));
+        let workflow_name = self.workflow_display_name(ir);
+        let default_name = Self::build_workflow_name(ir);
+        let workflow_filename = self.workflow_filename(ir);
         let triggers = self.build_triggers(ir, &workflow_filename);
-        let job_permissions = if self.workflow_permissions_mode.is_explicit_empty() {
+        let job_permissions = if self.explicit_empty_is_ceiling() {
             None
         } else {
             let mut permissions = match command.token_scope {
@@ -981,7 +1058,7 @@ impl GitHubActionsEmitter {
         if let Some(id) = command.step_id {
             main_step = main_step.with_id(id);
         }
-        Self::add_github_context_env(&mut main_step);
+        self.add_github_context_env_for(&mut main_step, None);
 
         if let Some(env) = &ir.pipeline.environment {
             main_step = main_step.with_env("CUENV_ENVIRONMENT", env.clone());
@@ -1052,7 +1129,7 @@ impl GitHubActionsEmitter {
         };
 
         let mut jobs = IndexMap::new();
-        let main_job = sanitize_job_id(&workflow_name);
+        let main_job = sanitize_job_id(&default_name);
         jobs.insert(main_job.clone(), job);
         if let Some(follow_up) = &command.follow_up_job {
             jobs.insert(
@@ -1117,16 +1194,31 @@ impl GitHubActionsEmitter {
     ) -> EmitterResult<HashMap<String, String>> {
         let mut workflows = HashMap::new();
 
-        // Build workflow name with optional project prefix for monorepo support
-        let workflow_name = Self::build_workflow_name(ir);
-
         // Generate a single workflow with all tasks as jobs
-        let workflow = self.build_workflow(ir, &workflow_name)?;
-        let filename = format!("{}.yml", sanitize_filename(&workflow_name));
+        let workflow = self.build_workflow(ir)?;
+        let filename = self.workflow_filename(ir);
         let yaml = self.serialize_workflow_with_pins(&workflow)?;
         workflows.insert(filename, yaml);
 
         Ok(workflows)
+    }
+
+    /// The workflow's display name: the configured `name`, else the generated one.
+    #[must_use]
+    pub fn workflow_display_name(&self, ir: &IntermediateRepresentation) -> String {
+        self.workflow_name
+            .clone()
+            .unwrap_or_else(|| Self::build_workflow_name(ir))
+    }
+
+    /// The workflow's file name: the configured `file`, else the sanitized generated name.
+    #[must_use]
+    pub fn workflow_filename(&self, ir: &IntermediateRepresentation) -> String {
+        let stem = self.workflow_file.as_deref().map_or_else(
+            || sanitize_filename(&Self::build_workflow_name(ir)),
+            |file| file.trim_end_matches(".yml").to_string(),
+        );
+        format!("{stem}.yml")
     }
 
     /// Build the workflow name, prefixing with project name if available (for monorepo support)
@@ -1138,19 +1230,16 @@ impl GitHubActionsEmitter {
     }
 
     /// Build a workflow from the IR
-    fn build_workflow(
-        &self,
-        ir: &IntermediateRepresentation,
-        workflow_name: &str,
-    ) -> EmitterResult<Workflow> {
+    fn build_workflow(&self, ir: &IntermediateRepresentation) -> EmitterResult<Workflow> {
         self.validate_workflow_permissions(ir)?;
         Self::validate_custom_steps(ir)?;
-        let workflow_filename = format!("{}.yml", sanitize_filename(workflow_name));
+        let workflow_name = self.workflow_display_name(ir);
+        let workflow_filename = self.workflow_filename(ir);
         let triggers = self.build_triggers(ir, &workflow_filename);
         let jobs = self.build_jobs(ir);
 
         let mut workflow = Workflow {
-            name: workflow_name.to_string(),
+            name: workflow_name,
             run_name: self.run_name.clone(),
             on: triggers,
             concurrency: Some(Self::build_workflow_concurrency(ir)),
@@ -1716,7 +1805,7 @@ impl GitHubActionsEmitter {
     ) -> Option<Permissions> {
         if task.github_permissions_mode.is_explicit_empty() {
             Some(Permissions::default())
-        } else if self.workflow_permissions_mode.is_explicit_empty() {
+        } else if self.explicit_empty_is_ceiling() {
             None
         } else {
             Some(self.build_job_permissions(task, phases))
@@ -2118,8 +2207,7 @@ impl Emitter for GitHubActionsEmitter {
     /// Expanded mode generates a multi-job workflow where each task becomes
     /// a separate job with dependencies managed by GitHub Actions (`needs:`).
     fn emit_expanded(&self, ir: &IntermediateRepresentation) -> EmitterResult<String> {
-        let workflow_name = Self::build_workflow_name(ir);
-        let workflow = self.build_workflow(ir, &workflow_name)?;
+        let workflow = self.build_workflow(ir)?;
         self.serialize_workflow_with_pins(&workflow)
     }
 

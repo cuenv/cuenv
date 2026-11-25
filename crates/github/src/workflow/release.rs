@@ -82,7 +82,7 @@ impl ReleaseWorkflowBuilder {
     /// Build a release workflow with matrix build and publish jobs.
     #[must_use]
     pub fn build(&self, ir: &IntermediateRepresentation) -> Workflow {
-        let workflow_name = GitHubActionsEmitter::build_workflow_name(ir);
+        let workflow_name = self.emitter.workflow_display_name(ir);
 
         let triggers = WorkflowTriggers {
             release: Some(ReleaseTrigger {
@@ -278,7 +278,8 @@ impl ReleaseWorkflowBuilder {
             |env| format!("cuenv release binaries --publish-only -e {env}"),
         );
         let mut publish_step = Step::run(&publish_cmd).with_name("Publish release");
-        GitHubActionsEmitter::add_github_context_env(&mut publish_step);
+        self.emitter
+            .add_github_context_env_for(&mut publish_step, None);
 
         if onepassword_task.is_some() {
             publish_step.env.insert(

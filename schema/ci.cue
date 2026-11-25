@@ -187,11 +187,30 @@ package schema
 		stepId?: string
 		// Dynamic or static job-level matrix strategy (`fromJSON` include, fail-fast, max-parallel, runs-on).
 		matrix?: #GitHubDynamicMatrix
+		// Job display name (`jobs.<id>.name`), an expression such as
+		// "Release ${{ matrix.tag }}" is allowed. The job ID stays the task ID.
+		jobName?: string
+		// `false` leaves `GITHUB_TOKEN` out of this task's step environments.
+		token?: bool
 	}
 }
 
 // GitHub Actions provider configuration
 #GitHubConfig: {
+	// Display name of the workflow (top-level `name`). Defaults to `<project>-<pipeline>`.
+	// Set it where another workflow refers to this one, e.g. `workflowRun.workflows`.
+	name?: string
+	// File name under `.github/workflows`, a stem with an optional `.yml`
+	// (default: the sanitized `<project>-<pipeline>`). Two pipelines cannot share one.
+	file?: =~"^[A-Za-z0-9_-]+(\\.yml)?$"
+	// `false` leaves `GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}` out of the step
+	// environments cuenv writes, for workflows that run code a pull request controls.
+	// Per-task `ci.github.token` overrides it. Default: the token is passed.
+	token?: bool
+	// With an explicit empty `permissions: {}`: "ceiling" (default) fails sync when a task
+	// needs a scope; "inferred" keeps the workflow block empty and grants each job the
+	// scopes its tasks need.
+	jobPermissions?: "ceiling" | "inferred"
 	// Dynamic display name for workflow runs (emitted as top-level `run-name`)
 	runName?: string
 	runner?: string | [...string]
