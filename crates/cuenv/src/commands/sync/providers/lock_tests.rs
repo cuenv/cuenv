@@ -1,4 +1,4 @@
-use super::{LockfileSeedMode, tool_resolution};
+use super::{LockfileSeedMode, resolve_local_flake_root, tool_resolution};
 use cuenv_core::lockfile::{
     ArtifactKind, LOCKFILE_VERSION, LockedArtifact, LockedTool, LockedToolPlatform,
     LockedVcsDependency, Lockfile, PlatformData,
@@ -154,5 +154,52 @@ fn test_source_config_to_tool_source_expands_url_templates_for_cache_comparison(
             "url": "https://example.com/tool-1.2.3-linux-aarch64.tar.gz",
             "extract": [{"kind": "bin", "path": "tool-linux-aarch64"}],
         })
+    );
+}
+
+fn flake_tree() -> tempfile::TempDir {
+    let temp = tempfile::tempdir().expect("tempdir");
+    std::fs::create_dir_all(temp.path().join("projects/app")).expect("mkdir");
+    std::fs::write(temp.path().join("flake.nix"), "{}").expect("flake.nix");
+    temp
+}
+
+#[test]
+fn test_bare_flake_reference_walks_up_to_nearest_flake() {
+    let temp = flake_tree();
+    let project = temp.path().join("projects/app");
+
+    assert_eq!(
+        resolve_local_flake_root(temp.path(), &project, "."),
+        Some(temp.path().to_path_buf())
+    );
+
+    std::fs::write(project.join("flake.nix"), "{}").expect("project flake");
+    assert_eq!(
+        resolve_local_flake_root(temp.path(), &project, "."),
+        Some(project.clone())
+    );
+}
+
+#[test]
+fn test_path_flake_reference_does_not_walk_up() {
+    let temp = flake_tree();
+    let project = temp.path().join("projects/app");
+
+    assert_eq!(
+        resolve_local_flake_root(temp.path(), &project, "path:."),
+        Some(project.join("."))
+    );
+}
+
+#[test]
+fn test_flake_walk_up_stops_at_module_root() {
+    let temp = flake_tree();
+    let module = temp.path().join("projects");
+    let project = module.join("app");
+
+    assert_eq!(
+        resolve_local_flake_root(&module, &project, "."),
+        Some(project.clone())
     );
 }

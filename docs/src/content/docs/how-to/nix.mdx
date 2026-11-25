@@ -153,6 +153,14 @@ When the project also declares `runtime: schema.#NixRuntime`, `cuenv sync`
 records the Nix runtime state in `cuenv.lock` using a digest derived from the
 checked-in `flake.lock`.
 
+A relative `flake` (`.`, the default) is resolved the way Nix resolves it: from
+the project directory up to the nearest directory with a `flake.nix`, stopping
+at the CUE module root. A monorepo can therefore set `runtime: schema.#NixRuntime`
+once in the root `env.cue`; a project with its own `flake.nix` uses it, and every
+other project uses the root flake. A `path:` reference is exact and is never
+searched upwards. Projects that share a flake each get their own `cuenv.lock`
+entry pointing at the same `flake.lock`.
+
 ### Hook Definition
 
 ```cue

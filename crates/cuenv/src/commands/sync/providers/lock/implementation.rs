@@ -587,7 +587,7 @@ fn collect_nix_runtime_lock(
     runtime: &NixRuntime,
 ) -> Result<CollectedRuntime> {
     let project_root = module_root.join(instance_path);
-    let flake_root = resolve_local_flake_root(&project_root, &runtime.flake).ok_or_else(|| {
+    let flake_root = resolve_local_flake_root(module_root, &project_root, &runtime.flake).ok_or_else(|| {
         cuenv_core::Error::configuration(format!(
             "Nix runtime flake '{}' is not a local path. cuenv sync requires a local flake so it can lock the checked-in flake.lock.",
             runtime.flake
@@ -667,16 +667,49 @@ fn normalize_lexically(path: &Path) -> PathBuf {
     normalized.iter().collect()
 }
 
-fn resolve_local_flake_root(project_root: &Path, flake: &str) -> Option<PathBuf> {
-    let local_path = flake
-        .strip_prefix("path:")
-        .map_or_else(|| local_flake_path(flake), local_flake_path)?;
+/// Find the directory whose `flake.lock` pins a local Nix runtime.
+///
+/// A `path:` reference is exact: Nix does not search upwards for it. Any other
+/// relative reference (`.`, the default, included) resolves the way Nix does,
+/// so a project without a `flake.nix` of its own uses the nearest one above
+/// it, up to and including `module_root`.
+fn resolve_local_flake_root(
+    module_root: &Path,
+    project_root: &Path,
+    flake: &str,
+) -> Option<PathBuf> {
+    let (exact, local_path) = match flake.strip_prefix("path:") {
+        Some(rest) => (true, local_flake_path(rest)?),
+        None => (false, local_flake_path(flake)?),
+    };
 
     if local_path.is_absolute() {
-        Some(local_path)
-    } else {
-        Some(project_root.join(local_path))
+        return Some(local_path);
     }
+
+    let start = project_root.join(local_path);
+    if exact {
+        return Some(start);
+    }
+    Some(nearest_flake_root(module_root, &start).unwrap_or(start))
+}
+
+/// Walk from `start` up to `module_root`, returning the first directory that
+/// holds a `flake.nix`. A `start` outside `module_root` is not searched above.
+fn nearest_flake_root(module_root: &Path, start: &Path) -> Option<PathBuf> {
+    let start = normalize_lexically(start);
+    let module_root = normalize_lexically(module_root);
+    let bounded = start.starts_with(&module_root);
+
+    for dir in start.ancestors() {
+        if dir.join("flake.nix").is_file() {
+            return Some(dir.to_path_buf());
+        }
+        if !bounded || dir == module_root {
+            break;
+        }
+    }
+    None
 }
 
 fn local_flake_path(reference: &str) -> Option<PathBuf> {
