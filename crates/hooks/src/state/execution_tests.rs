@@ -56,3 +56,44 @@ fn adjacent_input_contents_have_unambiguous_boundaries() {
     let second = super::compute_execution_hash(&hooks, project.path()).unwrap();
     assert_ne!(first, second);
 }
+
+fn nix_hook(args: &[&str]) -> Hook {
+    Hook {
+        command: "nix".to_string(),
+        args: args.iter().map(ToString::to_string).collect(),
+        source: Some(true),
+        ..hook(None, &["flake.nix", "flake.lock"])
+    }
+}
+
+#[test]
+fn nix_hook_depends_on_the_flake_nix_resolves_above_the_project() {
+    let repo = tempfile::tempdir().unwrap();
+    let project = repo.path().join("projects/app");
+    fs::create_dir_all(&project).unwrap();
+    fs::write(repo.path().join("flake.lock"), "one").unwrap();
+    fs::write(repo.path().join("flake.nix"), "{}").unwrap();
+    let hooks = [nix_hook(&["print-dev-env"])];
+
+    let first = super::compute_execution_hash(&hooks, &project).unwrap();
+    fs::write(repo.path().join("flake.lock"), "two").unwrap();
+    let second = super::compute_execution_hash(&hooks, &project).unwrap();
+    assert_ne!(first, second);
+}
+
+#[test]
+fn nix_hook_with_an_explicit_flake_keeps_its_own_directory() {
+    let repo = tempfile::tempdir().unwrap();
+    let project = repo.path().join("app");
+    fs::create_dir_all(&project).unwrap();
+    fs::write(repo.path().join("flake.nix"), "{}").unwrap();
+    fs::write(repo.path().join("flake.lock"), "one").unwrap();
+    let hooks = [nix_hook(&["print-dev-env", "github:NixOS/nixpkgs"])];
+
+    let first = super::compute_execution_hash(&hooks, &project).unwrap();
+    fs::write(repo.path().join("flake.lock"), "two").unwrap();
+    assert_eq!(
+        super::compute_execution_hash(&hooks, &project).unwrap(),
+        first
+    );
+}

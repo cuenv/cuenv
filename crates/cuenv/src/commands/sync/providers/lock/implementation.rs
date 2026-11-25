@@ -691,25 +691,8 @@ fn resolve_local_flake_root(
     if exact {
         return Some(start);
     }
-    Some(nearest_flake_root(module_root, &start).unwrap_or(start))
-}
-
-/// Walk from `start` up to `module_root`, returning the first directory that
-/// holds a `flake.nix`. A `start` outside `module_root` is not searched above.
-fn nearest_flake_root(module_root: &Path, start: &Path) -> Option<PathBuf> {
-    let start = normalize_lexically(start);
-    let module_root = normalize_lexically(module_root);
-    let bounded = start.starts_with(&module_root);
-
-    for dir in start.ancestors() {
-        if dir.join("flake.nix").is_file() {
-            return Some(dir.to_path_buf());
-        }
-        if !bounded || dir == module_root {
-            break;
-        }
-    }
-    None
+    let found = cuenv_hooks::nearest_flake_root(&normalize_lexically(&start), Some(module_root));
+    Some(found.unwrap_or(start))
 }
 
 fn local_flake_path(reference: &str) -> Option<PathBuf> {

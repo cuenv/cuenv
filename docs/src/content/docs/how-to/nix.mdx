@@ -161,6 +161,13 @@ other project uses the root flake. A `path:` reference is exact and is never
 searched upwards. Projects that share a flake each get their own `cuenv.lock`
 entry pointing at the same `flake.lock`.
 
+The same search applies to change tracking. A `nix print-dev-env` hook with
+the default flake depends on the `flake.nix` and `flake.lock` Nix resolves, so
+editing the root flake re-runs the hook in every project that inherits it. In
+`cuenv ci`, a project whose runtime has the default flake is affected, with
+every pipeline task selected, when that flake's `flake.nix` or `flake.lock`
+changes.
+
 ### Hook Definition
 
 ```cue

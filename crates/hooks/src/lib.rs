@@ -23,11 +23,14 @@
 mod approval;
 mod error;
 mod executor;
+mod flake;
 mod state;
 mod types;
 
 // Re-export error types at crate root
 pub use error::{Error, Result};
+
+pub use flake::nearest_flake_root;
 
 // Re-export types
 pub use types::{

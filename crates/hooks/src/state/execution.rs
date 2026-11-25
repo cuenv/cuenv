@@ -330,8 +330,12 @@ pub fn compute_execution_hash(hooks: &[Hook], base_dir: &Path) -> crate::Result<
             |directory| base_dir.join(directory),
         );
 
+        let flake_dir = inherited_flake_dir(hook, &hook_dir);
         for input in &hook.inputs {
-            let input_path = hook_dir.join(input);
+            let input_path = match (&flake_dir, input.as_str()) {
+                (Some(flake_dir), "flake.nix" | "flake.lock") => flake_dir.join(input),
+                _ => hook_dir.join(input),
+            };
             let mut options = std::fs::OpenOptions::new();
             options.read(true);
             #[cfg(unix)]
@@ -377,6 +381,36 @@ pub fn compute_execution_hash(hooks: &[Hook], base_dir: &Path) -> crate::Result<
     hasher.update(b"\0version\0");
     hasher.update(env!("CARGO_PKG_VERSION").as_bytes());
     Ok(hex::encode(hasher.finalize()))
+}
+
+/// The directory whose `flake.nix` and `flake.lock` a `nix print-dev-env`
+/// hook depends on, when it is not the hook's own directory.
+///
+/// Such a hook names the flake `.` (or leaves it out), which Nix resolves by
+/// searching the parent directories, so a change to the flake it finds there
+/// has to change the hook's identity. Only a missing `flake.nix` leads to a
+/// search, so a project with a flake of its own costs one `stat`.
+fn inherited_flake_dir(hook: &Hook, hook_dir: &Path) -> Option<PathBuf> {
+    let is_nix = Path::new(&hook.command)
+        .file_name()
+        .is_some_and(|name| name == "nix");
+    let names_cwd_flake = hook
+        .args
+        .iter()
+        .filter(|arg| !arg.starts_with('-') && !arg.contains(' '))
+        .all(|arg| arg == "print-dev-env" || arg == "." || arg.starts_with(".#"));
+    if !is_nix
+        || !names_cwd_flake
+        || !hook.args.iter().any(|arg| arg == "print-dev-env")
+        || !hook
+            .inputs
+            .iter()
+            .any(|input| input == "flake.nix" || input == "flake.lock")
+        || hook_dir.join("flake.nix").is_file()
+    {
+        return None;
+    }
+    crate::nearest_flake_root(hook_dir, None).filter(|dir| dir != hook_dir)
 }
 
 #[cfg(test)]
