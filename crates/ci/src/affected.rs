@@ -237,7 +237,7 @@ where
     // planned on its own. Its inherited inputs are written for the
     // directory that declares the name, so the root-relative reading is no
     // sign of a mistake there.
-    if nix_runtime_flake_changed(config, project_root, *checkout_root, changed_files) {
+    if nix_runtime_flake_changed(config, changed, *checkout_root) {
         tracing::info!(
             project = %display_project(project_root),
             "The project's Nix flake changed; every pipeline task is selected"
@@ -1040,10 +1040,14 @@ fn configuration_changed(
 /// unless a flake file changed in a project with such a runtime.
 fn nix_runtime_flake_changed(
     config: &Project,
-    project_root: &Path,
+    changed: ChangedInputs<'_>,
     checkout_root: Option<&Path>,
-    changed_files: &[PathBuf],
 ) -> bool {
+    let ChangedInputs {
+        files: changed_files,
+        project_root,
+        ..
+    } = changed;
     let Some(Runtime::Nix(runtime)) = &config.runtime else {
         return false;
     };

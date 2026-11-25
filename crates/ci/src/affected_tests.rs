@@ -2030,12 +2030,12 @@ fn a_parent_input_warning_names_the_reference_to_write_instead() {
     assert_eq!(super::from_checkout_root(Path::new("app"), "../../x"), None);
 }
 
-fn affected_by_flake_change(changed: &str, flake_in_project: bool) -> Vec<String> {
+fn affected_by_flake_change(changed: &str, flakes_in_project: &[&str]) -> Vec<String> {
     let checkout = tempfile::tempdir().expect("tempdir");
     std::fs::create_dir_all(checkout.path().join("projects/app")).expect("mkdir");
     std::fs::write(checkout.path().join("flake.nix"), "{}").expect("flake");
-    if flake_in_project {
-        std::fs::write(checkout.path().join("projects/app/flake.nix"), "{}").expect("flake");
+    for flake in flakes_in_project {
+        std::fs::write(checkout.path().join("projects/app").join(flake), "{}").expect("flake");
     }
     let mut project = make_project(vec![("build", make_task(vec!["src/**"], vec![]))]);
     project.runtime = Some(cuenv_core::manifest::Runtime::Nix(
@@ -2062,15 +2062,15 @@ fn affected_by_flake_change(changed: &str, flake_in_project: bool) -> Vec<String
 
 #[test]
 fn test_inherited_root_flake_change_affects_the_project() {
-    assert_eq!(affected_by_flake_change("flake.lock", false), ["build"]);
-    assert_eq!(affected_by_flake_change("flake.nix", false), ["build"]);
+    assert_eq!(affected_by_flake_change("flake.lock", &[]), ["build"]);
+    assert_eq!(affected_by_flake_change("flake.nix", &[]), ["build"]);
 }
 
 #[test]
 fn test_project_flake_shadows_the_root_flake() {
-    assert!(affected_by_flake_change("flake.lock", true).is_empty());
+    assert!(affected_by_flake_change("flake.lock", &["flake.nix"]).is_empty());
     assert_eq!(
-        affected_by_flake_change("projects/app/flake.lock", true),
+        affected_by_flake_change("projects/app/flake.lock", &["flake.nix"]),
         ["build"]
     );
 }
