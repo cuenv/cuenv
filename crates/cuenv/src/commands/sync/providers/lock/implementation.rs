@@ -603,7 +603,7 @@ fn collect_nix_runtime_lock(
         ))
     })?;
 
-    let analysis = analyzer.analyze();
+    let analysis = analyzer.analyze_in(&flake_root);
     if !analysis.is_pure {
         let issues = analysis
             .unlocked_inputs
@@ -641,10 +641,30 @@ fn display_project_path(path: &Path) -> String {
 }
 
 fn relative_to_module_root(module_root: &Path, path: &Path) -> String {
-    path.strip_prefix(module_root)
-        .unwrap_or(path)
-        .to_string_lossy()
-        .into_owned()
+    let relative = path.strip_prefix(module_root).unwrap_or(path);
+    normalize_lexically(relative).to_string_lossy().into_owned()
+}
+
+/// Collapse `.` and `name/..` components without touching the filesystem, so a
+/// lockfile entry reads `flakes/bun/flake.lock` rather than
+/// `projects/app/../../flakes/bun/flake.lock`.
+fn normalize_lexically(path: &Path) -> PathBuf {
+    use std::path::Component;
+
+    let mut normalized: Vec<Component<'_>> = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => match normalized.last() {
+                Some(Component::Normal(_)) => {
+                    normalized.pop();
+                }
+                _ => normalized.push(component),
+            },
+            other => normalized.push(other),
+        }
+    }
+    normalized.iter().collect()
 }
 
 fn resolve_local_flake_root(project_root: &Path, flake: &str) -> Option<PathBuf> {

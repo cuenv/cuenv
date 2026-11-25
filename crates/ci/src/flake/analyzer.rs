@@ -7,7 +7,7 @@ use super::lock::{FlakeLock, FlakeNode, InputRef};
 use crate::error::FlakeLockError;
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Result of flake.lock purity analysis
 #[derive(Debug, Clone)]
@@ -68,6 +68,49 @@ impl std::fmt::Display for UnlockReason {
     }
 }
 
+/// Digest entry for a relative `path` input: its path plus, when the root flake
+/// directory is known, a hash of the files it holds.
+fn path_input_digest(flake_dir: Option<&Path>, path: &str) -> String {
+    let Some(dir) = flake_dir else {
+        return format!("path:{path}");
+    };
+    let mut hasher = Sha256::new();
+    hash_tree(&dir.join(path), Path::new(""), &mut hasher);
+    format!("path:{path}:{}", hex::encode(hasher.finalize()))
+}
+
+/// Directories never part of a flake's evaluated source.
+const SKIPPED_DIRS: [&str; 4] = [".git", "node_modules", "target", "result"];
+
+/// Hash every regular file under `dir` in sorted order. Unreadable or missing
+/// entries contribute a marker so the digest still changes when they appear.
+fn hash_tree(dir: &Path, relative: &Path, hasher: &mut Sha256) {
+    let Ok(read_dir) = std::fs::read_dir(dir) else {
+        hasher.update(b"missing\0");
+        return;
+    };
+    let mut entries: Vec<_> = read_dir.filter_map(Result::ok).collect();
+    entries.sort_by_key(std::fs::DirEntry::file_name);
+    for entry in entries {
+        let name = entry.file_name();
+        let rel = relative.join(&name);
+        let Ok(kind) = entry.file_type() else {
+            continue;
+        };
+        if kind.is_dir() {
+            if !SKIPPED_DIRS.iter().any(|skip| name == *skip) {
+                hash_tree(&entry.path(), &rel, hasher);
+            }
+        } else if kind.is_file() {
+            hasher.update(rel.to_string_lossy().as_bytes());
+            hasher.update([0u8]);
+            if let Ok(bytes) = std::fs::read(entry.path()) {
+                hasher.update(Sha256::digest(&bytes));
+            }
+        }
+    }
+}
+
 /// Analyzer for flake.lock purity
 pub struct FlakeLockAnalyzer {
     lock: FlakeLock,
@@ -75,6 +118,8 @@ pub struct FlakeLockAnalyzer {
 
 #[derive(Default)]
 struct AnalysisState {
+    /// Directory of the root flake, used to resolve relative `path` inputs.
+    flake_dir: Option<PathBuf>,
     unlocked: Vec<UnlockedInput>,
     hashes: Vec<String>,
     checked: HashSet<String>,
@@ -118,7 +163,26 @@ impl FlakeLockAnalyzer {
     /// - Deterministic digest computed from all locked `narHash` values
     #[must_use]
     pub fn analyze(&self) -> PurityAnalysis {
-        let mut state = AnalysisState::default();
+        self.analyze_inner(None)
+    }
+
+    /// Analyze the flake.lock, also folding the contents of relative `path`
+    /// inputs (resolved against `flake_dir`, the directory holding the root
+    /// `flake.nix`) into the digest.
+    ///
+    /// Nix pins a relative path input through its parent flake rather than a
+    /// `narHash`, so without this a change inside the referenced directory
+    /// would leave the digest, and any cache key built from it, unchanged.
+    #[must_use]
+    pub fn analyze_in(&self, flake_dir: &Path) -> PurityAnalysis {
+        self.analyze_inner(Some(flake_dir.to_path_buf()))
+    }
+
+    fn analyze_inner(&self, flake_dir: Option<PathBuf>) -> PurityAnalysis {
+        let mut state = AnalysisState {
+            flake_dir,
+            ..AnalysisState::default()
+        };
 
         // Get root node and check all its inputs
         if let Some(root) = self.lock.nodes.get(&self.lock.root) {
@@ -190,7 +254,7 @@ impl FlakeLockAnalyzer {
         // source tree, so Nix locks them without a narHash; the parent pins them.
         let nar_hash = match (&locked.nar_hash, locked.relative_path()) {
             (Some(hash), _) => hash.clone(),
-            (None, Some(path)) => format!("path:{path}"),
+            (None, Some(path)) => path_input_digest(state.flake_dir.as_deref(), path),
             (None, None) => {
                 state.unlocked.push(UnlockedInput {
                     name: input_name.to_string(),
@@ -323,6 +387,36 @@ mod tests {
 
         assert!(analysis.is_pure, "{:?}", analysis.unlocked_inputs);
         assert!(analysis.locked_digest.starts_with("sha256:"));
+    }
+
+    #[test]
+    fn test_relative_path_input_contents_change_the_digest() {
+        let json = r#"{
+            "nodes": {
+                "bun": {
+                    "locked": { "path": "../flakes/bun", "type": "path" },
+                    "original": { "path": "../flakes/bun", "type": "path" },
+                    "parent": []
+                },
+                "root": { "inputs": { "bun": "bun" } }
+            },
+            "root": "root",
+            "version": 7
+        }"#;
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("project");
+        let shared = tmp.path().join("flakes/bun");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::create_dir_all(&shared).unwrap();
+        std::fs::write(shared.join("flake.nix"), "{ a = 1; }").unwrap();
+
+        let analyzer = FlakeLockAnalyzer::from_json(json).unwrap();
+        let before = analyzer.analyze_in(&project).locked_digest;
+        assert_eq!(before, analyzer.analyze_in(&project).locked_digest);
+
+        std::fs::write(shared.join("flake.nix"), "{ a = 2; }").unwrap();
+        let after = analyzer.analyze_in(&project).locked_digest;
+        assert_ne!(before, after);
     }
 
     #[test]
