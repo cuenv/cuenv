@@ -874,6 +874,91 @@ fn sync_check_fails_when_nix_runtime_lockfile_digest_changes() -> TestResult {
     Ok(())
 }
 
+fn relative_path_flake_lock(path: &str) -> String {
+    format!(
+        r#"{{
+  "nodes": {{
+    "bun": {{
+      "inputs": {{ "nixpkgs": ["nixpkgs"] }},
+      "locked": {{ "path": "{path}", "type": "path" }},
+      "original": {{ "path": "{path}", "type": "path" }},
+      "parent": []
+    }},
+    "nixpkgs": {{
+      "locked": {{
+        "type": "github",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "abc123",
+        "narHash": "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+      }},
+      "original": {{ "type": "github", "owner": "NixOS", "repo": "nixpkgs" }}
+    }},
+    "root": {{ "inputs": {{ "bun": "bun", "nixpkgs": "nixpkgs" }} }}
+  }},
+  "root": "root",
+  "version": 7
+}}"#
+    )
+}
+
+#[test]
+fn sync_locks_relative_path_flake_inputs_and_tracks_their_contents() -> TestResult {
+    let tmp = create_repo()?;
+    let root = tmp.path();
+
+    fs::write(root.join("env.cue"), base_env_cue())?;
+
+    // A shared flake at the repo root, used both directly (`path:` runtime) and
+    // as a relative `path:` input of a nested project's own flake.
+    let shared = root.join("flakes/bun");
+    fs::create_dir_all(&shared)?;
+    fs::write(shared.join("flake.nix"), "{ a = 1; }")?;
+    fs::write(
+        shared.join("flake.lock"),
+        minimal_flake_lock("sha256-BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB="),
+    )?;
+
+    let nested = root.join("projects/app/web");
+    fs::create_dir_all(&nested)?;
+    fs::write(nested.join("env.cue"), nix_runtime_project_env_cue("web"))?;
+    fs::write(nested.join("flake.nix"), "{}")?;
+    fs::write(
+        nested.join("flake.lock"),
+        relative_path_flake_lock("../../../flakes/bun"),
+    )?;
+
+    let output = run_cuenv(root, &["sync", "-A"])?;
+    assert!(
+        output.success,
+        "sync failed: {}{}",
+        output.stdout, output.stderr
+    );
+
+    let first = fs::read_to_string(root.join("cuenv.lock"))?;
+    assert!(
+        first.contains("lockfile = \"projects/app/web/flake.lock\""),
+        "lockfile path should be normalized: {first}"
+    );
+    assert!(!first.contains(".."), "no unnormalized paths: {first}");
+
+    let output = run_cuenv(root, &["sync", "-A", "--check"])?;
+    assert!(
+        output.success,
+        "check failed: {}{}",
+        output.stdout, output.stderr
+    );
+
+    fs::write(shared.join("flake.nix"), "{ a = 2; }")?;
+    let output = run_cuenv(root, &["sync", "-A", "--check"])?;
+    assert!(
+        !output.success,
+        "editing the referenced flake must invalidate the runtime digest"
+    );
+
+    Ok(())
+}
+
 #[test]
 fn sync_check_covers_all_rules_outputs() -> TestResult {
     let tmp = create_repo()?;

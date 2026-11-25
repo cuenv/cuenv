@@ -63,7 +63,9 @@ impl Compiler {
         lock_path: &Path,
     ) -> Result<(String, PurityMode), CompilerError> {
         let analyzer = FlakeLockAnalyzer::from_path(lock_path)?;
-        let analysis = analyzer.analyze();
+        let analysis = lock_path
+            .parent()
+            .map_or_else(|| analyzer.analyze(), |dir| analyzer.analyze_in(dir));
 
         self.apply_purity_mode(&analysis)
     }

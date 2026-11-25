@@ -50,7 +50,13 @@ lockfile = "flake.lock"
 
 The Nix runtime lock path must be local, and the referenced `flake.lock` must be
 fully locked. Relative `path:./sub` inputs are accepted without a `narHash`: Nix
-locks them without one because the parent flake's source tree pins them.
+locks them without one because the parent flake's source tree pins them. cuenv folds the files under
+each relative path input (skipping `.git`, `node_modules`, `target` and `result`)
+into the runtime digest, so editing a shared flake such as `../../flakes/bun`
+makes `cuenv sync --check` report drift. `lockfile` entries in `cuenv.lock` are
+stored as normalized module-relative paths (`flakes/bun/flake.lock`, never
+`projects/app/../../flakes/bun/flake.lock`). Re-run `cuenv sync` once after
+upgrading to refresh existing entries.
 
 ## VCS Dependencies
 
