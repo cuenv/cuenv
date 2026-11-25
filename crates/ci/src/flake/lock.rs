@@ -111,9 +111,24 @@ pub struct LockedInfo {
     /// URL (for tarball/url types)
     pub url: Option<String>,
 
+    /// Path (for `path` types). Relative paths (`./sub`) are resolved against
+    /// the parent flake and carry no `narHash`.
+    #[serde(default)]
+    pub path: Option<String>,
+
     /// Revision count (for some tarball sources)
     #[serde(rename = "revCount")]
     pub rev_count: Option<i64>,
+}
+
+impl LockedInfo {
+    /// The relative path of a `path` input that is pinned by its parent flake.
+    #[must_use]
+    pub fn relative_path(&self) -> Option<&str> {
+        self.path
+            .as_deref()
+            .filter(|p| self.locked_type == "path" && !p.starts_with('/'))
+    }
 }
 
 /// Original (unpinned) input specification
