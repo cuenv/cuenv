@@ -1116,6 +1116,12 @@ needed by hand:
   file changed since the last sync. Syncing runs the project's configured
   formatters, which are external programs; they run only when something
   changed.
+- The infrastructure provider types in `cue.mod/gen`, when `cuenv.lock`, a
+  generated provider file or the cuenv version changed since they were last
+  written, or they are missing as after a clone. They are written before the
+  module is first evaluated, so an upgrade or a fresh checkout no longer fails
+  with `cannot find package`. This may download the provider release
+  `cuenv.lock` pins; the shell hook never does.
 - The outputs of `.rules.cue` files a previous `cuenv sync rules` wrote, when
   one of those `.rules.cue` files changed. Changes to files they import are
   not seen; run `cuenv sync rules` for those.
@@ -1129,8 +1135,8 @@ When the `CI` environment variable is set, nothing is written and a stale
 `scripts.gen.cue` fails the command; `cuenv ci` fails the same way, and outside
 CI brings the files up to date before it starts. Set
 `CUENV_AUTOSYNC=0` to turn automatic sync off. `cuenv sync` itself never
-syncs automatically. CI workflows, `cuenv.lock`, Git dependencies,
-infrastructure provider types and the pre-push hook are only synced by
+syncs automatically. CI workflows, `cuenv.lock`, Git dependencies and the
+pre-push hook are only synced by
 `cuenv sync`: they need the network, or change what runs.
 
 **Example:**

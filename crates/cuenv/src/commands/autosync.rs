@@ -8,7 +8,12 @@
 //! - resyncs codegen outputs and `.rules.cue` outputs whose sources changed
 //!   since it last wrote them, judged by fingerprints in
 //!   `.cuenv/autosync.json`, so an unchanged project costs a few `stat`
-//!   calls.
+//!   calls;
+//! - regenerates the infrastructure provider types in `cue.mod/gen` before
+//!   the module is first evaluated, when `cuenv.lock`, the cuenv version or a
+//!   generated provider file changed since it last did, so a module that
+//!   imports them never fails to evaluate because they are missing or were
+//!   rendered by an older cuenv.
 //!
 //! When `CI` is set nothing is written, and a stale `scripts.gen.cue` is an
 //! error: generated files are committed, not made on a runner.
@@ -23,14 +28,18 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use cuenv_core::Result;
+use cuenv_core::lockfile::{LOCKFILE_NAME, Lockfile};
 use cuenv_core::manifest::Project;
 use cuenv_core::scripts::{self, Drift};
+use cuenv_infrastructure::cue_types;
+use cuenv_infrastructure::registry::ProviderSource;
 use serde_json::Value;
 
 use super::CommandExecutor;
 use super::sync::functions::{CodegenSyncOptions, CodegenSyncRequest, execute_sync_codegen};
+use super::sync::provider::SyncProvider;
 use store::{CodegenPrint, digest};
-pub use store::{FileStamp, RulesPrint, Store, stamps};
+pub use store::{FileStamp, InfrastructurePrint, RulesPrint, Store, stamps};
 
 /// What this process does about generated files on its own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -131,6 +140,68 @@ pub enum Evaluated {
 }
 
 impl CommandExecutor {
+    /// Regenerate the infrastructure provider types of the module at
+    /// `module_root` when `cuenv.lock` pins providers and the generated files
+    /// are missing or older than the lockfile or this cuenv, once per
+    /// process. Call it before the module is first evaluated: CUE
+    /// evaluates the generated packages with every project that imports them.
+    ///
+    /// Writes only `cue.mod/gen` and the `cuenv infrastructure` section of
+    /// `.gitignore`, never in CI or with `CUENV_AUTOSYNC=0`. A failure is
+    /// reported and the command goes on to its own evaluation error.
+    pub(super) fn autosync_infrastructure(&self, module_root: &Path) {
+        if self.autosync.mode() != AutoSyncMode::Write
+            || !module_root.join(LOCKFILE_NAME).is_file()
+            || !self
+                .autosync
+                .claim(&module_root.join("cue.mod").join("gen"))
+        {
+            return;
+        }
+        report(self.sync_infrastructure(module_root));
+    }
+
+    fn sync_infrastructure(&self, module_root: &Path) -> Result<()> {
+        let Some(mut store) = Store::open(module_root) else {
+            return Ok(());
+        };
+        let key = module_root.display().to_string();
+        let version = env!("CARGO_PKG_VERSION");
+        if infrastructure_is_current(store.prints.infrastructure.get(&key), version) {
+            return Ok(());
+        }
+
+        let package = self.package().to_string();
+        let options = super::sync::SyncOptions::default();
+        let output = block_on(
+            super::sync::providers::infrastructure::InfrastructureSyncProvider.sync(
+                super::sync::provider::SyncRequest {
+                    path: module_root,
+                    package: &package,
+                    options: &options,
+                    scope: super::sync::SyncScope::Path,
+                    executor: self,
+                },
+            ),
+        )??;
+        if output.had_error {
+            return Err(cuenv_core::Error::configuration(output.output));
+        }
+        if output.output.contains(": wrote ") {
+            cuenv_events::emit_stderr!("cuenv: regenerated infrastructure provider types");
+        }
+        let files = infrastructure_files(module_root);
+        store.prints.infrastructure.insert(
+            key,
+            InfrastructurePrint {
+                cuenv_version: version.to_string(),
+                files: stamps(files.iter().map(PathBuf::as_path)),
+            },
+        );
+        store.save();
+        Ok(())
+    }
+
     /// Sync the generated files of the project at `project_dir` (canonical),
     /// once per process, from its evaluated `value`.
     ///
@@ -382,6 +453,36 @@ pub fn declared_script_dirs(
             };
             (project_dir, scripts::directories(&value))
         })
+        .collect()
+}
+
+/// Whether generated infrastructure types last synced as `print` records
+/// are still what cuenv `version` would write: the same cuenv, and the
+/// lockfile and every provider file unchanged. Reads only file metadata.
+fn infrastructure_is_current(print: Option<&InfrastructurePrint>, version: &str) -> bool {
+    print.is_some_and(|print| {
+        print.cuenv_version == version && stamps(print.files.keys().map(Path::new)) == print.files
+    })
+}
+
+/// The lockfile of the module at `module_root` and the provider file of
+/// every provider it pins.
+fn infrastructure_files(module_root: &Path) -> Vec<PathBuf> {
+    let lockfile = module_root.join(LOCKFILE_NAME);
+    let pinned = Lockfile::load(&lockfile).ok().flatten().unwrap_or_default();
+    std::iter::once(lockfile)
+        .chain(
+            pinned
+                .infrastructure_providers
+                .keys()
+                .filter_map(|source| ProviderSource::parse(source).ok())
+                .filter_map(|source| cue_types::directory(&source).ok())
+                .map(|directory| {
+                    module_root
+                        .join(directory)
+                        .join(cue_types::PROVIDER_FILE_NAME)
+                }),
+        )
         .collect()
 }
 

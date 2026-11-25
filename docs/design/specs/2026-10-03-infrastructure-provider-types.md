@@ -56,12 +56,21 @@ The generated files are not committed. As with managed codegen files, each
 provider directory is listed in a `cuenv infrastructure` section of the
 module root's `.gitignore` (maintained by `provider add`, `provider remove`
 and `sync infrastructure`), and `cuenv sync` recreates them from
-`cuenv.lock`, the only committed artifact. Until it has run after a clone,
-anything that evaluates the project fails with `cannot find package`; that
-is the same contract codegen has, and `cuenv sync` is already the required
-step after a clone. Generating on demand inside every evaluation was
-rejected: it would make the shell hook and unrelated commands download
-providers.
+`cuenv.lock`, the only committed artifact. Commands that evaluate a module
+(`cuenv task`, `cuenv exec`, `cuenv env`, `cuenv sync` and the like) regenerate
+the types themselves before the first evaluation, once per process, when they
+are missing or stale: autosync keeps a fingerprint in `.cuenv/autosync.json`
+(the cuenv version, the modification time and size of `cuenv.lock` and of each
+pinned provider's `provider.cue`), so an unchanged module costs a few `stat`
+calls. A fresh clone, a lockfile change and a cuenv upgrade (which may render
+the types differently, as the output reference contract did in 0.80) each cost
+one regeneration, which may download the pinned provider release. The hook that
+runs on directory entry does not regenerate. With `CI` set nothing is written
+and `CUENV_AUTOSYNC=0` turns it off; in both cases `cuenv sync` is the way.
+A failed regeneration is reported on stderr and the command carries on to its
+own evaluation error. Generating inside every evaluation was rejected for the
+shell hook and unrelated commands downloading providers; the fingerprint keeps
+the download to the one command that finds the types out of date.
 
 The typed path is covered end to end by
 `generated_provider_types_type_the_project` in

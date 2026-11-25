@@ -1,5 +1,5 @@
-use super::store::{FileStamp, Store, digest, stamps};
-use super::{AutoSync, AutoSyncMode};
+use super::store::{FileStamp, InfrastructurePrint, Store, digest, stamps};
+use super::{AutoSync, AutoSyncMode, infrastructure_is_current};
 use std::fs;
 use std::path::Path;
 
@@ -64,4 +64,40 @@ fn a_digest_does_not_depend_on_map_order() {
         second.insert(key.to_string(), key.len());
     }
     assert_eq!(digest(&first), digest(&second));
+}
+
+#[test]
+fn generated_infrastructure_types_are_current_until_something_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let lock = dir.path().join("cuenv.lock");
+    let provider = dir.path().join("provider.cue");
+    fs::write(&lock, "version = 5").unwrap();
+    fs::write(&provider, "package x").unwrap();
+    let print = InfrastructurePrint {
+        cuenv_version: "1.0.0".to_string(),
+        files: stamps([lock.as_path(), provider.as_path()]),
+    };
+
+    assert!(!infrastructure_is_current(None, "1.0.0"), "never synced");
+    assert!(infrastructure_is_current(Some(&print), "1.0.0"));
+    assert!(
+        !infrastructure_is_current(Some(&print), "1.1.0"),
+        "a newer cuenv may render the types differently"
+    );
+
+    fs::write(&lock, "version = 5\n# pinned another release").unwrap();
+    assert!(
+        !infrastructure_is_current(Some(&print), "1.0.0"),
+        "the lockfile changed"
+    );
+
+    let print = InfrastructurePrint {
+        cuenv_version: "1.0.0".to_string(),
+        files: stamps([lock.as_path(), provider.as_path()]),
+    };
+    fs::remove_file(&provider).unwrap();
+    assert!(
+        !infrastructure_is_current(Some(&print), "1.0.0"),
+        "a generated provider file is missing, as on a fresh clone"
+    );
 }

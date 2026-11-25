@@ -73,6 +73,9 @@ impl CommandExecutor {
             cuenv_core::Error::io_with_path("canonicalize path", path.to_path_buf(), e)
         })?;
 
+        if let Some(module_root) = env_file::find_cue_module_root(&target_path) {
+            self.autosync_infrastructure(&module_root);
+        }
         let loaded = match self.load_local_module(&target_path) {
             Ok(loaded) => loaded,
             // A reference to a script added since the last sync fails the
@@ -218,6 +221,7 @@ impl CommandExecutor {
                 target_path.display()
             ))
         })?;
+        self.autosync_infrastructure(&module_root);
         let projects = match self.load_workspace_module(&module_root) {
             Ok(projects) => projects,
             Err(error)
