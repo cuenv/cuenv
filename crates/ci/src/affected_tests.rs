@@ -2068,7 +2068,10 @@ fn test_inherited_root_flake_change_affects_the_project() {
 
 #[test]
 fn test_project_flake_shadows_the_root_flake() {
-    assert!(affected_by_flake_change("flake.lock", &["flake.nix"]).is_empty());
+    assert_eq!(
+        affected_by_flake_change("flake.lock", &["flake.nix"]),
+        [] as [String; 0]
+    );
     assert_eq!(
         affected_by_flake_change("projects/app/flake.lock", &["flake.nix"]),
         ["build"]
