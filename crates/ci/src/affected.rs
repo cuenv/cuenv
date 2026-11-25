@@ -1,4 +1,4 @@
-use cuenv_core::manifest::Project;
+use cuenv_core::manifest::{Project, Runtime};
 use cuenv_core::tasks::file_references::{BoundPath, ReferenceChecks, for_task};
 use cuenv_core::tasks::{FilesAnchor, Input, InputPattern, TaskNode};
 use cuenv_core::{AffectedBy, InputFrame, PatternMatch, PlaceAnchor, UnmatchablePattern};
@@ -237,6 +237,14 @@ where
     // planned on its own. Its inherited inputs are written for the
     // directory that declares the name, so the root-relative reading is no
     // sign of a mistake there.
+    if nix_runtime_flake_changed(config, changed, *checkout_root) {
+        tracing::info!(
+            project = %display_project(project_root),
+            "The project's Nix flake changed; every pipeline task is selected"
+        );
+        return pipeline_tasks.to_vec();
+    }
+
     let warning_root = checkout_root.filter(|_| {
         all_projects
             .get(&config.name)
@@ -1021,6 +1029,57 @@ fn configuration_changed(
         };
         changed.contains(project_root)
     })
+}
+
+/// Whether a changed file is the `flake.nix` or `flake.lock` that a project's
+/// Nix runtime resolves.
+///
+/// A bare flake reference (`.`) resolves to the nearest `flake.nix` above the
+/// project, as Nix does, so a project that inherits the repository's runtime
+/// is affected by a change to the root flake. Nothing is read from disk
+/// unless a flake file changed in a project with such a runtime.
+fn nix_runtime_flake_changed(
+    config: &Project,
+    changed: ChangedInputs<'_>,
+    checkout_root: Option<&Path>,
+) -> bool {
+    let ChangedInputs {
+        files: changed_files,
+        project_root,
+        ..
+    } = changed;
+    let Some(Runtime::Nix(runtime)) = &config.runtime else {
+        return false;
+    };
+    if !(runtime.flake.is_empty() || runtime.flake == ".") {
+        return false;
+    }
+    let is_flake_file = |file: &PathBuf| {
+        file.file_name()
+            .is_some_and(|name| name == "flake.nix" || name == "flake.lock")
+    };
+    if !changed_files.iter().any(is_flake_file) {
+        return false;
+    }
+    let Some(checkout_root) = checkout_root else {
+        // Without the checkout the resolved flake is unknown, so any flake
+        // change may be the one.
+        return true;
+    };
+    let start = if project_root == Path::new(".") {
+        checkout_root.to_path_buf()
+    } else {
+        checkout_root.join(project_root)
+    };
+    let Some(flake_root) = cuenv_hooks::nearest_flake_root(&start, Some(checkout_root)) else {
+        return false;
+    };
+    let Ok(relative) = flake_root.strip_prefix(checkout_root) else {
+        return false;
+    };
+    changed_files
+        .iter()
+        .any(|file| is_flake_file(file) && file.parent().is_some_and(|dir| dir == relative))
 }
 
 /// A project's directory as a warning names it.
