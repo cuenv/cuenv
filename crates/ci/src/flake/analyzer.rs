@@ -292,14 +292,28 @@ mod tests {
 
     #[test]
     fn test_relative_path_input_is_locked_without_nar_hash() {
+        // Shape written by Nix for `bun.url = "path:../../../flakes/bun"` with
+        // `bun.inputs.nixpkgs.follows = "nixpkgs"`.
         let json = r#"{
             "nodes": {
-                "local": {
-                    "locked": { "type": "path", "path": "./sub" },
-                    "original": { "type": "path", "path": "./sub" },
+                "bun": {
+                    "inputs": { "nixpkgs": ["nixpkgs"] },
+                    "locked": { "path": "../../../flakes/bun", "type": "path" },
+                    "original": { "path": "../../../flakes/bun", "type": "path" },
                     "parent": []
                 },
-                "root": { "inputs": { "local": "local" } }
+                "nixpkgs": {
+                    "locked": {
+                        "lastModified": 1794042290,
+                        "narHash": "sha256-ziZn2PvCJE5JEEpqTdxXwJpPB+L3YqoCpTAMCzyaP3U=",
+                        "owner": "NixOS",
+                        "repo": "nixpkgs",
+                        "rev": "f4a03c008967841f2a0b3cb7c436fc6fc31671f6",
+                        "type": "github"
+                    },
+                    "original": { "owner": "NixOS", "ref": "nixos-unstable", "repo": "nixpkgs", "type": "github" }
+                },
+                "root": { "inputs": { "bun": "bun", "nixpkgs": "nixpkgs" } }
             },
             "root": "root",
             "version": 7
