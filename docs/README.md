@@ -25,6 +25,11 @@ bun run typecheck  # astro check
 bun run preview
 ```
 
+The homepage's step-by-step `env.cue` showcase (`EnvShowcase.astro`) renders the
+real files in `src/showcase/`, one directory per step. `scripts/check-schema-compat.sh`
+evaluates each with plain `cue export` and `cue eval -c`, so edit those files, never
+the rendered code, and keep each step valid on its own.
+
 Search only works against a build (`bun run build` then `bun run preview`), not
 `bun run dev`.
 
