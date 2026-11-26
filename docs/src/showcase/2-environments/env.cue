@@ -1,4 +1,4 @@
-package cuenv
+package showcase
 
 import "github.com/cuenv/cuenv/schema"
 

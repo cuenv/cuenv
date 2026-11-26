@@ -13,41 +13,45 @@ import secrets from "../showcase/3-secrets/env.cue?raw";
 import tasks from "../showcase/4-tasks/env.cue?raw";
 import ci from "../showcase/5-ci/env.cue?raw";
 
+// The files use their own package so cuenv does not unify them with the repo's
+// root `package cuenv`; readers see the conventional name.
+const shown = (src: string) => src.replace(/^package showcase\n/, "package cuenv\n");
+
 const steps = [
   {
     label: "1 · Environment",
     title: "Typed variables, checked before anything runs",
     body: "Enums, defaults and interpolation. A typo in NODE_ENV fails evaluation, not production.",
     cmd: "cuenv exec -- npm start",
-    code: basic,
+    code: shown(basic),
   },
   {
     label: "2 · Staging / prod",
     title: "One file, one block per environment",
     body: "Override only what differs. Select with -e and everything else is inherited.",
     cmd: "cuenv exec -e production -- printenv URL",
-    code: environments,
+    code: shown(environments),
   },
   {
     label: "3 · Secrets",
     title: "Secrets by reference, never by value",
     body: "1Password, AWS, GCP, Infisical or any CLI. Resolved at runtime, redacted from output.",
     cmd: "cuenv exec -e production -- ./deploy.sh",
-    code: secrets,
+    code: shown(secrets),
   },
   {
     label: "4 · Tasks",
     title: "Parallel, cached, dependency-checked tasks",
     body: "Group children run in parallel. dependsOn is a CUE reference, so a typo is a compile error.",
     cmd: "cuenv task build",
-    code: tasks,
+    code: shown(tasks),
   },
   {
     label: "5 · CI",
     title: "CI generated from the same definitions",
     body: "Pipelines reference your tasks. cuenv writes the GitHub Actions workflow, so it cannot drift.",
     cmd: "cuenv sync ci",
-    code: ci,
+    code: shown(ci),
   },
 ];
 
