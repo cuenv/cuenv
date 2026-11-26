@@ -21,35 +21,30 @@ const steps = [
   {
     label: "1 · Environment",
     title: "Typed variables, checked before anything runs",
-    body: "Enums, defaults and interpolation. A typo in NODE_ENV fails evaluation, not production.",
     cmd: "cuenv exec -- npm start",
     code: shown(basic),
   },
   {
     label: "2 · Staging / prod",
     title: "One file, one block per environment",
-    body: "Override only what differs. Select with -e and everything else is inherited.",
     cmd: "cuenv exec -e production -- printenv URL",
     code: shown(environments),
   },
   {
     label: "3 · Secrets",
     title: "Secrets by reference, never by value",
-    body: "1Password, AWS, GCP, Infisical or any CLI. Resolved at runtime, redacted from output.",
     cmd: "cuenv exec -e production -- ./deploy.sh",
     code: shown(secrets),
   },
   {
     label: "4 · Tasks",
     title: "Parallel, cached, dependency-checked tasks",
-    body: "Group children run in parallel. dependsOn is a CUE reference, so a typo is a compile error.",
     cmd: "cuenv task build",
     code: shown(tasks),
   },
   {
     label: "5 · CI",
     title: "CI generated from the same definitions",
-    body: "Pipelines reference your tasks. cuenv writes the GitHub Actions workflow, so it cannot drift.",
     cmd: "cuenv sync ci",
     code: shown(ci),
   },
@@ -94,10 +89,7 @@ const rendered = steps.map((s, n) => {
   <Tabs syncKey="env-showcase">
     {rendered.map((s) => (
       <TabItem label={s.label}>
-        <div class="mb-3">
-          <p class="text-base font-semibold text-foreground">{s.title}</p>
-          <p class="mt-1 text-sm text-muted-foreground">{s.body}</p>
-        </div>
+        <p class="mb-3 text-base font-semibold text-foreground">{s.title}</p>
         <div class="env-showcase-code">
           <Code code={s.code} lang="cue" transformers={s.transformers} />
         </div>

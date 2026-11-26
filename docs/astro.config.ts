@@ -63,6 +63,7 @@ const nimbusConfig = defineNimbusConfig({
           { label: "Reference", link: "/reference/" },
           { label: "CLI", link: "/reference/cli/" },
           { label: "CUE schema", link: "/reference/cue-schema/" },
+          { label: "Feature status", link: "/reference/features/" },
           { label: "Schema status", link: "/reference/schema/status/" },
           { label: "Rust API", link: "/reference/rust-api/" },
           { label: "Examples", link: "/reference/examples/" },
