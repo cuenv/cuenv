@@ -60,58 +60,16 @@ is the authoritative source.
 | Changesets (`cuenv changeset`) | Stable | |
 | Release automation (`cuenv release`) | Partial | version/publish/binaries; config-driven parts incomplete |
 
-## A complete example
+## One file, built up step by step
 
-```cue
-package cuenv
+Start with a handful of typed variables and grow the same `env.cue` into
+staging and production environments, runtime secrets, cached tasks, and
+generated CI. Lines a step adds are highlighted.
 
-import "github.com/cuenv/cuenv/schema"
+<EnvShowcase />
 
-schema.#Project & {
-	name: "checkout-api"
-}
-
-env: {
-	// Only these three values are accepted; defaults to "development".
-	NODE_ENV: "development" | "staging" | "production" | *"development"
-
-	HOST: "127.0.0.1"
-	PORT: "8080"
-	URL:  "http://\(HOST):\(PORT)"
-
-	// Resolved at runtime from 1Password. Never written to disk or your shell.
-	DATABASE_PASSWORD: schema.#OnePasswordRef & {
-		ref: "op://Engineering/checkout-db/password"
-	}
-}
-
-tasks: {
-	// The three children run in parallel.
-	check: schema.#TaskGroup & {
-		type: "group"
-		lint:  schema.#Task & {command: "npm", args: ["run", "lint"]}
-		types: schema.#Task & {command: "npm", args: ["run", "typecheck"]}
-		test:  schema.#Task & {command: "npm", args: ["test"]}
-	}
-
-	// Waits for `check`; only re-runs when its inputs change.
-	build: schema.#Task & {
-		command:   "npm"
-		args:      ["run", "build"]
-		dependsOn: [check]
-		inputs:    ["src/**", "package.json"]
-		outputs:   ["dist/**"]
-		cache: mode: "read-write"
-	}
-}
-```
-
-```bash
-cuenv task            # list what the project defines
-cuenv env print       # print the resolved environment (secrets redacted)
-cuenv task build      # run `check` in parallel, then `build`
-cuenv exec -- npm start   # run any command in the validated environment
-```
+Each step is valid on its own and passes plain `cue export`. To try one, copy
+it into `env.cue` and run `cuenv task` to list what it defines.
 
 ## Why CUE?
 

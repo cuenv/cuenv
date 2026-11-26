@@ -124,7 +124,8 @@ sed 's/kind: "git"/kind: "self"/' cue.mod/module.cue >"$module/cue.mod/module.cu
 fixtures=()
 while IFS= read -r dir; do
 	fixtures+=("$dir|$dir|")
-done < <(find examples -name '*.cue' -not -name '.*' -exec dirname {} \; | sort -u)
+# The docs homepage showcase is real cuenv configuration too.
+done < <(find examples docs/src/showcase -name '*.cue' -not -name '.*' -exec dirname {} \; | sort -u)
 while IFS= read -r file; do
 	fixtures+=("$file|$(dirname "$file")|$(basename "$file")")
 done < <(find examples -name '.rules.cue' | sort)

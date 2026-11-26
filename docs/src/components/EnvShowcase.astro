@@ -1,0 +1,145 @@
+---
+/**
+ * EnvShowcase — one env.cue growing step by step: env, environments, secrets,
+ * tasks, CI. The code comes from real files in `src/showcase/`, and the
+ * `docs-showcase` check runs plain `cue export` on each, so nothing here can
+ * drift from the schema. Lines a step adds over the previous one are marked.
+ */
+import { Code } from "./ui/code";
+import { Tabs, TabItem } from "./ui/tabs";
+import basic from "../showcase/1-basic/env.cue?raw";
+import environments from "../showcase/2-environments/env.cue?raw";
+import secrets from "../showcase/3-secrets/env.cue?raw";
+import tasks from "../showcase/4-tasks/env.cue?raw";
+import ci from "../showcase/5-ci/env.cue?raw";
+
+const steps = [
+  {
+    label: "1 · Environment",
+    title: "Typed variables, checked before anything runs",
+    body: "Enums, defaults and interpolation. A typo in NODE_ENV fails evaluation, not production.",
+    cmd: "cuenv exec -- npm start",
+    code: basic,
+  },
+  {
+    label: "2 · Staging / prod",
+    title: "One file, one block per environment",
+    body: "Override only what differs. Select with -e and everything else is inherited.",
+    cmd: "cuenv exec -e production -- printenv URL",
+    code: environments,
+  },
+  {
+    label: "3 · Secrets",
+    title: "Secrets by reference, never by value",
+    body: "1Password, AWS, GCP, Infisical or any CLI. Resolved at runtime, redacted from output.",
+    cmd: "cuenv exec -e production -- ./deploy.sh",
+    code: secrets,
+  },
+  {
+    label: "4 · Tasks",
+    title: "Parallel, cached, dependency-checked tasks",
+    body: "Group children run in parallel. dependsOn is a CUE reference, so a typo is a compile error.",
+    cmd: "cuenv task build",
+    code: tasks,
+  },
+  {
+    label: "5 · CI",
+    title: "CI generated from the same definitions",
+    body: "Pipelines reference your tasks. cuenv writes the GitHub Actions workflow, so it cannot drift.",
+    cmd: "cuenv sync ci",
+    code: ci,
+  },
+];
+
+// Lines of `next` that are not part of the longest common subsequence with
+// `prev`, as 1-based line numbers. Blank lines are never marked.
+function added(prev: string | undefined, next: string): number[] {
+  const b = next.replace(/\n$/, "").split("\n");
+  if (prev === undefined) return [];
+  const a = prev.replace(/\n$/, "").split("\n");
+  const dp = Array.from({ length: a.length + 1 }, () => new Array(b.length + 1).fill(0));
+  for (let i = a.length - 1; i >= 0; i--)
+    for (let j = b.length - 1; j >= 0; j--)
+      dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+  const kept = new Set<number>();
+  let i = 0, j = 0;
+  while (i < a.length && j < b.length) {
+    if (a[i] === b[j]) { kept.add(j); i++; j++; }
+    else if (dp[i + 1][j] >= dp[i][j + 1]) i++;
+    else j++;
+  }
+  return b.flatMap((line, n) => (kept.has(n) || line.trim() === "" ? [] : [n + 1]));
+}
+
+const rendered = steps.map((s, n) => {
+  const marks = new Set(added(steps[n - 1]?.code, s.code));
+  return {
+    ...s,
+    transformers: [
+      {
+        line(node: { properties: { class?: string } }, line: number) {
+          if (marks.has(line)) node.properties.class = `${node.properties.class ?? ""} nb-added`.trim();
+        },
+      },
+    ],
+  };
+});
+---
+
+<div class="env-showcase not-prose my-8">
+  <Tabs syncKey="env-showcase">
+    {rendered.map((s) => (
+      <TabItem label={s.label}>
+        <div class="mb-3">
+          <p class="text-base font-semibold text-foreground">{s.title}</p>
+          <p class="mt-1 text-sm text-muted-foreground">{s.body}</p>
+        </div>
+        <div class="env-showcase-code">
+          <Code code={s.code} lang="cue" transformers={s.transformers} />
+        </div>
+        <p class="mt-3 flex items-center gap-2 text-sm text-muted-foreground">
+          <span aria-hidden="true">$</span>
+          <code>{s.cmd}</code>
+        </p>
+      </TabItem>
+    ))}
+  </Tabs>
+</div>
+
+<script>
+  // Tall steps scroll to what they add, so the new lines are what you see.
+  function reveal(panel: Element | null) {
+    const pre = panel?.querySelector<HTMLElement>(".env-showcase-code pre");
+    if (!pre) return;
+    // Scroll to the start of the longest run of added lines.
+    let best: HTMLElement | null = null, bestLen = 0, run: HTMLElement | null = null, len = 0;
+    pre.querySelectorAll<HTMLElement>(".line").forEach((el) => {
+      if (el.classList.contains("nb-added")) {
+        run ??= el;
+        if (++len > bestLen) { best = run; bestLen = len; }
+      } else { run = null; len = 0; }
+    });
+    if (best) pre.scrollTop = Math.max(0, best.offsetTop - pre.offsetTop - 24);
+  }
+  document.querySelectorAll<HTMLElement>(".env-showcase [data-nb-tabs]").forEach((tabs) => {
+    tabs.addEventListener("click", () => {
+      requestAnimationFrame(() =>
+        reveal(tabs.querySelector("[data-nb-tabs-content]:not([hidden])")),
+      );
+    });
+  });
+</script>
+
+<style is:global>
+  /* Lines this step adds over the previous one. */
+  .env-showcase .nb-added {
+    display: inline-block;
+    width: 100%;
+    background: color-mix(in oklch, var(--nb-brand) 14%, transparent);
+    box-shadow: inset 3px 0 0 var(--nb-brand);
+  }
+  .env-showcase-code pre {
+    max-height: 34rem;
+    overflow: auto;
+  }
+</style>
